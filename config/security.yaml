@@ -1,0 +1,36 @@
+# Extension dApp / phishing hardening (config only)
+
+schema_version: 1
+
+permissions:
+  per_origin: true
+  per_chain: true
+  revocable: true
+  listed_in_settings: true
+  expire_sessions: true
+
+provider:
+  no_post_message_wildcard: true
+  origin_check_both_sides: true
+  isolated_message_channel: true
+  approval_ui: extension_popup_or_window
+  never_in_page_iframe: true
+
+rate_limits:
+  max_pending_approvals: 3
+  queue_extra_prompts: true
+
+phishing:
+  blocklist_enabled: true
+  # Community lists to consume when backend ships
+  sources:
+    - https://raw.githubusercontent.com/Zunia-Lab/zunia-backend/main/data/phishing.json
+  lookalike_warn: true
+
+csp:
+  unsafe_eval: false
+  remote_code: false
+
+host_permissions_note: >
+  Current https://*/* is broad for CosmJS RPC diversity; narrow before store
+  submission or document justification in the listing.

@@ -1,0 +1,20 @@
+# Auto-lock / storage policy (extension + shared docs)
+
+schema_version: 1
+
+storage:
+  decrypted_key_in_service_worker_memory_only: true
+  never_persist_decrypted_to_chrome_storage: true
+
+auto_lock:
+  default_ms: 600000
+  min_ms: 60000
+  max_ms: 3600000
+  on_browser_close: true
+  on_device_lock: true
+  lock_now_action: true
+  lock_when_popup_closes_if_require_password_per_session: true
+
+password:
+  rate_limit: exponential_backoff
+  wipe_after_n_failures_opt_in: true

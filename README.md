@@ -9,6 +9,22 @@
 
 Non-custodial multi-chain wallet as a browser extension (Manifest V3 on Chromium; MV2/MV3 per WXT defaults for Firefox/Safari). Speaks IBC natively and exposes a Cosmos-compatible provider via `window.zunia`. Default chain metadata comes from [zunia-chain-registry](https://github.com/Zunia-Lab/zunia-chain-registry).
 
+## Secure dApp connect (config only)
+
+Provider injection is **not implemented** yet. CSP, permissions, injection matches, and `externally_connectable` origins are configured:
+
+| Item | Location |
+|------|----------|
+| Connect policy | `config/connect.ts` |
+| Manifest / CSP | `wxt.config.ts` |
+| Provider types | `types/window.d.ts` |
+| Env template | `.env.example` |
+
+```bash
+cp .env.example .env
+# set WXT_WALLETCONNECT_PROJECT_ID (same Cloud project as mobile)
+```
+
 ## Status
 
 In development (alpha). Not published to browser stores yet.
@@ -47,7 +63,8 @@ Then open the generated Xcode project, set signing, and archive for the Mac App 
 | [zunia-docs](https://github.com/Zunia-Lab/zunia-docs) | Documentation |
 | [zunia-website](https://github.com/Zunia-Lab/zunia-website) | Marketing site |
 | [zunia-brand](https://github.com/Zunia-Lab/zunia-brand) | Brand assets |
-| [zunia-ui](https://github.com/Zunia-Lab/zunia-ui) | Shared UI components |
+| [zunia-ui](https://github.com/Zunia-Lab/zunia-ui) | UI kit (not required for connect) |
+| [zunia-sdk](https://github.com/Zunia-Lab/zunia-sdk) | Developer SDKs for web / React / Flutter |
 
 ## Quick start
 
