@@ -47,6 +47,7 @@ Then open the generated Xcode project, set signing, and archive for the Mac App 
 | [zunia-docs](https://github.com/Zunia-Lab/zunia-docs) | Documentation |
 | [zunia-website](https://github.com/Zunia-Lab/zunia-website) | Marketing site |
 | [zunia-brand](https://github.com/Zunia-Lab/zunia-brand) | Brand assets |
+| [zunia-ui](https://github.com/Zunia-Lab/zunia-ui) | Shared UI components |
 
 ## Quick start
 
