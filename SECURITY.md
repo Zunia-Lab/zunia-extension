@@ -4,4 +4,4 @@ Report vulnerabilities privately to [hello@zuniawallet.com](mailto:hello@zuniawa
 
 Do not open public GitHub issues for security reports.
 
-See the organization policy: https://github.com/zunialab/.github/blob/main/SECURITY.md
+See the organization policy: https://github.com/Zunia-Lab/.github/blob/main/SECURITY.md

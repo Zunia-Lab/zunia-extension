@@ -1,37 +1,64 @@
 # zunia-extension
 
-> Zunia browser extension for the Cosmos ecosystem (Chrome and Firefox, Manifest V3).
+> Zunia browser extension for the Cosmos ecosystem — **Chrome, Firefox, Edge, and Safari**.
 
-[![License](https://img.shields.io/github/license/zunialab/zunia-extension)](LICENSE)
+[![License](https://img.shields.io/github/license/Zunia-Lab/zunia-extension)](LICENSE)
 [![Website](https://img.shields.io/badge/website-zuniawallet.com-2050C4)](https://zuniawallet.com)
 
 ## Overview
 
-Non-custodial multi-chain wallet as a browser extension. Speaks IBC natively and exposes a Cosmos-compatible provider via `window.zunia`. Default chain metadata comes from [zunia-chain-registry](https://github.com/zunialab/zunia-chain-registry).
+Non-custodial multi-chain wallet as a browser extension (Manifest V3 on Chromium; MV2/MV3 per WXT defaults for Firefox/Safari). Speaks IBC natively and exposes a Cosmos-compatible provider via `window.zunia`. Default chain metadata comes from [zunia-chain-registry](https://github.com/Zunia-Lab/zunia-chain-registry).
 
 ## Status
 
-In development (alpha). Not published to the Chrome Web Store yet.
+In development (alpha). Not published to browser stores yet.
+
+## Supported browsers
+
+| Browser | Build command | Output | Store |
+|---------|---------------|--------|-------|
+| Chrome | `npm run build:chrome` | `.output/chrome-mv3` | Chrome Web Store |
+| Firefox | `npm run build:firefox` | `.output/firefox-mv2` or mv3 | Firefox Add-ons (AMO) |
+| Edge | `npm run build:edge` | `.output/edge-mv3` | Microsoft Edge Add-ons |
+| Safari | `npm run build:safari` | `.output/safari-mv2` | App Store (needs Xcode conversion) |
+
+Opera and Brave load the Chrome build (Chromium).
+
+### Safari packaging
+
+After `npm run build:safari`, convert with Apple’s tooling on macOS:
+
+```bash
+xcrun safari-web-extension-converter .output/safari-mv2 \
+  --project-location ./safari \
+  --app-name Zunia \
+  --bundle-identifier com.zuniawallet.extension
+```
+
+Then open the generated Xcode project, set signing, and archive for the Mac App Store / Safari Extensions gallery.
 
 ## Related repositories
 
 | Repository | Description |
 |------------|-------------|
-| [zunia-mobile](https://github.com/zunialab/zunia-mobile) | Mobile wallet (same keys) |
-| [zunia-dashboard](https://github.com/zunialab/zunia-dashboard) | Web portfolio |
-| [zunia-chain-registry](https://github.com/zunialab/zunia-chain-registry) | Chain metadata |
-| [zunia-docs](https://github.com/zunialab/zunia-docs) | Documentation |
-| [zunia-website](https://github.com/zunialab/zunia-website) | Marketing site |
-| [zunia-brand](https://github.com/zunialab/zunia-brand) | Brand assets |
+| [zunia-mobile](https://github.com/Zunia-Lab/zunia-mobile) | Mobile wallet (same keys) |
+| [zunia-dashboard](https://github.com/Zunia-Lab/zunia-dashboard) | Web portfolio |
+| [zunia-chain-registry](https://github.com/Zunia-Lab/zunia-chain-registry) | Chain metadata |
+| [zunia-docs](https://github.com/Zunia-Lab/zunia-docs) | Documentation |
+| [zunia-website](https://github.com/Zunia-Lab/zunia-website) | Marketing site |
+| [zunia-brand](https://github.com/Zunia-Lab/zunia-brand) | Brand assets |
 
 ## Quick start
 
 ```bash
 npm install
-npm run dev
+npm run dev:chrome     # or: dev:firefox | dev:edge | dev:safari
 ```
 
-Load the unpacked build from `.output/chrome-mv3` in Chrome (`chrome://extensions` → Developer mode → Load unpacked).
+Load unpacked:
+
+- **Chrome / Edge / Brave / Opera:** `chrome://extensions` → Developer mode → Load unpacked → `.output/chrome-mv3` (or edge)
+- **Firefox:** `about:debugging#/runtime/this-firefox` → Load Temporary Add-on → select `manifest.json` under `.output/firefox-*`
 
 ## Provider API
 
@@ -47,23 +74,26 @@ See [docs](https://docs.zuniawallet.com/docs/connect/dapp-api) for the full surf
 
 | Command | Description |
 |---------|-------------|
-| `npm run dev` | Watch mode (WXT) |
-| `npm run build` | Production build |
-| `npm run zip` | Zip for store upload |
+| `npm run dev:chrome` | Watch Chrome |
+| `npm run dev:firefox` | Watch Firefox |
+| `npm run dev:edge` | Watch Edge |
+| `npm run dev:safari` | Watch Safari |
+| `npm run build` | Production builds for all browsers |
+| `npm run zip:chrome` / `zip:firefox` / `zip:edge` | Store-ready zips |
 
-Stack: [WXT](https://wxt.dev) + React + TypeScript, Manifest V3.
+Stack: [WXT](https://wxt.dev) + React + TypeScript.
 
 ## Deployment
 
-Chrome Web Store and Firefox Add-ons listings will link from [zuniawallet.com](https://zuniawallet.com) when published. Tag releases on GitHub for reproducible builds.
+Tag GitHub Releases with multi-browser artifacts. Publish to Chrome Web Store, AMO, Edge Add-ons, and Safari via Xcode when ready. Links will appear on [zuniawallet.com](https://zuniawallet.com).
 
 ## Contributing
 
-See [CONTRIBUTING.md](https://github.com/zunialab/.github/blob/main/CONTRIBUTING.md).
+See [CONTRIBUTING.md](https://github.com/Zunia-Lab/.github/blob/main/CONTRIBUTING.md).
 
 ## Security
 
-See [SECURITY.md](https://github.com/zunialab/.github/blob/main/SECURITY.md). Never paste seed phrases into issues.
+See [SECURITY.md](https://github.com/Zunia-Lab/.github/blob/main/SECURITY.md). Never paste seed phrases into issues.
 
 ## License
 
