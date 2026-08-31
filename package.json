@@ -1,0 +1,23 @@
+{
+  "name": "zunia-extension",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Zunia browser extension for Cosmos multi-chain wallet",
+  "type": "module",
+  "scripts": {
+    "dev": "wxt",
+    "build": "wxt build",
+    "zip": "wxt zip",
+    "postinstall": "wxt prepare"
+  },
+  "dependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "typescript": "^5.7.0",
+    "wxt": "^0.20.0"
+  }
+}

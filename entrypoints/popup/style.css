@@ -1,0 +1,18 @@
+.popup {
+  width: 360px;
+  min-height: 600px;
+  padding: 24px;
+  background: #10214f;
+  color: #f4f5f7;
+}
+
+.popup h1 {
+  font-size: 24px;
+  font-weight: 500;
+  margin: 0 0 8px;
+}
+
+.popup p {
+  color: #a8bade;
+  margin: 0;
+}
