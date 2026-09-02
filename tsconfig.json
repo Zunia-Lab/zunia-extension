@@ -1,12 +1,10 @@
 {
+  "extends": "./.wxt/tsconfig.json",
   "compilerOptions": {
-    "target": "ES2022",
-    "module": "ESNext",
-    "moduleResolution": "Bundler",
     "jsx": "react-jsx",
     "strict": true,
-    "skipLibCheck": true,
-    "types": ["wxt/client-types"]
+    "skipLibCheck": true
   },
-  "include": ["./**/*.ts", "./**/*.tsx"]
+  "include": ["./**/*.ts", "./**/*.tsx", "./.wxt/wxt.d.ts"],
+  "exclude": ["node_modules", ".output"]
 }

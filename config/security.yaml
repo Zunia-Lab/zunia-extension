@@ -32,5 +32,8 @@ csp:
   remote_code: false
 
 host_permissions_note: >
-  Current https://*/* is broad for CosmJS RPC diversity; narrow before store
-  submission or document justification in the listing.
+  host_permissions are limited to localhost and known Zunia API hosts
+  (backend.zuniawallet.com, api.zuniawallet.com, indexer.zuniawallet.com).
+  dApp RPC is not covered by extension host_permissions: CosmJS runs in the
+  page, and first-party sites use externally_connectable / user-granted origins.
+  See config/hosts.ts and wxt.config.ts.

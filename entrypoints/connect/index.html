@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Connect Zunia</title>
+    <style>
+      /*
+        This document is framed by the content script, which already paints the
+        rounded, shadowed card behind it. Staying transparent until React mounts
+        avoids a light-theme flash on top of a dark page (and vice versa).
+      */
+      html,
+      body,
+      #root {
+        margin: 0;
+        padding: 0;
+        background: transparent;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./main.tsx"></script>
+  </body>
+</html>

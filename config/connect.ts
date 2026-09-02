@@ -1,6 +1,5 @@
 /**
  * Secure dApp / WalletConnect connection config for the browser extension.
- * Placeholders only — provider injection and WC sessions are not implemented yet.
  */
 
 export const CONNECT_CONFIG = {
@@ -11,7 +10,8 @@ export const CONNECT_CONFIG = {
     globalName: "zunia" as const,
     /** Optional Keplr-compatible alias for existing dApps */
     keplrCompatibleAlias: "keplr" as const,
-    exposeKeplrAlias: true,
+    /** Default OFF — user opts in via chrome.storage.local settings. */
+    exposeKeplrAlias: false,
     version: "0.1.0",
     isZunia: true,
   },
@@ -21,7 +21,7 @@ export const CONNECT_CONFIG = {
     shortName: "Zunia",
     url: "https://zuniawallet.com",
     icons: [
-      "https://raw.githubusercontent.com/Zunia-Lab/zunia-brand/v1.0.0/assets/icon/icon-512.png",
+      "https://raw.githubusercontent.com/Zunia-Lab/zunia-brand/main/png/icons/app/zunia-icon-512.png",
     ],
   },
 

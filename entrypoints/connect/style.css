@@ -1,0 +1,31 @@
+@import "@zunialab/fonts/fonts.css";
+@import "tailwindcss";
+@import "@zunialab/tokens/theme.css";
+@import "@zunialab/ui/styles.css";
+
+/* Same sources as the popup: utilities used inside the shared UI package are
+   only emitted if Tailwind can see the compiled output. */
+@source "../../node_modules/@zunialab/ui/dist/**/*.{js,mjs}";
+@source "../../node_modules/@zunialab/ui/src/**/*.{ts,tsx}";
+@source "../popup/**/*.{ts,tsx,html}";
+@source "./**/*.{ts,tsx,html}";
+
+/*
+  The modal is an iframe sized by its parent, so the document must never
+  introduce its own scrollbar or backdrop: the content script clips and shadows
+  the card, and the iframe height follows the measured content height.
+*/
+html,
+body {
+  margin: 0;
+  background: transparent;
+  color: var(--z-fg);
+  font-family: var(--z-font-sans);
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+#root {
+  width: 100%;
+  overflow: hidden;
+}

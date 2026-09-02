@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 120" fill="none" aria-hidden="true">
+  <defs>
+    <mask id="zunia-gap" maskUnits="userSpaceOnUse" x="0" y="0" width="96" height="120">
+      <rect width="96" height="120" fill="#fff"/>
+      <path d="M26 20 L70 46 L26 72" fill="none" stroke="#000" stroke-width="30" stroke-linecap="round" stroke-linejoin="round"/>
+    </mask>
+  </defs>
+  <g mask="url(#zunia-gap)">
+    <path d="M26 48 L70 74 L26 100" stroke="#F4F5F7" stroke-width="24" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  <path d="M26 20 L70 46 L26 72" stroke="#F4F5F7" stroke-width="24" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

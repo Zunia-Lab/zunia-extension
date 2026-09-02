@@ -9,22 +9,23 @@
 
 Non-custodial multi-chain wallet as a browser extension (Manifest V3 on Chromium; MV2/MV3 per WXT defaults for Firefox/Safari). Speaks IBC natively and exposes a Cosmos-compatible provider via `window.zunia`. Default chain metadata comes from [zunia-chain-registry](https://github.com/Zunia-Lab/zunia-chain-registry).
 
-## Secure dApp connect (config only)
+## Secure dApp connect
 
-Provider injection is **not implemented** yet. CSP, permissions, injection matches, and `externally_connectable` origins are configured:
+Provider injection is implemented via a MAIN-world `window.zunia` script and an
+isolated content-script bridge (nonce-scoped MessageChannel, origin checks both
+sides). Keplr alias `window.keplr` is **off by default** (opt-in in popup settings).
 
 | Item | Location |
 |------|----------|
 | Connect policy | `config/connect.ts` |
-| Manifest / CSP | `wxt.config.ts` |
+| Host permissions | `config/hosts.ts`, `wxt.config.ts` |
+| Session / security policy | `config/session.yaml`, `config/security.yaml` |
 | Provider types | `types/window.d.ts` |
 | Env template | `.env.example` |
 
-```bash
-cp .env.example .env
-# set WXT_WALLETCONNECT_PROJECT_ID (same Cloud project as mobile)
-```
-
+`host_permissions` are limited to localhost and Zunia API hosts. dApp RPC is not
+fetched under broad `https://*/*`; CosmJS runs in the page, and first-party sites
+use `externally_connectable` / user-granted origins.
 ## Status
 
 In development (alpha). Not published to browser stores yet.
@@ -73,6 +74,12 @@ npm install
 npm run dev:chrome     # or: dev:firefox | dev:edge | dev:safari
 ```
 
+Leave `dev:chrome` running while you edit. WXT hot-reloads the extension in place.
+The sealed vault lives in `chrome.storage.local` inside a persistent Chromium
+profile at `.wxt/chrome-data` (gitignored), so stop/start no longer wipes the wallet.
+You still unlock after a full browser restart because the mnemonic only sits in
+`chrome.storage.session`.
+
 Load unpacked:
 
 - **Chrome / Edge / Brave / Opera:** `chrome://extensions` → Developer mode → Load unpacked → `.output/chrome-mv3` (or edge)
@@ -92,12 +99,14 @@ See [docs](https://docs.zuniawallet.com/docs/connect/dapp-api) for the full surf
 
 | Command | Description |
 |---------|-------------|
-| `npm run dev:chrome` | Watch Chrome |
-| `npm run dev:firefox` | Watch Firefox |
-| `npm run dev:edge` | Watch Edge |
-| `npm run dev:safari` | Watch Safari |
-| `npm run build` | Production builds for all browsers |
-| `npm run zip:chrome` / `zip:firefox` / `zip:edge` | Store-ready zips |
+| `pnpm dev:chrome` | Watch Chrome |
+| `pnpm dev:firefox` | Watch Firefox |
+| `pnpm dev:edge` | Watch Edge |
+| `pnpm dev:safari` | Watch Safari |
+| `pnpm test` | Unit tests (vitest) |
+| `pnpm typecheck` | TypeScript check |
+| `pnpm build` | Production builds for all browsers |
+| `pnpm zip:chrome` / `zip:firefox` / `zip:edge` | Store-ready zips |
 
 Stack: [WXT](https://wxt.dev) + React + TypeScript.
 

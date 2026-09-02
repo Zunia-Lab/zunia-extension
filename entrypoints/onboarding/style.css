@@ -1,0 +1,29 @@
+@import "@zunialab/fonts/fonts.css";
+@import "tailwindcss";
+@import "@zunialab/tokens/theme.css";
+@import "@zunialab/ui/styles.css";
+
+/* Same sources as the popup: utilities used inside the shared UI package are
+   only emitted if Tailwind can see the compiled output. */
+@source "../../node_modules/@zunialab/ui/dist/**/*.{js,mjs}";
+@source "../../node_modules/@zunialab/ui/src/**/*.{ts,tsx}";
+@source "../popup/**/*.{ts,tsx,html}";
+@source "./**/*.{ts,tsx,html}";
+
+/*
+  Unlike the popup this is a real tab, so the document fills the viewport and
+  the onboarding card is centred inside it.
+*/
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+  background: var(--z-bg);
+  color: var(--z-fg);
+  font-family: var(--z-font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+#root {
+  min-height: 100vh;
+}

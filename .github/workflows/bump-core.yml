@@ -1,0 +1,58 @@
+name: Bump @zunialab/core
+
+on:
+  repository_dispatch:
+    types: [zunia-core-released]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Core version to bump to (without v)
+        required: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Bump dependency
+        env:
+          VERSION: ${{ github.event.client_payload.version || inputs.version }}
+        run: |
+          set -euo pipefail
+          test -n "${VERSION:-}"
+          pnpm install
+          pnpm add "@zunialab/core@^${VERSION}" || {
+            echo "Package not on registry yet; writing override pin for review"
+            node -e "
+              const fs=require('fs');
+              const p=JSON.parse(fs.readFileSync('package.json','utf8'));
+              p.dependencies=p.dependencies||{};
+              p.dependencies['@zunialab/core']='^' + process.env.VERSION;
+              fs.writeFileSync('package.json', JSON.stringify(p,null,2)+'\n');
+            "
+          }
+          git config user.name "zunia-release-bot"
+          git config user.email "release@zuniawallet.com"
+          branch="deps/zunia-core-${VERSION}"
+          git checkout -b "$branch"
+          git add package.json pnpm-lock.yaml || true
+          git commit -m "chore: bump @zunialab/core to ${VERSION}" || echo "no changes"
+          git push -u origin "$branch"
+          gh pr create \
+            --title "chore: bump @zunialab/core to ${VERSION}" \
+            --body "Opened by the zunia-core release dispatch (ADR-0005). Review the changelog before merging; crypto bumps are never auto-merged." \
+            --base main || true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

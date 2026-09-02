@@ -1,6 +1,5 @@
 /**
  * In-page provider type surface (window.zunia).
- * Implementation TBD — types reserved for secure dApp integration.
  */
 
 export interface ZuniaKey {
@@ -21,8 +20,14 @@ export interface ZuniaOfflineSigner {
       pubkey: Uint8Array;
     }>
   >;
-  signAmino?(...args: unknown[]): Promise<unknown>;
-  signDirect?(...args: unknown[]): Promise<unknown>;
+  signAmino?(
+    signerAddress: string,
+    signDoc: unknown,
+  ): Promise<unknown>;
+  signDirect?(
+    signerAddress: string,
+    signDoc: unknown,
+  ): Promise<unknown>;
 }
 
 /** Cosmos-compatible wallet provider exposed to dApps */
@@ -33,6 +38,7 @@ export interface ZuniaProvider {
   enable(chainIds: string | string[]): Promise<void>;
   disable?(chainIds?: string | string[]): Promise<void>;
   getKey(chainId: string): Promise<ZuniaKey>;
+  getAccounts?(chainId?: string): Promise<unknown>;
   getOfflineSigner(chainId: string): ZuniaOfflineSigner;
   getOfflineSignerOnlyAmino?(chainId: string): ZuniaOfflineSigner;
   getOfflineSignerAuto?(
@@ -40,20 +46,36 @@ export interface ZuniaProvider {
   ): Promise<ZuniaOfflineSigner>;
   experimentalSuggestChain?(chainInfo: unknown): Promise<void>;
   getChainInfosWithoutEndpoints?(): Promise<unknown[]>;
-  signAmino?(...args: unknown[]): Promise<unknown>;
-  signDirect?(...args: unknown[]): Promise<unknown>;
+  getChainInfos?(): Promise<unknown[]>;
+  signAmino?(
+    chainId: string,
+    signer: string,
+    signDoc: unknown,
+  ): Promise<unknown>;
+  signDirect?(
+    chainId: string,
+    signer: string,
+    signDoc: unknown,
+  ): Promise<unknown>;
+  sendTx?(
+    chainId: string,
+    tx: unknown,
+    mode?: string,
+  ): Promise<unknown>;
   signArbitrary?(
     chainId: string,
     signer: string,
     data: string | Uint8Array,
   ): Promise<unknown>;
   verifyArbitrary?(...args: unknown[]): Promise<boolean>;
+  on?(event: string, handler: (data: unknown) => void): void;
+  off?(event: string, handler: (data: unknown) => void): void;
 }
 
 declare global {
   interface Window {
     zunia?: ZuniaProvider;
-    /** Optional Keplr-compatible alias when CONNECT_CONFIG.exposeKeplrAlias is true */
+    /** Optional Keplr-compatible alias when user opts in via settings. */
     keplr?: ZuniaProvider;
   }
 }
