@@ -1,9 +1,13 @@
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Zunia-Lab/zunia-brand/main/png/icons/app/zunia-icon-256.png" alt="Zunia" width="96" />
+</p>
+
 # zunia-extension
 
 > Zunia browser extension for the Cosmos ecosystem — **Chrome, Firefox, Edge, and Safari**.
 
 [![License](https://img.shields.io/github/license/Zunia-Lab/zunia-extension)](LICENSE)
-[![Website](https://img.shields.io/badge/website-zuniawallet.com-2050C4)](https://zuniawallet.com)
+[![Website](https://img.shields.io/badge/website-zuniawallet.com-FF1B0C)](https://zuniawallet.com)
 
 ## Overview
 
