@@ -19,7 +19,7 @@ export const CONNECT_CONFIG = {
   wallet: {
     name: "Zunia",
     shortName: "Zunia",
-    url: "https://zuniawallet.com",
+    url: "https://zunialab.com",
     icons: [
       "https://raw.githubusercontent.com/Zunia-Lab/zunia-brand/main/png/icons/app/zunia-icon-512.png",
     ],
@@ -27,9 +27,9 @@ export const CONNECT_CONFIG = {
 
   /** Origins that may message the extension via chrome.runtime (dashboard / site). */
   externallyConnectableMatches: [
-    "https://zuniawallet.com/*",
-    "https://*.zuniawallet.com/*",
-    "https://docs.zuniawallet.com/*",
+    "https://zunialab.com/*",
+    "https://*.zunialab.com/*",
+    "https://docs.zunialab.com/*",
     "http://localhost/*",
     "http://127.0.0.1/*",
   ],
@@ -63,7 +63,7 @@ export const CONNECT_CONFIG = {
     relayUrl: "wss://relay.walletconnect.com",
     /** Mobile deep link when extension opens WC pairing on phone */
     mobileDeepLink: "zunia://wc",
-    universalLink: "https://zuniawallet.com/wc",
+    universalLink: "https://zunialab.com/wc",
   },
 
   cosmosMethods: [

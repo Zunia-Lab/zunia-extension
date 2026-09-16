@@ -44,7 +44,7 @@ jobs:
             "
           }
           git config user.name "zunia-release-bot"
-          git config user.email "release@zuniawallet.com"
+          git config user.email "release@zunialab.com"
           branch="deps/zunia-core-${VERSION}"
           git checkout -b "$branch"
           git add package.json pnpm-lock.yaml || true

@@ -10,9 +10,9 @@ export const HOST_PERMISSIONS = [
   "http://localhost/*",
   "http://127.0.0.1/*",
   "http://[::1]/*",
-  "https://backend.zuniawallet.com/*",
-  "https://api.zuniawallet.com/*",
-  "https://indexer.zuniawallet.com/*",
+  "https://backend.zunialab.com/*",
+  "https://api.zunialab.com/*",
+  "https://indexer.zunialab.com/*",
 ] as const;
 
 /**

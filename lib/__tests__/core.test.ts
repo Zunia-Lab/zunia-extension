@@ -95,17 +95,17 @@ describe("origin checks", () => {
   it("matches wildcard hosts", () => {
     expect(
       matchOriginPattern(
-        "https://wallet.zuniawallet.com",
-        "https://*.zuniawallet.com/*",
+        "https://wallet.zunialab.com",
+        "https://*.zunialab.com/*",
       ),
     ).toBe(true);
     expect(
-      matchOriginPattern("https://evil.com", "https://*.zuniawallet.com/*"),
+      matchOriginPattern("https://evil.com", "https://*.zunialab.com/*"),
     ).toBe(false);
   });
 
   it("allows first-party and localhost", () => {
-    expect(isExternallyConnectableOrigin("https://zuniawallet.com")).toBe(
+    expect(isExternallyConnectableOrigin("https://zunialab.com")).toBe(
       true,
     );
     expect(isExternallyConnectableOrigin("http://localhost:3000")).toBe(true);
@@ -176,6 +176,20 @@ describe("local kernel", () => {
     );
     expect(osmo.bech32Address.startsWith("osmo1")).toBe(true);
     expect(osmo.bech32Address).not.toContain("qqqqqq");
+  });
+
+  it("derives ethermint (coin type 60) without treating the pubkey as a scalar", () => {
+    const phrase = `${"abandon ".repeat(11)}about`;
+    const inj = kernel.deriveAddress(
+      phrase,
+      "",
+      JSON.stringify({ bech32Prefix: "inj", coinType: 60 }),
+      0,
+    );
+    expect(inj.algo).toBe("eth_secp256k1");
+    expect(inj.path).toBe("m/44'/60'/0'/0/0");
+    expect(inj.bech32Address.startsWith("inj1")).toBe(true);
+    expect(inj.pubKey).toHaveLength(33);
   });
 
   it("produces a 64-byte compact signature", () => {

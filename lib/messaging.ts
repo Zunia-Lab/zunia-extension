@@ -8,7 +8,7 @@ export function isExternallyConnectableOrigin(origin: string): boolean {
     if (host === "localhost" || host === "127.0.0.1" || host === "[::1]") {
       return true;
     }
-    if (host === "zuniawallet.com" || host.endsWith(".zuniawallet.com")) {
+    if (host === "zunialab.com" || host.endsWith(".zunialab.com")) {
       return true;
     }
     return CONNECT_CONFIG.externallyConnectableMatches.some((pattern) =>
@@ -20,7 +20,7 @@ export function isExternallyConnectableOrigin(origin: string): boolean {
 }
 
 export function matchOriginPattern(origin: string, pattern: string): boolean {
-  // Patterns look like https://*.zuniawallet.com/* or http://localhost/*
+  // Patterns look like https://*.zunialab.com/* or http://localhost/*
   const normalized = pattern.replace(/\/\*$/, "");
   try {
     const originUrl = new URL(origin);
@@ -82,6 +82,26 @@ export type ExtensionMessageType =
   | "REJECT_APPROVAL"
   | "PROVIDER_REQUEST"
   | "TOUCH_SESSION"
+  /** Wallet-originated sign + LCD broadcast (not dApp sendTx). */
+  | "SIGN_AND_BROADCAST"
+  /**
+   * Which kernel is active and whether it can build transactions at all.
+   * Screens disable their confirm control with the reason this returns rather
+   * than letting a signature fail after the user approved it.
+   */
+  | "KERNEL_STATUS"
+  /**
+   * What an engine-built transaction will sign, priced and simulated, without
+   * signing it. Pure with respect to the chain; needs the unlocked keyring only
+   * to derive the account's own public key.
+   */
+  | "BUILD_TX_PREVIEW"
+  /**
+   * Sign and broadcast an engine-built transaction, pinned to the sign-bytes
+   * hash the user approved. Distinct from SIGN_AND_BROADCAST, which takes amino
+   * messages through the extension's own encoder.
+   */
+  | "SIGN_AND_BROADCAST_TX"
   /** Background → content script: mount the in-page connect modal. */
   | "SHOW_CONNECT_OVERLAY";
 

@@ -7,7 +7,7 @@
 > Zunia browser extension for the Cosmos ecosystem — **Chrome, Firefox, Edge, and Safari**.
 
 [![License](https://img.shields.io/github/license/Zunia-Lab/zunia-extension)](LICENSE)
-[![Website](https://img.shields.io/badge/website-zuniawallet.com-FF1B0C)](https://zuniawallet.com)
+[![Website](https://img.shields.io/badge/website-zunialab.com-FF1B0C)](https://zunialab.com)
 
 ## Overview
 
@@ -97,7 +97,7 @@ const offlineSigner = window.zunia.getOfflineSigner(chainId);
 const accounts = await offlineSigner.getAccounts();
 ```
 
-See [docs](https://docs.zuniawallet.com/docs/connect/dapp-api) for the full surface.
+See [docs](https://docs.zunialab.com/docs/connect/dapp-api) for the full surface.
 
 ## Development
 
@@ -116,7 +116,7 @@ Stack: [WXT](https://wxt.dev) + React + TypeScript.
 
 ## Deployment
 
-Tag GitHub Releases with multi-browser artifacts. Publish to Chrome Web Store, AMO, Edge Add-ons, and Safari via Xcode when ready. Links will appear on [zuniawallet.com](https://zuniawallet.com).
+Tag GitHub Releases with multi-browser artifacts. Publish to Chrome Web Store, AMO, Edge Add-ons, and Safari via Xcode when ready. Links will appear on [zunialab.com](https://zunialab.com).
 
 ## Contributing
 
