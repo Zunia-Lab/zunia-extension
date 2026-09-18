@@ -23,6 +23,7 @@
     "zip:safari": "wxt zip -b safari",
     "chains:generate": "node scripts/generate-chain-catalog.mjs",
     "typecheck": "tsc --noEmit",
+    "lint": "eslint",
     "test": "vitest run",
     "test:watch": "vitest",
     "postinstall": "wxt prepare"
@@ -34,7 +35,9 @@
     "@scure/base": "^2.4.0",
     "@scure/bip32": "^2.4.0",
     "@scure/bip39": "^2.4.0",
+    "@zunialab/core": "^0.1.0",
     "@zunialab/fonts": "^0.1.0",
+    "@zunialab/interchain": "^0.1.0",
     "@zunialab/tokens": "^0.1.0",
     "@zunialab/ui": "^0.1.0",
     "qrcode-generator": "^2.0.4",
@@ -42,21 +45,29 @@
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
+    "@eslint/js": "^9",
     "@tailwindcss/vite": "^4.3.3",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@wxt-dev/module-react": "^1.2.2",
+    "eslint": "^9",
+    "eslint-plugin-jsx-a11y": "^6.10",
+    "eslint-plugin-react-hooks": "^7.1",
+    "globals": "^16",
     "tailwindcss": "^4.3.3",
     "typescript": "^5.7.0",
+    "typescript-eslint": "^8",
     "vitest": "^3.2.7",
     "wxt": "^0.20.0"
   },
   "pnpm": {
     "//": "BOOTSTRAP: resolves the @zunialab/* semver ranges above to local paths until the npm scope is live. Delete this whole pnpm block once published. See zunia-ui/RELEASING.md.",
     "overrides": {
-      "@zunialab/ui": "link:../zunia-ui/packages/ui",
+      "@zunialab/core": "link:../zunia-core/packages/npm",
+      "@zunialab/fonts": "link:../zunia-ui/packages/fonts",
+      "@zunialab/interchain": "link:../zunia-sdk/packages/interchain",
       "@zunialab/tokens": "link:../zunia-ui/packages/tokens",
-      "@zunialab/fonts": "link:../zunia-ui/packages/fonts"
+      "@zunialab/ui": "link:../zunia-ui/packages/ui"
     }
   }
 }

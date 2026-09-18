@@ -10,14 +10,40 @@
 @source "./**/*.{ts,tsx,html}";
 
 /*
-  Extension popup is a fixed 360×600 surface.
-  Keep the document box at 360×600 for Chrome's popup sizing. In wider tabs,
-  center the shell so the surrounding canvas is not mistaken for layout gap.
+  Extension popup is a 360×600 surface, and Chrome's toolbar popup hands us
+  exactly that. Two other viewports reach this document and are shorter: the
+  detached approval window (lib/provider-handler.ts) is sized from the OUTER
+  frame, so its viewport loses the title bar, and a raised browser minimum font
+  size grows the content inside whatever height is given. Pinning to 600px with
+  overflow:hidden made both of those clip the pinned footer — the Reject and
+  Approve buttons — with no way to scroll to it.
+
+  So: track the viewport, and only below --popup-shell-min-height fall back to
+  scrolling the shell inside #root. At a 600px viewport every used value here
+  resolves to the old fixed one, so the toolbar popup is unchanged. In wider
+  tabs, center the shell so the surrounding canvas is not mistaken for layout
+  gap.
 */
+:root {
+  /* The height the toolbar popup should open at.
+     Chrome sizes a browser-action popup by auto-resize: it measures the
+     document's CONTENTS height and grows the window to it, clamped to
+     [25px, 600px]. A percentage height is viewport-relative, so contents height
+     would equal viewport height at any size, leaving auto-resize no signal and
+     collapsing the popup to its 25px floor. This must therefore stay an
+     intrinsic length on the document. */
+  --popup-height: 600px;
+}
+
 html {
   margin: 0;
   width: 360px;
-  height: 600px;
+  /* No height. When a host window is shorter than --popup-height — the approve
+     fallback window, whose 360x600 outer size yields a ~565px viewport — the
+     document scrolls, so a pinned footer stays reachable instead of being
+     clipped off the bottom with no way to get to it. */
+  overflow-x: hidden;
+  overflow-y: auto;
   background: var(--z-bg);
   color: var(--z-fg);
 }
@@ -26,7 +52,12 @@ body {
   position: relative;
   margin: 0;
   width: 360px;
-  height: 600px;
+  /* Intrinsic, and a floor rather than a cap: this is the number Chrome
+     measures, and content taller than it still grows the box instead of being
+     cut off. */
+  min-height: var(--popup-height);
+  /* Clips the atmosphere glow below, which is positioned outside the box on
+     purpose. Real content is never clipped, because the box grows with it. */
   overflow: hidden;
   background: var(--z-bg);
   color: var(--z-fg);
@@ -39,14 +70,14 @@ body {
   z-index: 1;
   box-sizing: border-box;
   width: 360px;
-  height: 600px;
-  overflow: hidden;
+  min-height: var(--popup-height);
+  overflow-x: hidden;
 }
 
 #root > * {
   width: 100%;
   max-width: 100%;
-  height: 100%;
+  min-height: var(--popup-height);
 }
 
 /*
@@ -85,7 +116,12 @@ body::before {
 
   body {
     width: 360px;
-    height: 600px;
+    /* A floor, never a cap. Capping the height here would let body's
+       overflow:hidden clip a screen taller than the window — the onboarding and
+       approve-in-a-tab cases — with nothing left to scroll. As a floor the card
+       keeps its 600px look when the window can afford it and grows when it
+       cannot, and the document scrolls. */
+    min-height: min(var(--popup-height), 100%);
     flex-shrink: 0;
     border-inline: 1px solid var(--z-line);
   }

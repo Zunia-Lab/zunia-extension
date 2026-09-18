@@ -1,5 +1,10 @@
 import { useEffect, useState } from "react";
-import { Callout, ScreenScaffold, Segmented } from "@zunialab/ui";
+import {
+  Callout,
+  NFT_MEDIA_PRIVACY_NOTE,
+  ScreenScaffold,
+  Segmented,
+} from "@zunialab/ui";
 import { CURRENCIES, type CurrencyCode } from "../../../lib/settings";
 import {
   dropLiveBalancePermission,
@@ -95,6 +100,17 @@ export function PreferencesScreen({ onBack }: { onBack: () => void }) {
             description="Read balances from each chain's public endpoint. Asks for host access the first time."
             checked={settings.liveBalances && granted}
             onCheckedChange={(next) => void toggleLiveBalances(next)}
+          />
+          <SettingsToggle
+            title="NFT artwork"
+            description={
+              settings.liveBalances
+                ? NFT_MEDIA_PRIVACY_NOTE
+                : "Unavailable while live balances are off: artwork is a network read."
+            }
+            checked={settings.nftMedia && settings.liveBalances}
+            disabled={!settings.liveBalances}
+            onCheckedChange={(nftMedia) => void update({ nftMedia })}
           />
           <SettingsToggle
             title="Browser alerts"

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   NetworkOptionCard,
   SearchField,
@@ -7,16 +7,16 @@ import {
   focusRing,
 } from "@zunialab/ui";
 import {
-  CHAIN_CATALOG,
+  allCatalogEntries,
   catalogIconFor,
   matchesChainQuery,
   sortCatalog,
   type CatalogEntry,
 } from "../../../lib/chain-catalog";
+import { hydrateCustomChains } from "../../../lib/custom-chains";
 
 type NetworkFilter = "mainnet" | "testnet" | "all";
 
-const SORTED_CATALOG = sortCatalog(CHAIN_CATALOG);
 const PAGE_SIZE = 40;
 
 function QuickAction({
@@ -48,27 +48,61 @@ export function NetworkSelectStep({
   onSelectMany,
   onClearMany,
   control = "check",
+  defaultFilter = "mainnet",
 }: {
   selected: Set<string>;
   onToggle: (chainId: string) => void;
   onSelectMany: (chainIds: string[]) => void;
   onClearMany: (chainIds: string[]) => void;
   control?: "check" | "switch";
+  /** Manage Networks defaults to All so enabled testnets stay visible. */
+  defaultFilter?: NetworkFilter;
 }) {
   const [query, setQuery] = useState("");
-  const [filter, setFilter] = useState<NetworkFilter>("mainnet");
+  const [filter, setFilter] = useState<NetworkFilter>(defaultFilter);
   const [visible, setVisible] = useState(PAGE_SIZE);
+  const [catalog, setCatalog] = useState<CatalogEntry[]>(() =>
+    sortCatalog(allCatalogEntries()),
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    void hydrateCustomChains()
+      .then(() => {
+        if (cancelled) return;
+        setCatalog(sortCatalog(allCatalogEntries()));
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setCatalog(sortCatalog(allCatalogEntries()));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const results = useMemo(() => {
-    return SORTED_CATALOG.filter(
+    const filtered = catalog.filter(
       (c) =>
         (filter === "all" || c.network === filter) &&
         matchesChainQuery(c, query),
     );
-  }, [filter, query]);
+    // Keep currently enabled chains at the top so they stay reachable under
+    // any filter / search without hunting through pages.
+    return [...filtered].sort((a, b) => {
+      const aOn = selected.has(a.chainId) ? 0 : 1;
+      const bOn = selected.has(b.chainId) ? 0 : 1;
+      if (aOn !== bOn) return aOn - bOn;
+      return 0;
+    });
+  }, [catalog, filter, query, selected]);
 
   const shown = results.slice(0, visible);
   const remaining = results.length - shown.length;
+  const selectedInView = results.reduce(
+    (n, c) => n + (selected.has(c.chainId) ? 1 : 0),
+    0,
+  );
 
   function update<T>(next: T, apply: (value: T) => void) {
     apply(next);
@@ -86,18 +120,19 @@ export function NetworkSelectStep({
 
       <Segmented
         className="w-full min-w-0"
+        size="sm"
         value={filter}
         onChange={(v) => update(v as NetworkFilter, setFilter)}
         options={[
-          { value: "mainnet", label: "Mainnet" },
-          { value: "testnet", label: "Testnet" },
+          { value: "mainnet", label: "Main" },
+          { value: "testnet", label: "Test" },
           { value: "all", label: "All" },
         ]}
       />
 
       <div className="flex items-center gap-1.5">
         <span className="min-w-0 flex-1 truncate font-mono text-[9.5px] uppercase tracking-[0.12em] text-fg-dim">
-          {selected.size} selected · {results.length} shown
+          {selected.size} on · {selectedInView}/{results.length} in view
         </span>
         <QuickAction
           label="Select all"
@@ -128,7 +163,7 @@ export function NetworkSelectStep({
 
       {results.length === 0 ? (
         <p className="rounded-[14px] border border-dashed border-[var(--z-line)] px-3 py-6 text-center text-[11.5px] text-fg-dim">
-          No networks match “{query.trim()}”
+          No networks match “{query.trim() || filter}”
         </p>
       ) : null}
 

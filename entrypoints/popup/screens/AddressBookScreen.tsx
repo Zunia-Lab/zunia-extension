@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Button,
   Callout,
@@ -27,6 +27,16 @@ export function AddressBookScreen({
   const [address, setAddress] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const labelRef = useRef<HTMLInputElement>(null);
+
+  // Focus follows the disclosure, moved here rather than with autoFocus. This
+  // is not a page-load jump: the "Add address" button that held focus is
+  // replaced by this form, so leaving focus where it was would drop a keyboard
+  // user back at the top of the document. The field is labelled "Label", so a
+  // screen reader announces where it has been put.
+  useEffect(() => {
+    if (adding) labelRef.current?.focus();
+  }, [adding]);
 
   const addressValid = isBech32(address);
 
@@ -100,10 +110,10 @@ export function AddressBookScreen({
         {adding ? (
           <div className="flex flex-col gap-2.5 rounded-[14px] border border-[var(--z-line)] px-3 py-3">
             <Input
+              ref={labelRef}
               label="Label"
               placeholder="Treasury"
               value={label}
-              autoFocus
               maxLength={40}
               onChange={(e) => setLabel(e.target.value)}
             />

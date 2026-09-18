@@ -11,10 +11,23 @@
 @source "./**/*.{ts,tsx,html}";
 
 /*
-  The modal is an iframe sized by its parent, so the document must never
-  introduce its own scrollbar or backdrop: the content script clips and shadows
-  the card, and the iframe height follows the measured content height.
+  The modal is an iframe the content script sizes from the height this document
+  reports, and the card paints its own background, so the document stays
+  transparent and never draws a backdrop of its own.
+
+  It must still scroll. The parent clamps the frame against the viewport, so on
+  a short window the card is taller than the frame it is drawn in, and clipping
+  there would put Connect and Cancel out of reach.
 */
+html {
+  overflow-x: hidden;
+  overflow-y: auto;
+  /* An overscroll bounce here must not scroll the dApp page behind the modal. */
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--z-line-strong) transparent;
+}
+
 html,
 body {
   margin: 0;
@@ -22,10 +35,14 @@ body {
   color: var(--z-fg);
   font-family: var(--z-font-sans);
   -webkit-font-smoothing: antialiased;
-  overflow: hidden;
 }
 
+/*
+  body keeps the default `overflow: visible` deliberately: making it a scroll
+  container of its own would resolve the action row's `position: sticky`
+  against the full content height instead of against the frame, and the row
+  would never pin.
+*/
 #root {
   width: 100%;
-  overflow: hidden;
 }

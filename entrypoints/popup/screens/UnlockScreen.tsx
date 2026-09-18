@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button, PasswordInput, ScreenScaffold, cn, focusRing } from "@zunialab/ui";
 import { sendToBackground } from "../../../lib/popup-client";
 import { IconLock } from "./icons";
@@ -15,6 +15,17 @@ export function UnlockScreen({
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const passwordRef = useRef<HTMLInputElement>(null);
+
+  // Focus is moved deliberately, not with autoFocus. This is the one surface
+  // where the jump is what the user asked for: the popup was opened to unlock
+  // the wallet and the password box is the only thing on it. The field carries
+  // aria-label="Password" and the heading above it is read as the focus lands,
+  // so a screen reader is told where it has been put; the "Locks after N min"
+  // note and the forgot-password link stay one Tab away.
+  useEffect(() => {
+    passwordRef.current?.focus();
+  }, []);
 
   async function handleUnlock() {
     setError(null);
@@ -66,10 +77,10 @@ export function UnlockScreen({
 
         <div className="flex w-full flex-col gap-2">
           <PasswordInput
+            ref={passwordRef}
             aria-label="Password"
             placeholder="Password"
             value={password}
-            autoFocus
             aria-invalid={Boolean(error) || undefined}
             state={error ? "error" : "default"}
             onChange={(e) => {

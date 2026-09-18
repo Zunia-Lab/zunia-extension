@@ -4,6 +4,7 @@ export type ApprovalKind =
   | "enable"
   | "signAmino"
   | "signDirect"
+  | "signArbitrary"
   | "sendTx"
   | "suggestChain";
 

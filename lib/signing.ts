@@ -2,6 +2,7 @@ import { STORAGE_KEYS } from "./storage-keys";
 import type { DecodedDirectTx, DecodedTxMessage } from "./kernel";
 import { loadKernel, bytesToHex, hexToBytes } from "./kernel";
 import { SECURITY_CONFIG } from "../config/security";
+import { cosmWasmActionName, describeCw721Action } from "./nft";
 import { getSettings } from "./settings";
 
 export interface SignSafetySummary {
@@ -29,11 +30,69 @@ export async function rememberRecipient(address: string): Promise<void> {
   });
 }
 
+/**
+ * Describe an Amino `MsgExecuteContract`.
+ *
+ * A CW721 transfer arriving from a dApp is the case that matters: it is an
+ * opaque contract call, and "Message wasm/MsgExecuteContract" tells the user
+ * nothing about the one-of-a-kind asset they are about to sign away. The Amino
+ * encoding puts the ExecuteMsg in as a plain object rather than base64, so the
+ * shared CW721 decoder in `lib/nft.ts` is handed the object directly and both
+ * encodings produce the same sentence.
+ *
+ * When the payload is not a CW721 transfer the summary still names the action -
+ * the top-level key of an ExecuteMsg is the action by convention, and
+ * "Execute increase_allowance on juno1..." is strictly more than "Message
+ * wasm/MsgExecuteContract". `recipient` is set only for a transfer whose new
+ * owner is really known, so the first-time-recipient warning cannot fire on a
+ * guess.
+ */
+function summarizeExecuteContract(
+  type: string,
+  value: Record<string, unknown>,
+): DecodedTxMessage {
+  const contract = typeof value.contract === "string" ? value.contract : "";
+  // wasmd renamed this field from `sent_funds` to `funds`; both appear in the
+  // wild depending on the chain's SDK version, and the only thing read from it
+  // is whether coins are attached at all.
+  const funds = value.funds ?? value.sent_funds;
+  const described = describeCw721Action(contract, value.msg, funds);
+
+  if (described?.action.kind === "transfer_nft") {
+    const { tokenId, recipient, collectionAddress } = described.action;
+    return {
+      typeUrl: type,
+      summary: `Give away NFT ${tokenId} from collection ${collectionAddress} to ${recipient}`,
+      recipient,
+    };
+  }
+  if (described?.action.kind === "send_nft") {
+    const action = described.action;
+    return {
+      typeUrl: type,
+      summary: action.ics721
+        ? `Send NFT ${action.tokenId} from collection ${action.collectionAddress} across ${action.ics721.channelId} to ${action.ics721.receiver}, which mints a voucher rather than moving the original`
+        : `Hand NFT ${action.tokenId} from collection ${action.collectionAddress} to contract ${action.receivingContract}`,
+    };
+  }
+
+  const action = cosmWasmActionName(value.msg);
+  return {
+    typeUrl: type,
+    summary: action
+      ? `Execute "${action}" on ${contract || "an unnamed contract"}`
+      : `Execute a contract call on ${contract || "an unnamed contract"} that Zunia could not read`,
+  };
+}
+
 export function summarizeAminoMsgs(
   msgs: Array<{ type: string; value: Record<string, unknown> }>,
 ): DecodedTxMessage[] {
   return msgs.map((msg) => {
     const type = msg.type || "unknown";
+    if (type === "wasm/MsgExecuteContract" || type.endsWith("MsgExecuteContract")) {
+      return summarizeExecuteContract(type, msg.value);
+    }
     if (type === "cosmos-sdk/MsgSend" || type.endsWith("MsgSend")) {
       const toAddress = String(msg.value.to_address ?? msg.value.toAddress ?? "");
       const amount = Array.isArray(msg.value.amount)

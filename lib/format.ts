@@ -62,13 +62,22 @@ export function formatUnitsExact(
   return negative ? `-${value}` : value;
 }
 
-/** Base units (uatom) to a compact human string (2 decimals, k/M/Bn). */
+/**
+ * Base units (uatom) to a compact human string (k / M / Bn suffix).
+ *
+ * maxFractionDigits used to be accepted and then ignored, so every caller that
+ * asked for 3 decimals (rewards, unbonding amounts) silently got 2 and rounded
+ * small balances to "0.00". It is honoured now.
+ */
 export function formatUnits(
   amount: string,
   decimals: number,
-  _maxFractionDigits = 2,
+  maxFractionDigits = 2,
 ): string {
-  return formatCompact(baseUnitsToNumber(amount, decimals), 2);
+  return formatCompact(
+    baseUnitsToNumber(amount, decimals),
+    Math.max(0, maxFractionDigits),
+  );
 }
 
 export function formatFiat(value: number, currency: string): string {

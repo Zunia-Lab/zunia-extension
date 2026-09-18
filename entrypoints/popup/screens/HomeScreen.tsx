@@ -264,9 +264,11 @@ function NetworkRow({
 function ActivityRow({
   item,
   hidden,
+  onOpen,
 }: {
   item: ActivityItem;
   hidden: boolean;
+  onOpen: () => void;
 }) {
   const presentation = activityPresentation(item.kind, item.success);
   const signed =
@@ -279,7 +281,15 @@ function ActivityRow({
   const amountClass = activityAmountClass(item.kind, item.success, item.amount);
 
   return (
-    <div className="flex items-center gap-2.5 py-2">
+    <button
+      type="button"
+      onClick={onOpen}
+      className={cn(
+        "flex w-full items-center gap-2.5 py-2 text-left",
+        "transition-colors duration-[var(--z-duration-base)] hover:bg-[var(--z-state-hover)]",
+        focusRing,
+      )}
+    >
       <span
         className="flex size-8 shrink-0 items-center justify-center rounded-full border text-[15px] font-semibold leading-none"
         style={{
@@ -310,7 +320,7 @@ function ActivityRow({
           {hidden ? "••••" : signed}
         </span>
       ) : null}
-    </div>
+    </button>
   );
 }
 
@@ -322,9 +332,12 @@ export function HomeScreen({
   balances,
   prices,
   balancesLoading,
+  hostGranted,
+  onHostGranted,
   onReloadBalances,
   onNavigate,
-  onOpenChain,
+  onOpenAsset,
+  onOpenTx,
   onOpenMenu,
   onRefresh,
 }: {
@@ -335,14 +348,16 @@ export function HomeScreen({
   balances: Record<string, ChainBalance>;
   prices: PriceMap;
   balancesLoading: boolean;
+  hostGranted: boolean;
+  onHostGranted: () => void;
   onReloadBalances: () => void;
   onNavigate: (route: PopupRoute) => void;
-  onOpenChain: (chainId: string) => void;
+  onOpenAsset: (chainId: string) => void;
+  onOpenTx: (item: ActivityItem) => void;
   onOpenMenu: () => void;
   onRefresh: () => void;
 }) {
   const [copied, setCopied] = useState(false);
-  const [hostGranted, setHostGranted] = useState(false);
   const [enabling, setEnabling] = useState(false);
   const { settings, update, hidden, toggleHidden } = usePrefs();
   const active =
@@ -372,8 +387,15 @@ export function HomeScreen({
   const recentActivity = activity.slice(0, 5);
 
   useEffect(() => {
-    void hasLiveBalancePermission().then(setHostGranted);
-  }, []);
+    const sync = () => {
+      void hasLiveBalancePermission().then((ok) => {
+        if (ok) onHostGranted();
+      });
+    };
+    sync();
+    window.addEventListener("focus", sync);
+    return () => window.removeEventListener("focus", sync);
+  }, [onHostGranted]);
 
   async function enableLiveBalances() {
     setEnabling(true);
@@ -382,10 +404,10 @@ export function HomeScreen({
         ? true
         : await requestLiveBalancePermission();
       if (!ok) return;
-      setHostGranted(true);
+      onHostGranted();
       await update({ liveBalances: true });
       onRefresh();
-      window.setTimeout(() => onReloadBalances(), 50);
+      window.setTimeout(() => onReloadBalances(), 80);
     } finally {
       setEnabling(false);
     }
@@ -579,7 +601,7 @@ export function HomeScreen({
                     price={prices[chain.chainId]}
                     currency={currency}
                     hidden={hidden}
-                    onOpen={() => onOpenChain(chain.chainId)}
+                    onOpen={() => onOpenAsset(chain.chainId)}
                   />
                 </li>
               ))}
@@ -620,7 +642,7 @@ export function HomeScreen({
                       price={prices[chain.chainId]}
                       currency={currency}
                       hidden={hidden}
-                      onOpen={() => onOpenChain(chain.chainId)}
+                      onOpen={() => onOpenAsset(chain.chainId)}
                     />
                   </li>
                 ))}
@@ -644,7 +666,11 @@ export function HomeScreen({
                 <ul className="flex flex-col">
                   {recentActivity.map((item) => (
                     <li key={`${item.chainId}:${item.hash}`}>
-                      <ActivityRow item={item} hidden={hidden} />
+                      <ActivityRow
+                        item={item}
+                        hidden={hidden}
+                        onOpen={() => onOpenTx(item)}
+                      />
                     </li>
                   ))}
                 </ul>

@@ -1,130 +1,133 @@
-import { useMemo, useState } from "react";
+/**
+ * Bridge: which rails out of this wallet actually work, and which do not.
+ *
+ * The IBC rail is real and is the cross-send flow on the Send screen — the
+ * route planning, per-hop channel override and packet tracking all live there,
+ * and a second copy of them here would be the fifth transfer implementation
+ * this codebase is in the middle of deleting. What this screen adds is the
+ * question cross-send cannot answer from inside its own form: *where can I
+ * actually send from here*, according to the channels the wallet has verified.
+ *
+ * The EVM and Solana rails are not built. They are disabled and say why. The
+ * previous version of this screen rendered a "Review bridge" button that could
+ * never be pressed and three fee rows that were always an em dash.
+ */
+
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Avatar,
   Button,
   Callout,
-  KeyValueRow,
+  EmptyState,
+  Pill,
   ScreenScaffold,
+  SectionLabel,
   Segmented,
+  Spinner,
   cn,
   focusRing,
 } from "@zunialab/ui";
+import { findRoutePaths, type ChannelDirectory } from "@zunialab/interchain";
+
 import type { ChainBalance } from "../../../lib/balances";
-import { NO_VALUE, formatUnits } from "../../../lib/format";
+import { MAX_ROUTE_HOPS } from "../../../config/interchain";
+import { formatUnits } from "../../../lib/format";
+import { describeInterchainError } from "../../../lib/interchain";
+import { channelDirectory, discoverChannels } from "../../../lib/route-plan";
+import type { PopupRoute } from "../routes";
 import type { ChainAccountView } from "../hooks/useChainAccounts";
 import { usePrefs } from "../state/Prefs";
-import { IconChevronDown, IconReceive } from "./icons";
+import { DisabledReason } from "./interchain-ui";
 
 type Rail = "ibc" | "evm" | "solana";
 
-const EVM_SOURCES = [
-  { id: "ethereum", label: "Ethereum", asset: "WETH" },
-  { id: "arbitrum", label: "Arbitrum", asset: "ETH" },
-  { id: "base", label: "Base", asset: "USDC" },
-] as const;
+/**
+ * Why each external rail is off.
+ *
+ * Written as what is missing, not as "coming soon": a user deciding how to move
+ * funds today needs to know this wallet cannot do it, so they use something
+ * that can.
+ */
+const RAIL_BLOCKED: Record<Exclude<Rail, "ibc">, string> = {
+  evm: "Zunia has no EVM signer and no bridge contract integration, so it cannot move funds to or from Ethereum, Arbitrum or Base. Use a bridge you trust directly, then IBC from the Cosmos chain it delivers to.",
+  solana:
+    "Zunia has no Solana signer and no Wormhole integration, so it cannot move funds to or from Solana.",
+};
 
-/** One side of the transfer: a chain pill plus the amount. */
-function Leg({
-  label,
-  meta,
-  name,
-  iconUrl,
-  amount,
-  onAmountChange,
-  onPick,
-  readOnly,
-}: {
-  label: string;
-  meta: string;
-  name: string;
-  iconUrl?: string;
-  amount: string;
-  onAmountChange?: (value: string) => void;
-  onPick?: () => void;
-  readOnly?: boolean;
-}) {
-  return (
-    <section className="rounded-[14px] border border-[var(--z-line)] px-3 py-2.5">
-      <div className="flex items-center justify-between gap-2">
-        <span className="font-mono text-[9px] uppercase tracking-[0.16em] text-fg-dim">
-          {label}
-        </span>
-        <span className="truncate font-mono text-[9.5px] text-fg-dim">
-          {meta}
-        </span>
-      </div>
-      <div className="mt-2 flex items-center gap-2">
-        <button
-          type="button"
-          onClick={onPick}
-          disabled={!onPick}
-          className={cn(
-            "flex min-w-0 shrink-0 items-center gap-1.5 rounded-full border border-[var(--z-line)] py-1 pl-1 pr-2",
-            onPick &&
-              "transition-colors duration-[var(--z-duration-base)] hover:bg-[var(--z-state-hover)]",
-            focusRing,
-          )}
-        >
-          <Avatar src={iconUrl} fallback={name} size={20} />
-          <span className="max-w-[86px] truncate text-[11.5px] font-medium text-fg">
-            {name}
-          </span>
-          {onPick ? (
-            <IconChevronDown width={16} height={16} className="text-fg-dim" />
-          ) : null}
-        </button>
-        <input
-          inputMode="decimal"
-          value={amount}
-          readOnly={readOnly}
-          onChange={(event) => onAmountChange?.(event.target.value)}
-          placeholder="0.00"
-          className={cn(
-            "min-w-0 flex-1 bg-transparent text-right text-[24px] font-medium tracking-[-0.03em] tabular-nums",
-            "text-fg outline-none placeholder:text-fg-dim",
-            readOnly && "text-fg-muted",
-          )}
-        />
-      </div>
-    </section>
-  );
+interface Reach {
+  readonly chainId: string;
+  readonly chainName: string;
+  readonly iconUrl?: string;
+  readonly hops: number;
+  readonly channels: readonly string[];
+  /** True only when every channel on the path has been confirmed open. */
+  readonly verified: boolean;
 }
 
-/** Cross-chain transfers: IBC between enabled chains, external rails for the rest. */
 export function BridgeScreen({
   chains,
   balances,
   onBack,
+  onNavigate,
 }: {
   chains: ChainAccountView[];
   balances: Record<string, ChainBalance>;
   onBack: () => void;
+  onNavigate?: (route: PopupRoute, chainId?: string) => void;
 }) {
   const { hidden, settings } = usePrefs();
+  const liveReads = settings.liveBalances;
   const [rail, setRail] = useState<Rail>("ibc");
   const [fromId, setFromId] = useState(chains[0]?.chainId ?? "");
-  const [toId, setToId] = useState(chains[1]?.chainId ?? chains[0]?.chainId ?? "");
-  const [amount, setAmount] = useState("");
-  const [source, setSource] = useState<(typeof EVM_SOURCES)[number]["id"]>(
-    "ethereum",
-  );
+  const [directory, setDirectory] = useState<ChannelDirectory | null>(null);
+  const [discovering, setDiscovering] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const from = chains.find((c) => c.chainId === fromId) ?? chains[0];
-  const to = chains.find((c) => c.chainId === toId) ?? chains[1] ?? chains[0];
   const fromBalance = from ? balances[from.chainId] : undefined;
-  const evmSource = EVM_SOURCES.find((s) => s.id === source) ?? EVM_SOURCES[0];
 
-  const available = useMemo(() => {
-    if (!fromBalance) return NO_VALUE;
-    if (hidden) return "••••";
-    return `${formatUnits(fromBalance.available, fromBalance.decimals, 3)} ${fromBalance.symbol}`;
-  }, [fromBalance, hidden]);
+  const reload = useCallback(() => {
+    void channelDirectory().then(setDirectory);
+  }, []);
+  useEffect(reload, [reload]);
 
-  function rotate(setter: (id: string) => void, current: string) {
-    if (chains.length < 2) return;
-    const index = chains.findIndex((c) => c.chainId === current);
-    setter(chains[(index + 1) % chains.length]!.chainId);
-  }
+  const reachable = useMemo((): Reach[] => {
+    if (!directory || !from) return [];
+    const out: Reach[] = [];
+    for (const candidate of chains) {
+      if (candidate.chainId === from.chainId) continue;
+      const paths = findRoutePaths(from.chainId, candidate.chainId, directory, {
+        maxHops: MAX_ROUTE_HOPS,
+        maxPaths: 1,
+      });
+      const best = paths[0];
+      if (!best) continue;
+      out.push({
+        chainId: candidate.chainId,
+        chainName: candidate.entry.chainName,
+        ...(candidate.iconUrl ? { iconUrl: candidate.iconUrl } : {}),
+        hops: best.links.length,
+        channels: best.links.map((link) => link.channelId),
+        // `state === "open"` is the only evidence. A shipped seed row and an
+        // unchecked manual entry both read as not verified, on purpose.
+        verified: best.links.every((link) => link.state === "open"),
+      });
+    }
+    return out.sort((a, b) => a.hops - b.hops || a.chainName.localeCompare(b.chainName));
+  }, [directory, from, chains]);
+
+  const discoverFor = useCallback(
+    (destChainId: string) => {
+      if (!from) return;
+      setDiscovering(destChainId);
+      setError(null);
+      void discoverChannels(from.chainId, destChainId)
+        .then(reload)
+        .catch((caught: unknown) => setError(describeInterchainError(caught)))
+        .finally(() => setDiscovering(null));
+    },
+    [from, reload],
+  );
 
   if (chains.length === 0) {
     return (
@@ -136,23 +139,34 @@ export function BridgeScreen({
     );
   }
 
+  const railBlocked = rail === "ibc" ? null : RAIL_BLOCKED[rail];
+
   return (
     <ScreenScaffold
       title="Bridge"
       onBack={onBack}
-      right={
-        <span className="rounded-full border border-[var(--z-warning-line)] px-2 py-[2px] font-mono text-[8.5px] uppercase tracking-[0.1em] text-[var(--z-warning)]">
-          external
-        </span>
-      }
       footer={
-        <Button className="w-full" disabled>
-          Review bridge
-        </Button>
+        <div>
+          <Button
+            className="w-full"
+            disabled={rail !== "ibc" || !onNavigate}
+            onClick={() => onNavigate?.("send", from?.chainId)}
+          >
+            {rail === "ibc" ? "Continue in Cross-send" : "Not available"}
+          </Button>
+          <DisabledReason
+            reason={
+              railBlocked ??
+              (onNavigate
+                ? null
+                : "This screen was opened without navigation, so it cannot hand you to Cross-send. Open Send from the home screen.")
+            }
+          />
+        </div>
       }
     >
       <div className="flex flex-col gap-3 pt-1">
-        <Segmented
+        <Segmented<Rail>
           value={rail}
           onChange={setRail}
           options={[
@@ -162,101 +176,138 @@ export function BridgeScreen({
           ]}
         />
 
-        <div className="relative flex flex-col gap-1.5">
-          {rail === "ibc" ? (
-            <Leg
-              label="From"
-              meta={available}
-              name={from?.entry.chainName ?? NO_VALUE}
-              iconUrl={from?.iconUrl}
-              amount={amount}
-              onAmountChange={setAmount}
-              onPick={() => rotate(setFromId, fromId)}
-            />
-          ) : (
-            <Leg
-              label={`From ${rail === "evm" ? "EVM" : "Solana"}`}
-              meta={rail === "evm" ? evmSource.asset : "SOL"}
-              name={rail === "evm" ? evmSource.label : "Solana"}
-              amount={amount}
-              onAmountChange={setAmount}
-              onPick={
-                rail === "evm"
-                  ? () => {
-                      const index = EVM_SOURCES.findIndex(
-                        (s) => s.id === source,
-                      );
-                      setSource(
-                        EVM_SOURCES[(index + 1) % EVM_SOURCES.length]!.id,
-                      );
-                    }
-                  : undefined
-              }
-            />
-          )}
-
-          <button
-            type="button"
-            aria-label="Flip direction"
-            onClick={() => {
-              if (rail !== "ibc") return;
-              setFromId(toId);
-              setToId(fromId);
-            }}
-            className={cn(
-              "absolute left-1/2 top-1/2 z-10 flex size-7 -translate-x-1/2 -translate-y-1/2 items-center justify-center",
-              "rounded-full border border-[var(--z-line-strong)] bg-accent text-[var(--z-accent-fg)]",
-              focusRing,
-            )}
-          >
-            <IconReceive width={16} height={16} />
-          </button>
-
-          <Leg
-            label="To"
-            meta={to?.chainId ?? ""}
-            name={to?.entry.chainName ?? NO_VALUE}
-            iconUrl={to?.iconUrl}
-            amount={amount ? amount : ""}
-            readOnly
-            onPick={rail === "ibc" ? () => rotate(setToId, toId) : undefined}
-          />
-        </div>
-
-        <section className="flex flex-col gap-1.5 rounded-[13px] border border-[var(--z-line)] px-3 py-2.5">
-          <KeyValueRow
-            label="Provider"
-            value={rail === "ibc" ? "Native IBC" : NO_VALUE}
-          />
-          <KeyValueRow
-            label="Bridge fee"
-            value={rail === "ibc" ? "None" : NO_VALUE}
-          />
-          <KeyValueRow label="Gas" value={NO_VALUE} />
-          <KeyValueRow
-            label="Arrival"
-            value={rail === "ibc" ? "~1 min" : NO_VALUE}
-          />
-        </section>
+        {rail !== "ibc" ? (
+          <Callout tone="warning" title={`${rail === "evm" ? "EVM" : "Solana"} is not built`}>
+            {RAIL_BLOCKED[rail]}
+          </Callout>
+        ) : null}
 
         {rail === "ibc" ? (
-          <Callout tone="neutral" title="IBC is the safest rail">
-            Transfers between the Cosmos chains you already have enabled stay
-            inside the interchain and need no external custodian, only a live
-            channel.
-          </Callout>
-        ) : (
-          <Callout tone="warning" title="Bridges are third parties">
-            Funds leave Zunia&rsquo;s control while they are in transit. Zunia
-            names the provider and the wrapped asset before you sign.
-          </Callout>
-        )}
+          <>
+            <section>
+              <SectionLabel>From</SectionLabel>
+              <div className="mt-1.5 flex flex-wrap gap-1.5">
+                {chains.map((option) => (
+                  <button
+                    key={option.chainId}
+                    type="button"
+                    aria-pressed={option.chainId === from?.chainId}
+                    onClick={() => setFromId(option.chainId)}
+                    className={cn(
+                      "flex items-center gap-1.5 rounded-full border px-2 py-1 text-[10.5px]",
+                      option.chainId === from?.chainId
+                        ? "border-[var(--z-line-strong)] bg-[var(--z-state-selected)] text-fg"
+                        : "border-[var(--z-line)] text-fg-muted hover:text-fg",
+                      focusRing,
+                    )}
+                  >
+                    <Avatar
+                      src={option.iconUrl}
+                      fallback={option.entry.chainName}
+                      size={16}
+                    />
+                    <span className="max-w-[92px] truncate">{option.entry.chainName}</span>
+                  </button>
+                ))}
+              </div>
+              {from ? (
+                <p className="mt-1.5 font-mono text-[9.5px] text-fg-dim">
+                  {hidden
+                    ? "••••"
+                    : fromBalance
+                      ? `${formatUnits(fromBalance.available, fromBalance.decimals)} ${fromBalance.symbol} available`
+                      : "balance unknown"}
+                </p>
+              ) : null}
+            </section>
 
-        <Callout tone="neutral" title="No route resolved">
-          {settings.liveBalances
-            ? "Channel discovery and relayer quotes land with the broadcasting path."
-            : "Turn on on-chain reads in Preferences so Zunia can check channels and balances."}
-        </Callout>
+            <section>
+              <SectionLabel>Reachable over IBC</SectionLabel>
+              {!liveReads ? (
+                <Callout tone="info" className="mt-1.5" title="On-chain reads are off">
+                  Zunia can only show channels it has read from each chain. Turn on live
+                  balances in Settings → Preferences.
+                </Callout>
+              ) : null}
+              {reachable.length === 0 ? (
+                <div className="mt-2">
+                  <EmptyState
+                    title="No route known yet"
+                    description="Nothing in the channel cache connects this network to another enabled one. Run discovery on a destination below, or enter the channel by hand in Cross-send."
+                  />
+                </div>
+              ) : (
+                <ul className="mt-1.5 flex flex-col gap-1.5">
+                  {reachable.map((row) => (
+                    <li
+                      key={row.chainId}
+                      className="flex items-center gap-2 rounded-[11px] border border-[var(--z-line)] px-2.5 py-2"
+                    >
+                      <Avatar src={row.iconUrl} fallback={row.chainName} size={20} />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-[11.5px] text-fg">
+                          {row.chainName}
+                        </span>
+                        <span className="block truncate font-mono text-[9px] text-fg-dim">
+                          {row.hops === 1 ? "direct" : `${row.hops} hops`} ·{" "}
+                          {row.channels.join(" → ")}
+                        </span>
+                      </span>
+                      <Pill tone={row.verified ? "success" : "warning"}>
+                        {row.verified ? "verified" : "unchecked"}
+                      </Pill>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+
+            <section>
+              <SectionLabel>Look for more channels</SectionLabel>
+              <p className="mt-1 text-[10.5px] leading-snug text-fg-muted">
+                Discovery walks every transfer channel on {from?.entry.chainName ?? "the source chain"} and
+                resolves each connection. Slow or paginating endpoints regularly fail at it,
+                which is why Cross-send always lets you type the channel instead.
+              </p>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {chains
+                  .filter((c) => c.chainId !== from?.chainId)
+                  .map((option) => (
+                    <button
+                      key={option.chainId}
+                      type="button"
+                      disabled={!liveReads || discovering !== null}
+                      onClick={() => discoverFor(option.chainId)}
+                      className={cn(
+                        "flex items-center gap-1.5 rounded-full border border-[var(--z-line)] px-2 py-1 text-[10px] text-fg-muted",
+                        "transition-colors duration-[var(--z-duration-base)] hover:border-[var(--z-line-strong)] hover:text-fg",
+                        "disabled:cursor-not-allowed disabled:opacity-40",
+                        focusRing,
+                      )}
+                    >
+                      {discovering === option.chainId ? (
+                        <Spinner className="size-3" />
+                      ) : null}
+                      <span className="max-w-[92px] truncate">
+                        {option.entry.chainName}
+                      </span>
+                    </button>
+                  ))}
+              </div>
+              {error ? (
+                <Callout tone="danger" className="mt-2" title="Discovery failed">
+                  {error}
+                </Callout>
+              ) : null}
+            </section>
+
+            <Callout tone="neutral" title="IBC needs no custodian">
+              An IBC transfer never leaves the interchain: the source chain escrows, the
+              destination mints, and a failed packet is refunded. You sign once, on the
+              source chain, and pay gas only there.
+            </Callout>
+          </>
+        ) : null}
       </div>
     </ScreenScaffold>
   );

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Button,
   Callout,
@@ -8,6 +8,7 @@ import {
   focusRing,
 } from "@zunialab/ui";
 import { sendToBackground } from "../../../lib/popup-client";
+import { STORAGE_KEYS } from "../../../lib/storage-keys";
 import { NetworkSelectStep } from "./NetworkSelectStep";
 import { IconPlus } from "./icons";
 
@@ -24,40 +25,90 @@ export function NetworksScreen({
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // The apply queue below runs across awaits, so it needs the latest selection
+  // without being rebuilt on every render. The mirror used to be written during
+  // render, which React forbids: a render that is thrown away (StrictMode, a
+  // concurrent retry) would still have moved the ref, and the queued write
+  // would then apply a selection the user never committed. Every update goes
+  // through commitSelected instead, so ref and state cannot drift.
+  const selectedRef = useRef(selected);
+  const commitSelected = useCallback((next: Set<string>) => {
+    selectedRef.current = next;
+    setSelected(next);
+  }, []);
+  // Serialize writes so rapid toggles / Select all cannot clobber each other
+  // or clear `busy` while a later apply is still in flight.
+  const applyChain = useRef(Promise.resolve());
+  const applyGeneration = useRef(0);
 
   useEffect(() => {
     void sendToBackground<string[]>("GET_ENABLED_CHAINS").then((ids) => {
-      setSelected(new Set(ids));
+      commitSelected(new Set(ids));
     });
-  }, []);
+  }, [commitSelected]);
 
-  async function apply(next: Set<string>) {
-    if (next.size === 0) {
-      setError("Keep at least one network enabled");
-      return;
-    }
+  // Stay in sync if another surface (Add Chain, storage) mutates enabled ids
+  // while this screen is open.
+  useEffect(() => {
+    const onChanged: Parameters<
+      typeof browser.storage.onChanged.addListener
+    >[0] = (changes, area) => {
+      if (area !== "local") return;
+      if (!changes[STORAGE_KEYS.enabledChains]) return;
+      // Skip while we are writing; the apply result is the source of truth.
+      if (applyGeneration.current > 0) return;
+      const value = changes[STORAGE_KEYS.enabledChains].newValue;
+      if (!Array.isArray(value)) return;
+      commitSelected(new Set(value as string[]));
+    };
+    browser.storage.onChanged.addListener(onChanged);
+    return () => browser.storage.onChanged.removeListener(onChanged);
+  }, [commitSelected]);
+
+  function enqueueApply(mutator: (prev: Set<string>) => Set<string>) {
+    const generation = ++applyGeneration.current;
     setBusy(true);
     setError(null);
-    setSelected(next);
-    try {
-      const saved = await sendToBackground<string[]>("SET_ENABLED_CHAINS", {
-        chainIds: [...next],
+
+    applyChain.current = applyChain.current
+      .catch(() => undefined)
+      .then(async () => {
+        const next = mutator(selectedRef.current);
+        if (next.size === 0) {
+          setError("Keep at least one network enabled");
+          return;
+        }
+        commitSelected(next);
+        try {
+          const saved = await sendToBackground<string[]>("SET_ENABLED_CHAINS", {
+            chainIds: [...next],
+          });
+          // Only commit if nothing newer has queued after us.
+          if (generation === applyGeneration.current) {
+            commitSelected(new Set(saved));
+          }
+        } catch (err) {
+          if (generation !== applyGeneration.current) return;
+          setError(err instanceof Error ? err.message : String(err));
+          const ids = await sendToBackground<string[]>("GET_ENABLED_CHAINS");
+          commitSelected(new Set(ids));
+        }
+      })
+      .finally(() => {
+        if (generation === applyGeneration.current) {
+          applyGeneration.current = 0;
+          setBusy(false);
+        }
       });
-      setSelected(new Set(saved));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-      const ids = await sendToBackground<string[]>("GET_ENABLED_CHAINS");
-      setSelected(new Set(ids));
-    } finally {
-      setBusy(false);
-    }
   }
 
   function toggle(chainId: string) {
-    const next = new Set(selected);
-    if (next.has(chainId)) next.delete(chainId);
-    else next.add(chainId);
-    void apply(next);
+    enqueueApply((prev) => {
+      const next = new Set(prev);
+      if (next.has(chainId)) next.delete(chainId);
+      else next.add(chainId);
+      return next;
+    });
   }
 
   return (
@@ -82,14 +133,17 @@ export function NetworksScreen({
         <NetworkSelectStep
           selected={selected}
           control="switch"
+          defaultFilter="all"
           onToggle={toggle}
           onSelectMany={(ids) => {
-            void apply(new Set([...selected, ...ids]));
+            enqueueApply((prev) => new Set([...prev, ...ids]));
           }}
           onClearMany={(ids) => {
-            const next = new Set(selected);
-            for (const id of ids) next.delete(id);
-            void apply(next);
+            enqueueApply((prev) => {
+              const next = new Set(prev);
+              for (const id of ids) next.delete(id);
+              return next;
+            });
           }}
         />
         <button

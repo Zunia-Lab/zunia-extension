@@ -4,10 +4,23 @@ import {
   getPendingApprovals,
 } from "./approvals";
 import { BUILTIN_CHAINS, chainJsonFor, getBuiltinChain, type ChainInfo } from "./chains";
-import { loadKernel } from "./kernel";
+import {
+  adr36PayloadIsSafe,
+  adr36SignBytesHex,
+  adr36SignDoc,
+  bytesToHex,
+  fromBase64,
+  hexToBytes,
+  loadKernel,
+  serializeAminoSignDoc,
+  toBase64,
+  verifyAdr36,
+} from "./kernel";
 import {
   grantPermission,
   hasPermission,
+  revokeChain,
+  revokePermission,
 } from "./permissions";
 import {
   getAccounts,
@@ -23,14 +36,63 @@ import { STORAGE_KEYS } from "./storage-keys";
 
 export type ProviderMethod =
   | "enable"
+  | "disable"
   | "getKey"
   | "getAccounts"
   | "signAmino"
   | "signDirect"
+  | "signArbitrary"
+  | "verifyArbitrary"
   | "sendTx"
   | "experimentalSuggestChain"
   | "getChainInfos"
   | "getChainInfosWithoutEndpoints";
+
+function dataToBytes(data: string | Uint8Array | number[]): Uint8Array {
+  if (typeof data === "string") return new TextEncoder().encode(data);
+  if (data instanceof Uint8Array) return data;
+  return Uint8Array.from(data);
+}
+
+function previewText(dataBytes: Uint8Array): string {
+  try {
+    const text = new TextDecoder().decode(dataBytes);
+    /* eslint-disable-next-line no-control-regex --
+       Tab, LF and CR are deliberately inside the "this is human-readable text"
+       class: an ADR-36 message may legitimately contain them. Anything else
+       non-printable must fall through to the hex preview, which is exactly what
+       matching against control characters here decides. */
+    if (/^[\x09\x0a\x0d\x20-\x7e]*$/.test(text)) {
+      return text.length > 280 ? `${text.slice(0, 277)}…` : text;
+    }
+  } catch {
+    // Fall through to hex.
+  }
+  const hex = bytesToHex(dataBytes);
+  return hex.length > 96 ? `0x${hex.slice(0, 96)}…` : `0x${hex}`;
+}
+
+function parseSignatureBytes(raw: unknown): Uint8Array {
+  if (raw instanceof Uint8Array) return raw;
+  if (Array.isArray(raw)) return Uint8Array.from(raw);
+  if (typeof raw !== "string") throw new Error("Invalid signature");
+  const value = raw.trim();
+  if (/^(0x)?[0-9a-fA-F]+$/.test(value) && value.replace(/^0x/, "").length % 2 === 0) {
+    return hexToBytes(value);
+  }
+  return fromBase64(value);
+}
+
+function parsePubKeyBytes(raw: unknown): Uint8Array {
+  if (raw instanceof Uint8Array) return raw;
+  if (Array.isArray(raw)) return Uint8Array.from(raw);
+  if (typeof raw !== "string") throw new Error("Invalid pub_key");
+  const value = raw.trim();
+  if (/^(0x)?[0-9a-fA-F]+$/.test(value) && value.replace(/^0x/, "").length % 2 === 0) {
+    return hexToBytes(value);
+  }
+  return fromBase64(value);
+}
 
 async function openApprovalUi(): Promise<void> {
   try {
@@ -42,12 +104,32 @@ async function openApprovalUi(): Promise<void> {
     // Fall through to window.
   }
   const url = browser.runtime.getURL("popup.html" as never);
+  // windows.create sizes the OUTER frame, so the title bar and borders come out
+  // of the height given here: asking for 600 leaves roughly 565 of viewport and
+  // pushes the approval footer off-screen. Ask for the chrome back. The exact
+  // overhead differs per platform, so popup/style.css also lets the document
+  // adapt down instead of relying on this number being right everywhere.
   await browser.windows.create({
     url: `${url}?approve=1`,
     type: "popup",
     width: 360,
-    height: 600,
+    height: 640,
   });
+}
+
+/**
+ * Thrown when a provider method is part of the API surface but the capability
+ * behind it does not exist yet. Only `Error.message` survives the hop through
+ * the background, content script and page, so the message carries the whole
+ * explanation; `code` is for callers inside the extension.
+ */
+export class ProviderUnsupportedError extends Error {
+  readonly code = "UNSUPPORTED" as const;
+
+  constructor(message: string) {
+    super(message);
+    this.name = "ProviderUnsupportedError";
+  }
 }
 
 /**
@@ -139,6 +221,18 @@ export async function handleProviderRequest(input: {
       return null;
     }
 
+    case "disable": {
+      const chainIds = args[0] as string | string[] | undefined;
+      if (chainIds === undefined || chainIds === null) {
+        await revokePermission(origin);
+        return null;
+      }
+      for (const chainId of normalizeChainIds(chainIds)) {
+        await revokeChain(origin, chainId);
+      }
+      return null;
+    }
+
     case "getKey": {
       const chainId = String(args[0] ?? "");
       if (!chainId) throw new Error("chainId required");
@@ -219,33 +313,147 @@ export async function handleProviderRequest(input: {
       const approved = (await approval) as { approved: boolean };
       if (!approved?.approved) throw new Error("Request rejected");
 
-      for (const msg of summary.messages) {
-        const recipient = (signDoc as { msgs?: Array<{ value?: { to_address?: string } }> })
-          ?.msgs?.[0]?.value?.to_address;
+      // Walk the sign doc's own messages. The previous loop iterated
+      // summary.messages but read msgs[0] on every pass, so a multi-send taught
+      // the address book its first recipient N times and dropped the rest.
+      const outgoing = (
+        signDoc as { msgs?: Array<{ value?: { to_address?: string } }> }
+      )?.msgs;
+      for (const msg of outgoing ?? []) {
+        const recipient = msg?.value?.to_address;
         if (recipient) await rememberRecipient(recipient);
       }
 
       const kernel = await loadKernel();
       const active = await getActiveAccountIndex();
-      const signature = kernel.signCosmos(
+      const signBytesHex = bytesToHex(serializeAminoSignDoc(signDoc));
+      const signatureHex = kernel.signCosmos(
         mnemonic,
         "",
         chainJsonFor(chainId),
         active,
-        JSON.stringify(signDoc),
+        signBytesHex,
       );
-      const accounts = await getAccounts();
-      const account = accounts.find((a) => a.index === active) ?? accounts[0]!;
+      const derived = kernel.deriveAddress(
+        mnemonic,
+        "",
+        chainJsonFor(chainId),
+        active,
+      );
       return {
         signed: signDoc,
         signature: {
           pub_key: {
             type: "tendermint/PubKeySecp256k1",
-            value: account.pubKeyHex ?? "",
+            value: toBase64(derived.pubKey),
           },
-          signature,
+          signature: toBase64(hexToBytes(signatureHex)),
         },
       };
+    }
+
+    case "signArbitrary": {
+      const chainId = String(args[0] ?? "");
+      const signer = String(args[1] ?? "");
+      const data = args[2] as string | Uint8Array | number[];
+      if (!chainId) throw new Error("chainId required");
+      if (!signer) throw new Error("signer required");
+      if (data == null) throw new Error("data required");
+      if (!(await hasPermission(origin, [chainId]))) {
+        throw new Error("Not authorized");
+      }
+      const mnemonic = await requireUnlocked();
+      const dataBytes = dataToBytes(data);
+      if (!adr36PayloadIsSafe(dataBytes)) {
+        throw new Error(
+          "ADR-36 data looks like a transaction sign doc; refusing to sign",
+        );
+      }
+
+      const preview = previewText(dataBytes);
+      const approval = enqueueApproval({
+        kind: "signArbitrary",
+        origin,
+        chainIds: [chainId],
+        title: `Sign message on ${chainId}`,
+        detail: { signer, preview, encoding: typeof data === "string" ? "utf8" : "bytes" },
+      });
+      void openApprovalUi();
+      const approved = (await approval) as { approved: boolean };
+      if (!approved?.approved) throw new Error("Request rejected");
+
+      const kernel = await loadKernel();
+      const active = await getActiveAccountIndex();
+      const signDoc = adr36SignDoc(signer, dataBytes);
+      const signatureHex = kernel.signCosmos(
+        mnemonic,
+        "",
+        chainJsonFor(chainId),
+        active,
+        adr36SignBytesHex(signer, dataBytes),
+      );
+      const derived = kernel.deriveAddress(
+        mnemonic,
+        "",
+        chainJsonFor(chainId),
+        active,
+      );
+      return {
+        signed: signDoc,
+        signature: {
+          pub_key: {
+            type: "tendermint/PubKeySecp256k1",
+            value: toBase64(derived.pubKey),
+          },
+          signature: toBase64(hexToBytes(signatureHex)),
+        },
+      };
+    }
+
+    case "verifyArbitrary": {
+      const chainId = String(args[0] ?? "");
+      const signer = String(args[1] ?? "");
+      const data = args[2] as string | Uint8Array | number[];
+      const signatureArg = args[3] as
+        | {
+            pub_key?: { type?: string; value?: string };
+            signature?: string;
+          }
+        | string
+        | undefined;
+      if (!chainId || !signer || data == null || signatureArg == null) {
+        throw new Error("chainId, signer, data, and signature required");
+      }
+      if (!(await hasPermission(origin, [chainId]))) {
+        throw new Error("Not authorized");
+      }
+
+      const dataBytes = dataToBytes(data);
+      if (!adr36PayloadIsSafe(dataBytes)) return false;
+
+      let pubKeyBytes: Uint8Array;
+      let sigBytes: Uint8Array;
+      if (typeof signatureArg === "string") {
+        const mnemonic = await requireUnlocked();
+        const kernel = await loadKernel();
+        const active = await getActiveAccountIndex();
+        const derived = kernel.deriveAddress(
+          mnemonic,
+          "",
+          chainJsonFor(chainId),
+          active,
+        );
+        pubKeyBytes = derived.pubKey;
+        sigBytes = parseSignatureBytes(signatureArg);
+      } else {
+        if (!signatureArg.pub_key?.value || !signatureArg.signature) {
+          throw new Error("signature.pub_key.value and signature.signature required");
+        }
+        pubKeyBytes = parsePubKeyBytes(signatureArg.pub_key.value);
+        sigBytes = parseSignatureBytes(signatureArg.signature);
+      }
+
+      return verifyAdr36(signer, dataBytes, pubKeyBytes, sigBytes);
     }
 
     case "signDirect": {
@@ -274,50 +482,46 @@ export async function handleProviderRequest(input: {
 
       const kernel = await loadKernel();
       const active = await getActiveAccountIndex();
-      const signature = kernel.signCosmos(
+      const signBytesHex =
+        typeof signDoc === "string" && /^(0x)?[0-9a-fA-F]+$/.test(signDoc)
+          ? signDoc
+          : bytesToHex(
+              typeof signDoc === "string"
+                ? new TextEncoder().encode(signDoc)
+                : serializeAminoSignDoc(signDoc),
+            );
+      const signatureHex = kernel.signCosmos(
         mnemonic,
         "",
         chainJsonFor(chainId),
         active,
-        typeof signDoc === "string" ? signDoc : JSON.stringify(signDoc),
+        signBytesHex,
+      );
+      const derived = kernel.deriveAddress(
+        mnemonic,
+        "",
+        chainJsonFor(chainId),
+        active,
       );
       return {
         signed: signDoc,
         signature: {
           pub_key: {
             type: "tendermint/PubKeySecp256k1",
-            value: "",
+            value: toBase64(derived.pubKey),
           },
-          signature,
+          signature: toBase64(hexToBytes(signatureHex)),
         },
       };
     }
 
     case "sendTx": {
-      const chainId = String(args[0] ?? "");
-      const tx = args[1];
-      const mode = args[2] ?? "sync";
-      if (!(await hasPermission(origin, [chainId]))) {
-        throw new Error("Not authorized");
-      }
-      await requireUnlocked();
-      const approval = enqueueApproval({
-        kind: "sendTx",
-        origin,
-        chainIds: [chainId],
-        title: `Broadcast transaction on ${chainId}`,
-        detail: { mode, txPreview: typeof tx === "string" ? tx.slice(0, 64) : tx },
-        warnings: [
-          "Broadcast uses the dApp or user-granted RPC; the extension does not hold broad host permissions.",
-        ],
-      });
-      void openApprovalUi();
-      const approved = (await approval) as { approved: boolean; txHash?: string };
-      if (!approved?.approved) throw new Error("Request rejected");
-      // Placeholder: real broadcast needs CosmJS + user RPC. Return mock hash.
-      return (
-        approved.txHash ??
-        `MOCK${Date.now().toString(16).toUpperCase()}`
+      // Wallet-originated txs broadcast via LCD from the popup; dApp sendTx
+      // stays unsupported so the extension never holds a dApp-supplied payload
+      // as the broadcaster of record.
+      throw new ProviderUnsupportedError(
+        "Zunia does not broadcast dApp transactions. Request a signature with " +
+          "signAmino or signDirect and broadcast it from the dApp.",
       );
     }
 

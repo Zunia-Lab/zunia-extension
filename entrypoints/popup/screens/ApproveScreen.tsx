@@ -32,8 +32,30 @@ const KIND_LABEL: Record<ApprovalRequest["kind"], string> = {
   enable: "Connection request",
   signAmino: "Signature request",
   signDirect: "Signature request",
+  signArbitrary: "Message signature",
   sendTx: "Broadcast request",
   suggestChain: "Add network request",
+};
+
+/**
+ * What approving actually does, spelled out on the screen. Users read "Approve"
+ * as "the transfer happens"; for every kind Zunia handles, it does not — the
+ * dApp is the one that talks to the network.
+ *
+ * sendTx is absent on purpose: it cannot be approved at all, and says so in a
+ * danger Callout instead.
+ */
+const KIND_EFFECT: Partial<Record<ApprovalRequest["kind"], string>> = {
+  enable:
+    "Approving lets this site read your addresses on these networks. It cannot move funds, and nothing is signed.",
+  signAmino:
+    "Approving signs this transaction and returns the signature to the site. Zunia does not broadcast it — the site submits it to the network.",
+  signDirect:
+    "Approving signs this transaction and returns the signature to the site. Zunia does not broadcast it — the site submits it to the network.",
+  signArbitrary:
+    "Approving signs this off-chain message (ADR-36) and returns the signature to the site. It cannot move funds by itself.",
+  suggestChain:
+    "Approving adds this network to your wallet. Nothing is signed and no funds move.",
 };
 
 function OriginHeader({
@@ -112,7 +134,13 @@ export function ApproveScreen({
 
   const summary = summaryFrom(current);
   const warnings = current.warnings ?? summary?.warnings ?? [];
+  // sendTx is refused in lib/provider-handler.ts before it can reach this
+  // queue, so this branch should never render. It stays because the kind is
+  // still part of the approval type: if one ever arrives, the screen has to say
+  // it cannot be approved rather than offer a button that broadcasts nothing.
+  const unsupported = current.kind === "sendTx";
   const blocked = Boolean(summary?.requiresBlindSigning);
+  const effect = KIND_EFFECT[current.kind];
 
   async function approve() {
     await sendToBackground("RESOLVE_APPROVAL", {
@@ -141,24 +169,35 @@ export function ApproveScreen({
         />
       }
       footer={
-        <div className="flex gap-2">
+        unsupported ? (
           <Button
             variant="secondary"
-            className="flex-1"
+            className="w-full"
             size="lg"
             onClick={() => void reject()}
           >
-            Reject
+            Reject request
           </Button>
-          <Button
-            className="flex-[1.4]"
-            size="lg"
-            disabled={blocked}
-            onClick={() => void approve()}
-          >
-            Approve
-          </Button>
-        </div>
+        ) : (
+          <div className="flex gap-2">
+            <Button
+              variant="secondary"
+              className="flex-1"
+              size="lg"
+              onClick={() => void reject()}
+            >
+              Reject
+            </Button>
+            <Button
+              className="flex-[1.4]"
+              size="lg"
+              disabled={blocked}
+              onClick={() => void approve()}
+            >
+              Approve
+            </Button>
+          </div>
+        )
       }
     >
       <div className="flex flex-col gap-3.5 pt-3.5">
@@ -167,6 +206,21 @@ export function ApproveScreen({
             ? `Approve ${summary.messages.length} message${summary.messages.length === 1 ? "" : "s"}`
             : current.title}
         </h1>
+
+        {unsupported ? (
+          <Callout tone="danger" title="Zunia cannot broadcast transactions yet">
+            This site asked Zunia to submit a signed transaction to the network.
+            That path does not exist, so there is nothing to approve here and
+            nothing has been sent. Reject the request and let the site broadcast
+            the signature itself.
+          </Callout>
+        ) : null}
+
+        {effect ? (
+          <p className="text-[length:var(--z-type-meta)] leading-[1.5] text-fg-muted">
+            {effect}
+          </p>
+        ) : null}
 
         {blocked ? (
           <Callout tone="danger" title="Blind signing required">
@@ -211,6 +265,20 @@ export function ApproveScreen({
               </li>
             ))}
           </ol>
+        ) : null}
+
+        {current.kind === "signArbitrary" ? (
+          <div className="rounded-[14px] border border-[var(--z-line)] bg-[var(--z-glass)] px-3 py-2.5">
+            <div className="font-mono text-[9.5px] uppercase tracking-[0.08em] text-fg-dim">
+              Message
+            </div>
+            <pre className="mt-2 max-h-[180px] overflow-auto whitespace-pre-wrap break-words font-mono text-[11.5px] leading-relaxed text-fg">
+              {String(
+                (current.detail as { preview?: string } | undefined)?.preview ??
+                  "",
+              )}
+            </pre>
+          </div>
         ) : null}
 
         <div className="flex flex-col gap-2.5 rounded-[14px] border border-[var(--z-line)] px-3 py-3">

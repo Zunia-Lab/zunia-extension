@@ -23,6 +23,22 @@ export const STORAGE_KEYS = {
   readNotifications: "zunia.readNotifications",
   /** Networks the user added by hand. */
   customChains: "zunia.customChains",
+  /** Cache of IBC transfer channels the engine discovered or the user entered. */
+  channelRoutes: "zunia.channelRoutes",
+  /** Crosschain-swap contract address override, when the user set one. */
+  swapContract: "zunia.swapContract",
+  /** Signed routes still in flight, so tracking survives a popup close. */
+  pendingTransfers: "zunia.pendingTransfers",
+  /**
+   * CW721 contract addresses the user added, keyed by chain id.
+   *
+   * CosmWasm has no chain-level "tokens by owner" index, so without an address
+   * there is nothing to query. This list is the discovery path that always
+   * works, and the only one that is populated in a stock install.
+   */
+  nftContracts: "zunia.nftContracts",
+  /** cw-ics721 bridge addresses the user pinned, keyed by chain id. */
+  nftBridges: "zunia.nftBridges",
   /** Unlocked mnemonic ONLY in chrome.storage.session. */
   sessionMnemonic: "zunia.session.mnemonic",
   sessionUnlockedAt: "zunia.session.unlockedAt",

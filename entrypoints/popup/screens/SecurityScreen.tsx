@@ -8,6 +8,7 @@ import {
   Segmented,
 } from "@zunialab/ui";
 import { sendToBackground } from "../../../lib/popup-client";
+import { INERT_SETTINGS } from "../../../lib/settings";
 import {
   SettingsGroup,
   SettingsLink,
@@ -25,6 +26,14 @@ const LOCK_OPTIONS = [
 ];
 
 const CONFIRM_WORD = "REMOVE";
+
+const PASSWORD_ON_SIGN_LABEL = "Ask again before signing, even while unlocked.";
+/**
+ * Set while nothing in the signing path reads requirePasswordOnSign. Deleting
+ * the INERT_SETTINGS entry, in the change that makes the setting real, turns
+ * the control back on here with no further edit.
+ */
+const PASSWORD_ON_SIGN_BLOCKED = INERT_SETTINGS.requirePasswordOnSign;
 
 function RemoveWallet({
   onCancel,
@@ -57,11 +66,13 @@ function RemoveWallet({
         Only your recovery phrase can bring it back. Make sure it is written
         down before continuing.
       </Callout>
+      {/* No autofocus: this screen erases the wallet, and the danger callout
+          above says so. Landing focus below it hides the one sentence the user
+          needs before typing anything here. */}
       <PasswordInput
         label="Password"
         placeholder="Password"
         value={password}
-        autoFocus
         onChange={(e) => setPassword(e.target.value)}
       />
       <Input
@@ -131,10 +142,21 @@ export function SecurityScreen({
               options={LOCK_OPTIONS}
             />
           </SettingsValue>
+          {/* While the setting is inert the switch shows the effective state,
+              off, and carries the reason: an on-looking switch that enforces
+              nothing is worse than no switch. The stored preference is left
+              untouched so it survives until signing honours it. */}
           <SettingsToggle
             title="Password on every signature"
-            description="Ask again before signing, even while unlocked."
-            checked={settings.requirePasswordOnSign}
+            description={
+              PASSWORD_ON_SIGN_BLOCKED
+                ? `${PASSWORD_ON_SIGN_LABEL} ${PASSWORD_ON_SIGN_BLOCKED}`
+                : PASSWORD_ON_SIGN_LABEL
+            }
+            checked={
+              PASSWORD_ON_SIGN_BLOCKED ? false : settings.requirePasswordOnSign
+            }
+            disabled={Boolean(PASSWORD_ON_SIGN_BLOCKED)}
             onCheckedChange={(requirePasswordOnSign) =>
               void update({ requirePasswordOnSign })
             }

@@ -55,19 +55,36 @@ export type ConnectOverlayMessage =
 
 /** Modal width from the design mock. */
 export const CONNECT_FRAME_WIDTH = 340;
+/**
+ * Floor of the clamp. The prompt's header (~56px) and its pinned action row
+ * (~64px) have to fit inside whatever the frame ends up being, so the frame is
+ * never shortened past the point where one of them would be cut off.
+ */
 export const CONNECT_FRAME_MIN_HEIGHT = 220;
 export const CONNECT_FRAME_MAX_HEIGHT = 560;
+
+/** Gap kept between the modal and the top/bottom edges of the viewport. */
+export const CONNECT_FRAME_VIEWPORT_GUTTER = 48;
 
 /**
  * A hostile page cannot reach into the iframe, but it can resize the viewport.
  * Clamping keeps the modal on screen and stops a bogus height from turning the
  * overlay into a full-page element that hides the rest of the browser UI.
+ *
+ * Both bounds are load-bearing. The ceiling can leave the frame shorter than
+ * the card inside it; that is safe only because the prompt document scrolls and
+ * pins its action row, so Connect and Cancel stay on screen at any frame
+ * height at or above the floor. Callers must re-run this whenever the viewport
+ * changes, not only when a new height is reported.
  */
 export function clampFrameHeight(height: number, viewportHeight: number): number {
   if (!Number.isFinite(height)) return CONNECT_FRAME_MIN_HEIGHT;
+  const available = Number.isFinite(viewportHeight)
+    ? Math.round(viewportHeight) - CONNECT_FRAME_VIEWPORT_GUTTER
+    : CONNECT_FRAME_MAX_HEIGHT;
   const ceiling = Math.max(
     CONNECT_FRAME_MIN_HEIGHT,
-    Math.min(CONNECT_FRAME_MAX_HEIGHT, Math.round(viewportHeight) - 48),
+    Math.min(CONNECT_FRAME_MAX_HEIGHT, available),
   );
   return Math.min(ceiling, Math.max(CONNECT_FRAME_MIN_HEIGHT, Math.round(height)));
 }

@@ -12,6 +12,7 @@ import {
   IconGlobe,
   IconGovernance,
   IconLock,
+  IconNft,
   IconSettings,
   IconShield,
 } from "../screens/icons";
@@ -95,6 +96,11 @@ export function MoreDrawer({
       route: "bridge",
       label: "Bridge",
       icon: <IconBridge width={16} height={16} />,
+    },
+    {
+      route: "nft",
+      label: "NFTs",
+      icon: <IconNft width={16} height={16} />,
     },
     {
       route: "governance",

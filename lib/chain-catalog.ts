@@ -16,6 +16,16 @@ export interface CatalogEntry {
   feeMinimalDenom: string;
   feeDecimals: number;
   gasPriceStep?: { low: number; average: number; high: number };
+  /**
+   * Registry capability flags, e.g. `["cosmwasm"]`.
+   *
+   * `undefined` means the registry row publishes no list (19 of 332 do not) and
+   * is deliberately different from `[]`. Nothing may read absence as support:
+   * `@zunialab/interchain`'s `supportsCosmWasm` returns false for `undefined`
+   * unless a caller knowingly opts in, and the NFT surface says which of the
+   * two it is rather than showing an empty collection list.
+   */
+  features?: readonly string[];
   /** Price-feed id; absent for most of the registry, which stays unpriced. */
   coinGeckoId?: string;
   rpc?: string;

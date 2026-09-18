@@ -61,10 +61,11 @@ export function ForgotPasswordScreen({
           have it written down before you continue.
         </p>
 
+        {/* No autofocus: removing the wallet is permanent without the recovery
+            phrase, and the two paragraphs above are where that is said. */}
         <Input
           label={`Type ${CONFIRM_WORD} to confirm`}
           value={confirm}
-          autoFocus
           spellCheck={false}
           onChange={(e) => setConfirm(e.target.value)}
           placeholder={CONFIRM_WORD}

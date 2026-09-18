@@ -10,6 +10,7 @@ import {
 } from "@zunialab/ui";
 import type { AddressBookEntry } from "../../lib/address-book";
 import { sendToBackground } from "../../lib/popup-client";
+import { hasLiveBalancePermission } from "../../lib/balances";
 import { useExtensionState } from "./hooks/useExtensionState";
 import { useChainAccounts } from "./hooks/useChainAccounts";
 import { useBalances } from "./hooks/useBalances";
@@ -33,11 +34,16 @@ import { EarnScreen } from "./screens/EarnScreen";
 import { SwapScreen } from "./screens/SwapScreen";
 import { ActivityScreen } from "./screens/ActivityScreen";
 import { ChainDetailScreen } from "./screens/ChainDetailScreen";
+import { TxDetailScreen } from "./screens/TxDetailScreen";
+import { AssetDetailScreen } from "./screens/AssetDetailScreen";
+import { ValidatorDetailScreen } from "./screens/ValidatorDetailScreen";
 import { SendScreen } from "./screens/SendScreen";
 import { ReceiveScreen } from "./screens/ReceiveScreen";
 import { NetworksScreen } from "./screens/NetworksScreen";
 import { AddChainScreen } from "./screens/AddChainScreen";
 import { BridgeScreen } from "./screens/BridgeScreen";
+import { NftScreen } from "./screens/NftScreen";
+import { NftDetailScreen } from "./screens/NftDetailScreen";
 import { GovernanceScreen } from "./screens/GovernanceScreen";
 import { NotificationsScreen } from "./screens/NotificationsScreen";
 import { AddressBookScreen } from "./screens/AddressBookScreen";
@@ -48,6 +54,7 @@ import { WalletsScreen } from "./screens/WalletsScreen";
 import { RevealPhraseScreen } from "./screens/RevealPhraseScreen";
 import { ConnectedSitesScreen } from "./screens/ConnectedSitesScreen";
 import { ApproveScreen } from "./screens/ApproveScreen";
+import type { ActivityItem, ValidatorInfo } from "../../lib/chain-queries";
 
 /** Routes reachable only once the wallet is unlocked. */
 const UNLOCKED_ROUTES: PopupRoute[] = [
@@ -56,11 +63,16 @@ const UNLOCKED_ROUTES: PopupRoute[] = [
   "swap",
   "activity",
   "chain",
+  "tx",
+  "asset",
+  "validator",
   "send",
   "receive",
   "networks",
   "add-chain",
   "bridge",
+  "nft",
+  "nft-token",
   "governance",
   "notifications",
   "address-book",
@@ -85,6 +97,9 @@ function initialRouteFromUrl(): PopupRoute | null {
 
 type ExtensionState = ReturnType<typeof useExtensionState>;
 
+/** Stable identity for the empty address book. */
+const NO_CONTACTS: AddressBookEntry[] = [];
+
 function AppBody({ state }: { state: ExtensionState }) {
   const { status, settings, approvals, grants, error, loading, refresh } =
     state;
@@ -93,7 +108,10 @@ function AppBody({ state }: { state: ExtensionState }) {
     return route ? { route } : null;
   });
   const [menuOpen, setMenuOpen] = useState(false);
-  const [contacts, setContacts] = useState<AddressBookEntry[]>([]);
+  const [contacts, setContacts] = useState<AddressBookEntry[]>(NO_CONTACTS);
+  const [selectedTx, setSelectedTx] = useState<ActivityItem | null>(null);
+  const [selectedValidator, setSelectedValidator] =
+    useState<ValidatorInfo | null>(null);
 
   const unlocked = Boolean(status?.unlocked);
   const {
@@ -101,7 +119,25 @@ function AppBody({ state }: { state: ExtensionState }) {
     chainIds,
     reload: reloadChains,
   } = useChainAccounts(unlocked, status?.activeAccountIndex ?? 0);
-  const liveReads = unlocked && Boolean(settings?.liveBalances);
+  const [hostGranted, setHostGranted] = useState(false);
+  const markHostGranted = useCallback(() => setHostGranted(true), []);
+  useEffect(() => {
+    // A locked popup never reads balances (`liveReads` below gates on
+    // `unlocked`), so there is nothing to clear here — the old
+    // `setHostGranted(false)` was a synchronous setState inside the effect that
+    // re-rendered every screen a second time on each lock and unlock. The check
+    // re-runs on unlock and writes the real answer, false included.
+    if (!unlocked) return;
+    let cancelled = false;
+    void hasLiveBalancePermission().then((granted) => {
+      if (!cancelled) setHostGranted(granted);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [unlocked, settings?.liveBalances]);
+  const liveReads =
+    unlocked && Boolean(settings?.liveBalances) && hostGranted;
   const {
     balances,
     loading: balancesLoading,
@@ -109,19 +145,27 @@ function AppBody({ state }: { state: ExtensionState }) {
   } = useBalances(chainIds, liveReads);
   const { prices, reload: reloadPrices } = usePrices(chainIds, liveReads);
 
-  const loadContacts = useCallback(async () => {
-    try {
-      setContacts(
-        await sendToBackground<AddressBookEntry[]>("LIST_ADDRESS_BOOK"),
-      );
-    } catch {
-      setContacts([]);
-    }
+  // Bumped by the screens that write the address book, so the list reloads
+  // without the effect below having to setState synchronously to trigger it.
+  const [contactsToken, setContactsToken] = useState(0);
+  const loadContacts = useCallback(() => {
+    setContactsToken((n) => n + 1);
   }, []);
 
   useEffect(() => {
-    if (unlocked) void loadContacts();
-  }, [unlocked, loadContacts]);
+    if (!unlocked) return;
+    let cancelled = false;
+    sendToBackground<AddressBookEntry[]>("LIST_ADDRESS_BOOK")
+      .then((rows) => {
+        if (!cancelled) setContacts(rows);
+      })
+      .catch(() => {
+        if (!cancelled) setContacts(NO_CONTACTS);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [unlocked, contactsToken]);
 
   const location: PopupLocation = useMemo(() => {
     if (override?.route === "create" || override?.route === "import") {
@@ -144,6 +188,43 @@ function AppBody({ state }: { state: ExtensionState }) {
   const go = useCallback((next: PopupRoute | null, chainId?: string) => {
     setOverride(next ? { route: next, chainId } : null);
   }, []);
+
+  const openTx = useCallback((item: ActivityItem) => {
+    setSelectedTx(item);
+    setOverride({
+      route: "tx",
+      chainId: item.chainId,
+      hash: item.hash,
+    });
+  }, []);
+
+  const openValidator = useCallback((validator: ValidatorInfo) => {
+    setSelectedValidator(validator);
+    setOverride({
+      route: "validator",
+      chainId: validator.chainId,
+      operatorAddress: validator.operatorAddress,
+    });
+  }, []);
+
+  const openAsset = useCallback((chainId: string) => {
+    setOverride({ route: "asset", chainId });
+  }, []);
+
+  // A CW721 token is identified by three things, so all three travel in the
+  // location: a token id is unique only inside its contract, and a contract
+  // address is only meaningful on its own chain.
+  const openNftToken = useCallback(
+    (input: { chainId: string; collectionAddress: string; tokenId: string }) => {
+      setOverride({
+        route: "nft-token",
+        chainId: input.chainId,
+        collectionAddress: input.collectionAddress,
+        tokenId: input.tokenId,
+      });
+    },
+    [],
+  );
 
   const back = useCallback(() => {
     const parent = PARENT_ROUTE[route] ?? "home";
@@ -243,12 +324,15 @@ function AppBody({ state }: { state: ExtensionState }) {
               balances={balances}
               prices={prices}
               balancesLoading={balancesLoading}
+              hostGranted={hostGranted}
+              onHostGranted={markHostGranted}
               onReloadBalances={() => {
                 void reloadBalances(true);
                 void reloadPrices(true);
               }}
               onNavigate={(next) => go(next)}
-              onOpenChain={(chainId) => go("chain", chainId)}
+              onOpenAsset={openAsset}
+              onOpenTx={openTx}
               onOpenMenu={() => setMenuOpen(true)}
               onRefresh={() => void refresh()}
             />,
@@ -262,6 +346,7 @@ function AppBody({ state }: { state: ExtensionState }) {
               balances={balances}
               initialChainId={location.chainId}
               onOpenChain={(chainId) => go("chain", chainId)}
+              onOpenValidator={openValidator}
             />,
           )
         : null}
@@ -280,10 +365,43 @@ function AppBody({ state }: { state: ExtensionState }) {
         ? shell(
             <ActivityScreen
               chains={chains}
-              onOpenChain={(chainId) => go("chain", chainId)}
+              onOpenTx={openTx}
             />,
           )
         : null}
+
+      {route === "tx" && selectedTx ? (
+        <TxDetailScreen item={selectedTx} onBack={back} />
+      ) : null}
+
+      {route === "asset" ? (
+        selectedChain ? (
+          <AssetDetailScreen
+            chain={selectedChain}
+            balance={balances[selectedChain.chainId]}
+            price={prices[selectedChain.chainId]}
+            onBack={back}
+            onNavigate={(next, chainId) => go(next, chainId)}
+          />
+        ) : (
+          <ScreenScaffold title="Asset" onBack={back}>
+            <div className="pt-6">
+              <EmptyState
+                title="Asset unavailable"
+                description="This chain is no longer enabled."
+              />
+            </div>
+          </ScreenScaffold>
+        )
+      ) : null}
+
+      {route === "validator" && selectedValidator ? (
+        <ValidatorDetailScreen
+          validator={selectedValidator}
+          onBack={back}
+          onNavigate={(next, chainId) => go(next, chainId)}
+        />
+      ) : null}
 
       {route === "chain" ? (
         selectedChain ? (
@@ -366,8 +484,39 @@ function AppBody({ state }: { state: ExtensionState }) {
         />
       ) : null}
 
+      {route === "nft" ? (
+        <NftScreen
+          chains={chains}
+          initialChainId={location.chainId}
+          onBack={back}
+          onOpenToken={openNftToken}
+          onNavigate={(next) => go(next)}
+        />
+      ) : null}
+
+      {route === "nft-token" &&
+      location.chainId &&
+      location.collectionAddress &&
+      location.tokenId ? (
+        <NftDetailScreen
+          chainId={location.chainId}
+          collectionAddress={location.collectionAddress}
+          tokenId={location.tokenId}
+          chains={chains}
+          contacts={contacts}
+          // Back goes to the list on the same chain rather than to the list's
+          // default chain, which is where the user actually came from.
+          onBack={() => go("nft", location.chainId)}
+        />
+      ) : null}
+
       {route === "bridge" ? (
-        <BridgeScreen chains={chains} balances={balances} onBack={back} />
+        <BridgeScreen
+          chains={chains}
+          balances={balances}
+          onBack={back}
+          onNavigate={(next, chainId) => go(next, chainId)}
+        />
       ) : null}
 
       {route === "governance" ? (
@@ -388,7 +537,7 @@ function AppBody({ state }: { state: ExtensionState }) {
         <AddressBookScreen
           contacts={contacts}
           onBack={back}
-          onChanged={() => void loadContacts()}
+          onChanged={loadContacts}
         />
       ) : null}
 

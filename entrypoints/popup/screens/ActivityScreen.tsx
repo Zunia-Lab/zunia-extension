@@ -66,7 +66,7 @@ function Row({
 }: {
   item: ActivityItem;
   hidden: boolean;
-  onOpen: (chainId: string) => void;
+  onOpen: (item: ActivityItem) => void;
 }) {
   const presentation = activityPresentation(item.kind, item.success);
   const amount = item.amount
@@ -83,7 +83,7 @@ function Row({
   return (
     <button
       type="button"
-      onClick={() => onOpen(item.chainId)}
+      onClick={() => onOpen(item)}
       className={cn(
         "flex w-full items-center gap-2.5 rounded-[12px] px-2 py-2.5 text-left",
         "transition-colors duration-[var(--z-duration-base)] hover:bg-[var(--z-state-hover)]",
@@ -137,10 +137,10 @@ function Row({
 /** Recent transactions across every enabled chain. */
 export function ActivityScreen({
   chains,
-  onOpenChain,
+  onOpenTx,
 }: {
   chains: ChainAccountView[];
-  onOpenChain: (chainId: string) => void;
+  onOpenTx: (item: ActivityItem) => void;
 }) {
   const { settings, hidden } = usePrefs();
   const live = settings.liveBalances;
@@ -226,7 +226,7 @@ export function ActivityScreen({
                 <ul className="-mx-1 mt-1 flex flex-col">
                   {items.map((item) => (
                     <li key={`${item.chainId}:${item.hash}`}>
-                      <Row item={item} hidden={hidden} onOpen={onOpenChain} />
+                      <Row item={item} hidden={hidden} onOpen={onOpenTx} />
                     </li>
                   ))}
                 </ul>

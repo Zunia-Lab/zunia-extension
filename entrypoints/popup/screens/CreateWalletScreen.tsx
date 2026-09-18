@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Button,
   Callout,
@@ -21,6 +21,12 @@ import { IconCheck, IconCopy, IconEye, IconEyeOff } from "./icons";
 
 type Step = "phrase" | "verify" | "password" | "networks";
 type WordCount = 12 | 24;
+
+/** Result of the one background call this screen makes before the user acts. */
+type PhraseState =
+  | { status: "generating" }
+  | { status: "ready"; mnemonic: string }
+  | { status: "failed"; message: string };
 
 const STEPS: Step[] = ["phrase", "verify", "password", "networks"];
 const STEP_LABELS: Record<Step, string> = {
@@ -84,7 +90,7 @@ export function CreateWalletScreen({
 }) {
   const [step, setStep] = useState<Step>("phrase");
   const [wordCount, setWordCount] = useState<WordCount>(12);
-  const [mnemonic, setMnemonic] = useState("");
+  const [phrase, setPhrase] = useState<PhraseState>({ status: "generating" });
   const [revealed, setRevealed] = useState(false);
   const [copied, setCopied] = useState(false);
   const [verifyIdx, setVerifyIdx] = useState<number[]>([]);
@@ -98,34 +104,64 @@ export function CreateWalletScreen({
   );
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const walletNameRef = useRef<HTMLInputElement>(null);
+
+  // The verify step is advanced by clicking a word tile, and that tile unmounts
+  // with the step: by the time this step renders, focus has fallen back to
+  // <body>. Placed explicitly rather than with autoFocus, because this is a step
+  // transition and not a page load; the field is labelled "Wallet name", so a
+  // screen reader announces where it has been put.
+  useEffect(() => {
+    if (step === "password") walletNameRef.current?.focus();
+  }, [step]);
+
+  // Generation state as one value rather than a mnemonic plus a spinner flag:
+  // the effect below then only ever writes the result, and "a phrase is being
+  // generated" is derived. Previously the effect reset five pieces of state
+  // synchronously on entry, which re-rendered the whole wizard a second time on
+  // mount and on every 12 <-> 24 switch.
+  const generating = phrase.status === "generating";
+  const mnemonic = phrase.status === "ready" ? phrase.mnemonic : "";
 
   const words = useMemo(
     () => (mnemonic ? mnemonic.split(/\s+/).filter(Boolean) : []),
     [mnemonic],
   );
 
-  const generate = useCallback(async (count: WordCount) => {
-    setError(null);
-    setBusy(true);
+  useEffect(() => {
+    let cancelled = false;
+    sendToBackground<{ mnemonic: string }>("GENERATE_MNEMONIC", {
+      wordCount,
+    })
+      .then((result) => {
+        if (!cancelled)
+          setPhrase({ status: "ready", mnemonic: result.mnemonic });
+      })
+      .catch((err: unknown) => {
+        if (!cancelled)
+          setPhrase({
+            status: "failed",
+            message: err instanceof Error ? err.message : String(err),
+          });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [wordCount]);
+
+  /**
+   * Switching word count throws the current phrase away. The reset happens here
+   * — in the handler that causes it — rather than in the effect, so the reveal
+   * and copy acknowledgements can never outlive the phrase they were given for.
+   */
+  function chooseWordCount(next: WordCount) {
+    if (next === wordCount) return;
+    setPhrase({ status: "generating" });
     setRevealed(false);
     setCopied(false);
-    setMnemonic("");
-    try {
-      const result = await sendToBackground<{ mnemonic: string }>(
-        "GENERATE_MNEMONIC",
-        { wordCount: count },
-      );
-      setMnemonic(result.mnemonic);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    void generate(wordCount);
-  }, [wordCount, generate]);
+    setError(null);
+    setWordCount(next);
+  }
 
   useEffect(() => {
     onStepChange?.(STEPS.indexOf(step));
@@ -243,7 +279,7 @@ export function CreateWalletScreen({
       <StepActions
         onBack={goBack}
         primaryLabel="Continue"
-        primaryDisabled={busy || !mnemonic || (!revealed && !copied)}
+        primaryDisabled={!mnemonic || (!revealed && !copied)}
         onPrimary={handlePhraseContinue}
       />
     ) : step === "verify" ? (
@@ -286,7 +322,7 @@ export function CreateWalletScreen({
             <Segmented
               className="relative w-full min-w-0"
               value={String(wordCount)}
-              onChange={(v) => setWordCount(Number(v) as WordCount)}
+              onChange={(v) => chooseWordCount(Number(v) as WordCount)}
               options={[
                 { value: "12", label: "12 words" },
                 { value: "24", label: "24 words" },
@@ -300,7 +336,7 @@ export function CreateWalletScreen({
                 variant="secondary"
                 size="sm"
                 className="flex-1"
-                disabled={!mnemonic || busy}
+                disabled={!mnemonic}
                 onClick={() => setRevealed((r) => !r)}
               >
                 {revealed ? <IconEyeOff /> : <IconEye />}
@@ -310,7 +346,7 @@ export function CreateWalletScreen({
                 variant="secondary"
                 size="sm"
                 className="flex-1"
-                disabled={!mnemonic || busy}
+                disabled={!mnemonic}
                 onClick={() => void handleCopy()}
               >
                 {copied ? <IconCheck /> : <IconCopy />}
@@ -326,7 +362,11 @@ export function CreateWalletScreen({
               />
             ) : (
               <p className="relative text-[11.5px] text-fg-dim">
-                {busy ? "Generating…" : "Waiting for phrase…"}
+                {generating
+                  ? "Generating…"
+                  : phrase.status === "failed"
+                    ? `Could not generate a recovery phrase — ${phrase.message}. Go back and try again.`
+                    : "Waiting for phrase…"}
               </p>
             )}
           </>
@@ -359,9 +399,9 @@ export function CreateWalletScreen({
             />
             <div className="relative flex flex-col gap-2.5">
               <Input
+                ref={walletNameRef}
                 label="Wallet name"
                 placeholder="Main"
-                autoFocus
                 maxLength={32}
                 value={walletName}
                 onChange={(e) => setWalletName(e.target.value)}

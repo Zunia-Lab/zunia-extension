@@ -1,6 +1,7 @@
 import { SESSION_CONFIG } from "../config/session";
 import { STORAGE_KEYS } from "./storage-keys";
 import { chainJsonFor } from "./chains";
+import { hydrateCustomChains } from "./custom-chains";
 import { loadKernel } from "./kernel";
 import { clearApprovals } from "./approvals";
 
@@ -271,13 +272,28 @@ export async function getChainAccounts(
 ): Promise<ChainAccount[]> {
   const phrase = await getSessionMnemonic();
   if (!phrase) throw new Error("Wallet is locked");
+  await hydrateCustomChains().catch(() => []);
   const kernel = await loadKernel();
   const index = await getActiveAccountIndex();
-  return chainIds.map((chainId) => ({
-    chainId,
-    address: kernel.deriveAddress(phrase, "", chainJsonFor(chainId), index)
-      .bech32Address,
-  }));
+  // Skip chains that cannot derive (bad catalog row, unsupported scheme) so
+  // one broken network does not blank the whole home list after Manage Networks.
+  const out: ChainAccount[] = [];
+  for (const chainId of chainIds) {
+    try {
+      out.push({
+        chainId,
+        address: kernel.deriveAddress(
+          phrase,
+          "",
+          chainJsonFor(chainId),
+          index,
+        ).bech32Address,
+      });
+    } catch (err) {
+      console.warn(`[zunia] skip derive for ${chainId}`, err);
+    }
+  }
+  return out;
 }
 
 /** Re-open the sealed envelope. Always gated by the password prompt. */

@@ -31,7 +31,6 @@ export default defineUnlistedScript(() => {
   }
 
   let port: MessagePort | null = null;
-  let portReady: Promise<void>;
   const pending = new Map<
     string,
     { resolve: (v: unknown) => void; reject: (e: Error) => void }
@@ -50,7 +49,7 @@ export default defineUnlistedScript(() => {
     }
   }
 
-  portReady = new Promise<void>((resolve, reject) => {
+  const portReady = new Promise<void>((resolve, reject) => {
     const timeout = window.setTimeout(() => {
       reject(new Error("Zunia provider handshake timed out"));
     }, 5_000);
@@ -175,6 +174,13 @@ export default defineUnlistedScript(() => {
       request("signAmino", [chainId, signer, signDoc]),
     signDirect: async (chainId, signer, signDoc) =>
       request("signDirect", [chainId, signer, signDoc]),
+    signArbitrary: async (chainId, signer, data) =>
+      request("signArbitrary", [chainId, signer, data]),
+    verifyArbitrary: async (...args: unknown[]) =>
+      (await request("verifyArbitrary", args)) as boolean,
+    disable: async (chainIds?) => {
+      await request("disable", chainIds === undefined ? [] : [chainIds]);
+    },
     sendTx: async (chainId, tx, mode) =>
       request("sendTx", [chainId, tx, mode]),
     experimentalSuggestChain: async (chainInfo) => {

@@ -85,11 +85,13 @@ export function RevealPhraseScreen({ onBack }: { onBack: () => void }) {
           <MnemonicGrid words={phrase.split(" ")} revealed />
         ) : (
           <>
+            {/* No autofocus: the callout above this field is the warning that
+                these words are the wallet, and jumping a screen reader straight
+                into the password box is exactly how it gets skipped. */}
             <PasswordInput
               label="Password"
               placeholder="Password"
               value={password}
-              autoFocus
               onChange={(e) => setPassword(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && password) void reveal();

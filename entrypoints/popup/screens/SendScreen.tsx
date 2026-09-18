@@ -1,25 +1,44 @@
-import { useEffect, useMemo, useState } from "react";
+/**
+ * Send, and cross-send.
+ *
+ * Same-chain send is a `MsgSend` on the wallet's long-standing amino path.
+ * Cross-send is IBC, and it is planned by `@zunialab/interchain`: the engine
+ * decides whether a wrapped token unwinds along its own trace or wraps again,
+ * finds a path when no direct channel exists and composes the
+ * packet-forward-middleware memo for it, and reports which channels anyone has
+ * actually verified. The hand-rolled channel discovery this screen used to call
+ * (`lib/ibc-channels.ts`) is gone.
+ *
+ * The user can override the channel on any hop. Discovery fails on chains with
+ * slow or incomplete LCDs, and a user who knows the channel must still be able
+ * to proceed — with the fact that nobody checked it stated, not hidden.
+ */
+
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Avatar,
   Button,
   Callout,
+  FeeSummary,
   Input,
   KeyValueRow,
+  PacketTracker,
   Pill,
+  RoutePreview,
   ScreenScaffold,
   Segmented,
-  Spinner,
+  SectionLabel,
+  TransferSent,
   cn,
   focusRing,
   truncateAddress,
 } from "@zunialab/ui";
-import type { ChainBalance } from "../../../lib/balances";
+import type { BuiltMsg } from "@zunialab/interchain";
+
+import type { ChainBalance, TokenBalance } from "../../../lib/balances";
 import type { AddressBookEntry } from "../../../lib/address-book";
-import type {
-  IbcChannelCheck,
-  IbcChannelOption,
-} from "../../../lib/ibc-channels";
-import { normalizeChannelId } from "../../../lib/ibc-channels";
+import { explorerTxUrl } from "../../../config/interchain";
+import { estimateFee, msgSend } from "../../../lib/amino-tx";
 import {
   formatUnits,
   formatUnitsExact,
@@ -27,27 +46,62 @@ import {
   prefixOf,
 } from "../../../lib/format";
 import { sendToBackground } from "../../../lib/popup-client";
+import {
+  buildTransferMsgFromPlan,
+  planTransfer,
+  type ManualChannel,
+  type RoutePlanView,
+  type TransferPlanResult,
+} from "../../../lib/route-plan";
+import {
+  removePendingTransfer,
+  savePendingTransfer,
+  type PendingTransfer,
+} from "../../../lib/pending-transfers";
+import type { TxPreview } from "../../../lib/tx-kernel";
 import type { ChainAccountView } from "../hooks/useChainAccounts";
 import { usePrefs } from "../state/Prefs";
-import {
-  OverlayMenu,
-  OverlayMenuItem,
-} from "../components/OverlayMenu";
+import { OverlayMenu, OverlayMenuItem } from "../components/OverlayMenu";
 import {
   AddressBookPicker,
   AddressFieldActions,
   QrScanOverlay,
 } from "../components/AddressFieldExtras";
+import {
+  DisabledReason,
+  HopChannelList,
+  ResumeTrackingBanner,
+  TruncatedValue,
+  toBaseUnits,
+  useKernelSigning,
+  usePendingTransfers,
+  useResolveAddresses,
+  useRouteTracking,
+} from "./interchain-ui";
 import { IconChevronDown, IconSend } from "./icons";
 
 const PERCENTS = [25, 50, 75, 100] as const;
 type SendMode = "send" | "cross";
+type SendPhase = "form" | "confirm" | "sent";
 
-function toBaseUnits(input: string, decimals: number): bigint | null {
-  if (!/^\d*\.?\d*$/.test(input) || input === "" || input === ".") return null;
-  const [whole = "0", fraction = ""] = input.split(".");
-  if (fraction.length > decimals) return null;
-  return BigInt(whole + fraction.padEnd(decimals, "0"));
+/** The chain's own token, so cross-send has something to select before balances load. */
+function nativeToken(chain: ChainAccountView, balance?: ChainBalance): TokenBalance {
+  return {
+    denom: chain.entry.coinMinimalDenom,
+    amount: balance?.available ?? "0",
+    kind: "native",
+    symbol: chain.entry.coinDenom,
+    displayName: chain.entry.coinDenom,
+    decimals: chain.entry.coinDecimals,
+    ...(chain.iconUrl ? { iconUrl: chain.iconUrl } : {}),
+  };
+}
+
+/** Every token held on a chain, its own first. */
+function tokensOn(chain: ChainAccountView, balance?: ChainBalance): TokenBalance[] {
+  const native = nativeToken(chain, balance);
+  const rest = (balance?.tokens ?? []).filter((token) => token.denom !== native.denom);
+  return [native, ...rest];
 }
 
 function ChainOverlayPicker({
@@ -76,6 +130,8 @@ function ChainOverlayPicker({
       <div className="relative mt-1.5">
         <button
           type="button"
+          aria-haspopup="listbox"
+          aria-expanded={open}
           onClick={() => setOpen((v) => !v)}
           className={cn(
             "flex w-full items-center gap-2.5 rounded-[12px] border border-[var(--z-line)] px-3 py-2.5 text-left",
@@ -98,9 +154,7 @@ function ChainOverlayPicker({
           </span>
           {balance ? (
             <span className="shrink-0 font-mono text-[10px] text-fg-dim">
-              {hidden
-                ? "••••"
-                : `${formatUnits(balance.available, decimals)} free`}
+              {hidden ? "••••" : `${formatUnits(balance.available, decimals)} free`}
             </span>
           ) : null}
           <IconChevronDown
@@ -122,11 +176,7 @@ function ChainOverlayPicker({
                 setOpen(false);
               }}
             >
-              <Avatar
-                src={option.iconUrl}
-                fallback={option.entry.chainName}
-                size={20}
-              />
+              <Avatar src={option.iconUrl} fallback={option.entry.chainName} size={20} />
               <span className="min-w-0 flex-1 truncate text-[11.5px] text-fg">
                 {option.entry.chainName}
               </span>
@@ -141,121 +191,68 @@ function ChainOverlayPicker({
   );
 }
 
-function ChannelPanel({
-  sourceChainId,
-  destChainId,
-  channelId,
-  onChannelId,
-  options,
-  loading,
-  check,
+/** Which token on the source chain is being moved. Cross-send only. */
+function TokenPicker({
+  tokens,
+  denom,
+  hidden,
+  onSelect,
 }: {
-  sourceChainId: string;
-  destChainId: string;
-  channelId: string;
-  onChannelId: (id: string) => void;
-  options: IbcChannelOption[];
-  loading: boolean;
-  check: IbcChannelCheck | null;
+  tokens: readonly TokenBalance[];
+  denom: string;
+  hidden: boolean;
+  onSelect: (denom: string) => void;
 }) {
-  const [pickerOpen, setPickerOpen] = useState(false);
-  const selected = options.find((o) => o.channelId === channelId);
-
+  const [open, setOpen] = useState(false);
+  const selected = tokens.find((token) => token.denom === denom) ?? tokens[0];
+  if (tokens.length <= 1) return null;
   return (
-    <section className="rounded-[13px] border border-[var(--z-line)] px-3 py-3">
-      <div className="flex items-center justify-between gap-2">
-        <p className="font-mono text-[9px] uppercase tracking-[0.16em] text-fg-dim">
-          IBC channel
-        </p>
-        {loading ? (
-          <span className="flex items-center gap-1.5 font-mono text-[9px] text-fg-dim">
-            <Spinner className="size-3" /> Finding…
-          </span>
-        ) : options.length > 0 ? (
-          <span className="font-mono text-[9px] text-fg-dim">
-            {options.length} open
-          </span>
-        ) : null}
-      </div>
-
-      {options.length > 1 ? (
-        <div className="relative mt-2">
-          <button
-            type="button"
-            onClick={() => setPickerOpen((v) => !v)}
-            className={cn(
-              "flex w-full items-center justify-between gap-2 rounded-[10px] border border-[var(--z-line)] px-2.5 py-2 text-left",
-              "hover:bg-[var(--z-state-hover)]",
-              focusRing,
-            )}
-          >
-            <span className="font-mono text-[12px] text-fg">
-              {selected
-                ? `${selected.channelId} → ${selected.counterpartyChannelId || "…"}`
-                : "Choose a channel"}
+    <section>
+      <p className="font-mono text-[9px] uppercase tracking-[0.16em] text-fg-dim">Token</p>
+      <div className="relative mt-1.5">
+        <button
+          type="button"
+          aria-haspopup="listbox"
+          aria-expanded={open}
+          onClick={() => setOpen((v) => !v)}
+          className={cn(
+            "flex w-full items-center justify-between gap-2 rounded-[12px] border border-[var(--z-line)] px-3 py-2 text-left",
+            "transition-colors duration-[var(--z-duration-base)] hover:bg-[var(--z-state-hover)]",
+            focusRing,
+          )}
+        >
+          <span className="min-w-0">
+            <span className="block truncate text-[12px] text-fg">
+              {selected?.displayName ?? "—"}
             </span>
-            <IconChevronDown width={14} height={14} className="text-fg-dim" />
-          </button>
-          <OverlayMenu open={pickerOpen} onClose={() => setPickerOpen(false)}>
-            {options.map((option) => (
-              <OverlayMenuItem
-                key={option.channelId}
-                selected={option.channelId === channelId}
-                onSelect={() => {
-                  onChannelId(option.channelId);
-                  setPickerOpen(false);
-                }}
-              >
-                <span className="min-w-0 flex-1">
-                  <span className="block font-mono text-[12px] text-fg">
-                    {option.channelId}
-                  </span>
-                  <span className="block font-mono text-[9px] text-fg-dim">
-                    counterparty {option.counterpartyChannelId || "—"}
-                  </span>
-                </span>
-                <span className="font-mono text-[9px] uppercase text-[var(--z-success)]">
-                  open
-                </span>
-              </OverlayMenuItem>
-            ))}
-          </OverlayMenu>
-        </div>
-      ) : null}
-
-      {options.length === 1 && selected ? (
-        <p className="mt-2 font-mono text-[12px] text-fg">
-          {selected.channelId}
-          <span className="ml-2 text-[10px] text-[var(--z-success)]">open</span>
-        </p>
-      ) : null}
-
-      <Input
-        className="mt-2"
-        label={options.length > 0 ? "Or type a channel" : "Channel id"}
-        placeholder="channel-141"
-        value={channelId}
-        spellCheck={false}
-        autoComplete="off"
-        state={
-          !channelId
-            ? "default"
-            : check?.ok
-              ? "valid"
-              : check
-                ? "error"
-                : "default"
-        }
-        hint={
-          check?.message ??
-          (loading
-            ? undefined
-            : options.length === 0
-              ? `No open route found from ${sourceChainId} to ${destChainId}. Enter one manually.`
-              : undefined)
-        }
-        onChange={(e) => onChannelId(e.target.value)}
-      />
+            <span className="block truncate font-mono text-[9px] text-fg-dim">
+              {selected && selected.denom.startsWith("ibc/")
+                ? `${selected.denom.slice(0, 14)}…`
+                : (selected?.denom ?? "")}
+            </span>
+          </span>
+          <IconChevronDown width={16} height={16} className="shrink-0 text-fg-dim" />
+        </button>
+        <OverlayMenu open={open} onClose={() => setOpen(false)}>
+          {tokens.map((token) => (
+            <OverlayMenuItem
+              key={token.denom}
+              selected={token.denom === selected?.denom}
+              onSelect={() => {
+                onSelect(token.denom);
+                setOpen(false);
+              }}
+            >
+              <span className="min-w-0 flex-1 truncate text-[11.5px] text-fg">
+                {token.displayName}
+              </span>
+              <span className="font-mono text-[9px] tabular-nums text-fg-dim">
+                {hidden ? "••••" : formatUnits(token.amount, token.decimals)}
+              </span>
+            </OverlayMenuItem>
+          ))}
+        </OverlayMenu>
+      </div>
     </section>
   );
 }
@@ -273,102 +270,133 @@ export function SendScreen({
   contacts: AddressBookEntry[];
   onBack: () => void;
 }) {
-  const { hidden } = usePrefs();
+  const { hidden, settings } = usePrefs();
+  const liveReads = settings.liveBalances;
   const [mode, setMode] = useState<SendMode>("send");
-  const [chainId, setChainId] = useState(
-    initialChainId ?? chains[0]?.chainId ?? "",
-  );
+  const [chainId, setChainId] = useState(initialChainId ?? chains[0]?.chainId ?? "");
   const [destChainId, setDestChainId] = useState(
     () =>
-      chains.find((c) => c.chainId !== (initialChainId ?? chains[0]?.chainId))
-        ?.chainId ??
+      chains.find((c) => c.chainId !== (initialChainId ?? chains[0]?.chainId))?.chainId ??
       chains[1]?.chainId ??
       "",
   );
+  const [denom, setDenom] = useState("");
   const [recipient, setRecipient] = useState("");
   const [amount, setAmount] = useState("");
   const [memo, setMemo] = useState("");
-  const [channelId, setChannelId] = useState("");
-  const [channels, setChannels] = useState<IbcChannelOption[]>([]);
-  const [channelsLoading, setChannelsLoading] = useState(false);
-  const [channelCheck, setChannelCheck] = useState<IbcChannelCheck | null>(
-    null,
-  );
-  const [review, setReview] = useState(false);
+  const [manual, setManual] = useState<ManualChannel[]>([]);
+  // Bumped by the route panel's retry, so re-planning the same inputs actually
+  // re-plans rather than reusing the settled answer.
+  const [retryToken, setRetryToken] = useState(0);
+  const [phase, setPhase] = useState<SendPhase>("form");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [txHash, setTxHash] = useState<string | null>(null);
   const [picker, setPicker] = useState<"book" | "qr" | null>(null);
+  const [preview, setPreview] = useState<TxPreview | null>(null);
+  const [pendingMsgs, setPendingMsgs] = useState<readonly BuiltMsg[] | null>(null);
+  const [reviewedPlan, setReviewedPlan] = useState<RoutePlanView | null>(null);
+  /** The route being followed. Survives a popup close through storage. */
+  const [tracked, setTracked] = useState<PendingTransfer | null>(null);
+
+  const kernel = useKernelSigning();
+  const resolveAddresses = useResolveAddresses();
+  const pendingRoutes = usePendingTransfers();
 
   const chain = chains.find((c) => c.chainId === chainId) ?? chains[0];
   const destChain = chains.find((c) => c.chainId === destChainId);
   const balance = chain ? balances[chain.chainId] : undefined;
-  const decimals = chain?.entry.coinDecimals ?? 6;
-  const available = balance ? BigInt(balance.available) : null;
   const cross = mode === "cross";
 
-  useEffect(() => {
-    if (!cross || !chain || !destChainId || chain.chainId === destChainId) {
-      setChannels([]);
-      setChannelsLoading(false);
-      return;
-    }
-    let cancelled = false;
-    setChannelsLoading(true);
-    setChannelCheck(null);
-    void sendToBackground<IbcChannelOption[]>("FIND_IBC_CHANNELS", {
-      sourceChainId: chain.chainId,
-      destChainId,
-    })
-      .then((rows) => {
-        if (cancelled) return;
-        setChannels(rows);
-        if (rows.length === 1) setChannelId(rows[0]!.channelId);
-        else if (
-          rows.length > 1 &&
-          !rows.some((r) => r.channelId === normalizeChannelId(channelId))
-        ) {
-          setChannelId("");
-        }
-      })
-      .catch(() => {
-        if (!cancelled) setChannels([]);
-      })
-      .finally(() => {
-        if (!cancelled) setChannelsLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-    // Intentionally omit channelId so discovery is not re-run while typing.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cross, chain?.chainId, destChainId]);
+  const tokens = chain ? tokensOn(chain, balance) : [];
+  const token = tokens.find((row) => row.denom === denom) ?? tokens[0];
+  const decimals = token?.decimals ?? chain?.entry.coinDecimals ?? 6;
+  const available = token ? BigInt(token.amount) : null;
+  const amountUnits = toBaseUnits(amount, decimals);
+  const overBalance =
+    amountUnits !== null && available !== null && amountUnits > available;
+
+  /* ---------------------------------------------------------------- *
+   * Route planning (cross-send only)
+   * ---------------------------------------------------------------- */
+
+  const [settledPlan, setSettledPlan] = useState<{
+    key: string;
+    result: TransferPlanResult;
+  } | null>(null);
+
+  const recipientValid =
+    isBech32(recipient.trim()) &&
+    (!cross || prefixOf(recipient.trim()) === destChain?.entry.bech32Prefix);
+
+  const planKey =
+    cross &&
+    liveReads &&
+    chain?.address &&
+    destChain &&
+    token &&
+    recipientValid &&
+    amountUnits !== null &&
+    amountUnits > 0n
+      ? [
+          chain.chainId,
+          destChain.chainId,
+          token.denom,
+          amountUnits.toString(),
+          recipient.trim(),
+          manual.map((m) => `${m.fromChainId}>${m.toChainId}:${m.channelId}`).join("|"),
+          retryToken,
+        ].join("~")
+      : "";
 
   useEffect(() => {
-    if (!cross || !chain || !channelId.trim()) {
-      setChannelCheck(null);
-      return;
-    }
-    const normalized = normalizeChannelId(channelId);
-    const known = channels.find((c) => c.channelId === normalized);
-    if (known) {
-      setChannelCheck({
-        ok: true,
-        state: "open",
-        channelId: known.channelId,
-        portId: known.portId,
-        counterpartyChannelId: known.counterpartyChannelId,
-        counterpartyChainId: known.counterpartyChainId,
-        message: `Open · ${known.counterpartyChainId ?? destChainId}`,
+    if (!planKey) return;
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      void planTransfer({
+        sourceChainId: chain!.chainId,
+        destChainId: destChain!.chainId,
+        inputDenom: token!.denom,
+        amountBaseUnits: amountUnits!.toString(),
+        sender: chain!.address,
+        recipient: recipient.trim(),
+        manualChannels: manual,
+        resolveAddresses,
+        signal: controller.signal,
+      }).then((next) => {
+        if (!controller.signal.aborted) setSettledPlan({ key: planKey, result: next });
       });
-      return;
-    }
-    const handle = window.setTimeout(() => {
-      void sendToBackground<IbcChannelCheck>("VALIDATE_IBC_CHANNEL", {
-        sourceChainId: chain.chainId,
-        channelId: normalized,
-        destChainId,
-      }).then(setChannelCheck);
-    }, 400);
-    return () => window.clearTimeout(handle);
-  }, [cross, chain, channelId, channels, destChainId]);
+    }, 450);
+    return () => {
+      controller.abort();
+      window.clearTimeout(timer);
+    };
+    // planKey folds in every input the plan depends on.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [planKey]);
+
+  // Derived, so an answer for a recipient or amount the user has since edited
+  // is never rendered as the current route.
+  const result = settledPlan?.key === planKey ? settledPlan.result : null;
+  const planning = Boolean(planKey) && settledPlan?.key !== planKey;
+  const plan = result?.best ?? null;
+
+  /* ---------------------------------------------------------------- *
+   * Same-chain fee (amino path, unchanged)
+   * ---------------------------------------------------------------- */
+
+  const localFee = useMemo(() => {
+    if (!chain || cross) return null;
+    return estimateFee({
+      gasLimit: 200_000,
+      gasPrice: chain.entry.gasPriceStep?.average ?? 0.025,
+      denom: chain.entry.feeMinimalDenom,
+    });
+  }, [chain, cross]);
+
+  /* ---------------------------------------------------------------- *
+   * Validation
+   * ---------------------------------------------------------------- */
 
   const expectedPrefix = cross
     ? destChain?.entry.bech32Prefix
@@ -381,12 +409,9 @@ export function SendScreen({
       return { tone: "error" as const, hint: "Not a valid bech32 address" };
     }
     if (expectedPrefix && prefixOf(value) !== expectedPrefix) {
-      return {
-        tone: "error" as const,
-        hint: `Expected a ${expectedPrefix}1… address`,
-      };
+      return { tone: "error" as const, hint: `Expected a ${expectedPrefix}1… address` };
     }
-    if (chain && value === chain.address) {
+    if (chain && value === chain.address && !cross) {
       return { tone: "error" as const, hint: "That is this wallet's address" };
     }
     const known = contacts.find((c) => c.address === value);
@@ -394,20 +419,53 @@ export function SendScreen({
       tone: "valid" as const,
       hint: known ? `Saved as ${known.label}` : "Valid address",
     };
-  }, [recipient, chain, contacts, expectedPrefix]);
+  }, [recipient, chain, contacts, expectedPrefix, cross]);
 
-  const amountUnits = toBaseUnits(amount, decimals);
-  const overBalance =
-    amountUnits !== null && available !== null && amountUnits > available;
-  const channelOk = !cross || Boolean(channelCheck?.ok);
+  const blockedReason = useMemo((): string | null => {
+    if (!chain) return "Enable at least one network first.";
+    if (cross && !liveReads) {
+      return "Cross-send plans the route from public endpoints. Turn on live balances in Settings → Preferences.";
+    }
+    if (cross && kernel.reason) return kernel.reason;
+    if (cross && !destChain) return "Pick a destination network.";
+    if (recipientState.tone !== "valid") return null;
+    if (!amount) return null;
+    if (amountUnits === null) return "That amount is not a number this chain can hold.";
+    if (amountUnits <= 0n) return "Enter an amount above zero.";
+    if (overBalance) return `More than the ${token?.symbol ?? "balance"} available.`;
+    if (!cross) return null;
+    if (planning) return null;
+    if (result?.error) return result.error;
+    if (!plan) {
+      return (
+        result?.warnings[0] ??
+        `No channel path from ${chain.entry.chainName} to ${destChain?.entry.chainName ?? "there"}. Add a channel by hand below.`
+      );
+    }
+    return plan.blockedReason;
+  }, [
+    chain,
+    cross,
+    liveReads,
+    kernel.reason,
+    destChain,
+    recipientState.tone,
+    amount,
+    amountUnits,
+    overBalance,
+    token,
+    planning,
+    result,
+    plan,
+  ]);
+
   const canReview =
-    Boolean(chain) &&
-    (!cross || Boolean(destChain)) &&
+    blockedReason === null &&
     recipientState.tone === "valid" &&
     amountUnits !== null &&
     amountUnits > 0n &&
     !overBalance &&
-    channelOk;
+    (!cross || Boolean(plan));
 
   function applyPercent(pct: number) {
     if (available === null) return;
@@ -415,12 +473,302 @@ export function SendScreen({
     setAmount(formatUnitsExact(units.toString(), decimals));
   }
 
+  /* ---------------------------------------------------------------- *
+   * Review and sign
+   * ---------------------------------------------------------------- */
+
+  const review = useCallback(async () => {
+    if (!chain || amountUnits === null) return;
+    setError(null);
+    if (!cross) {
+      setPhase("confirm");
+      return;
+    }
+    if (!plan) return;
+    setBusy(true);
+    try {
+      const msgs = [
+        buildTransferMsgFromPlan({
+          view: plan,
+          sender: chain.address,
+          amountBaseUnits: amountUnits.toString(),
+        }),
+      ];
+      const built = await sendToBackground<TxPreview>("BUILD_TX_PREVIEW", {
+        chainId: chain.chainId,
+        signerAddress: chain.address,
+        msgs,
+      });
+      setPendingMsgs(msgs);
+      // Captured here, not at signing: this is the plan the confirm screen
+      // describes, and it is the one tracking must follow afterwards.
+      setReviewedPlan(plan);
+      setPreview(built);
+      setPhase("confirm");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setBusy(false);
+    }
+  }, [chain, amountUnits, cross, plan]);
+
+  async function confirmAndBroadcast() {
+    if (!chain || amountUnits === null || !token) return;
+    setBusy(true);
+    setError(null);
+    try {
+      if (cross) {
+        if (!pendingMsgs || !preview) return;
+        const broadcastResult = await sendToBackground<{ txhash: string }>(
+          "SIGN_AND_BROADCAST_TX",
+          {
+            chainId: chain.chainId,
+            signerAddress: chain.address,
+            msgs: pendingMsgs,
+            fee: preview.fee,
+            accountNumber: preview.accountNumber,
+            sequence: preview.sequence,
+            expectSignBytesHash: preview.preview.signBytesHash,
+          },
+        );
+        if (reviewedPlan) {
+          const record: PendingTransfer = {
+            kind: "transfer",
+            txHash: broadcastResult.txhash,
+            chainId: chain.chainId,
+            plan: reviewedPlan.plan,
+            amountBaseUnits: amountUnits.toString(),
+            label: `${amount} ${token.symbol} → ${destChain?.entry.chainName ?? "?"}`,
+            startedAt: Date.now(),
+          };
+          // Persisted before the screen changes, so a popup that closes on the
+          // next frame does not lose the only view of where the funds are.
+          await savePendingTransfer(record);
+          pendingRoutes.reload();
+          setTracked(record);
+        }
+        setTxHash(broadcastResult.txhash);
+      } else {
+        const broadcastResult = await sendToBackground<{ txhash: string }>(
+          "SIGN_AND_BROADCAST",
+          {
+            chainId: chain.chainId,
+            signerAddress: chain.address,
+            msgs: [
+              msgSend({
+                fromAddress: chain.address,
+                toAddress: recipient.trim(),
+                amount: [{ denom: token.denom, amount: amountUnits.toString() }],
+              }),
+            ],
+            memo: memo || undefined,
+            fee: localFee,
+            gasLimit: 200_000,
+          },
+        );
+        setTxHash(broadcastResult.txhash);
+      }
+      setPhase("sent");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /* ---------------------------------------------------------------- *
+   * Tracking
+   * ---------------------------------------------------------------- */
+
+  const trackInput =
+    phase === "sent" && tracked
+      ? {
+          plan: tracked.plan,
+          sourceTxHash: tracked.txHash,
+          expectedAmount: tracked.amountBaseUnits,
+        }
+      : null;
+  const tracking = useRouteTracking(trackInput);
+
+  // A settled transfer has nothing left to act on, so stop offering to resume it.
+  const trackedHash = tracked?.txHash ?? null;
+  const finished = tracking.route?.settled === true;
+  useEffect(() => {
+    if (!trackedHash || !finished) return;
+    void removePendingTransfer(trackedHash);
+  }, [trackedHash, finished]);
+
   if (!chain) {
     return (
       <ScreenScaffold title="Send" onBack={onBack}>
         <Callout tone="warning" title="No networks enabled">
           Enable at least one network before sending.
         </Callout>
+      </ScreenScaffold>
+    );
+  }
+
+  if (phase === "sent" && txHash) {
+    if (cross && tracked) {
+      const route = tracking.route;
+      return (
+        <ScreenScaffold
+          title="Transfer in flight"
+          footer={
+            <Button className="w-full" variant="secondary" onClick={onBack}>
+              Done
+            </Button>
+          }
+        >
+          <div className="pt-1">
+            <PacketTracker
+              compact
+              hops={route?.hops ?? []}
+              sourceTxHash={tracked.txHash}
+              sourceChainId={tracked.chainId}
+              failure={route?.failure ?? null}
+              recoveryReady={false}
+              txUrl={explorerTxUrl}
+              loading={tracking.loading && !route}
+              error={tracking.error}
+              onRefresh={tracking.refresh}
+              lastUpdatedAt={route?.updatedAt ?? null}
+            />
+            <Callout
+              tone="neutral"
+              className="mt-3"
+              title="This keeps running without the popup"
+            >
+              The transfer proceeds on chain whether or not Zunia is open. Zunia
+              remembers this route for a day, so you can reopen this view from Send.
+            </Callout>
+          </div>
+        </ScreenScaffold>
+      );
+    }
+    return (
+      <ScreenScaffold title="Transfer sent" onBack={onBack}>
+        <TransferSent
+          hash={txHash}
+          steps={[
+            { label: "Signed", state: "done" },
+            { label: "Broadcast", state: "done" },
+            { label: "Included", state: "current" },
+          ]}
+          step={2}
+          total={3}
+          onDone={onBack}
+        />
+      </ScreenScaffold>
+    );
+  }
+
+  if (phase === "confirm") {
+    const memoInfo = preview?.packetMemo ?? null;
+    const feeCoin = cross ? preview?.fee.amount[0] : localFee?.amount[0];
+    const gas = cross ? preview?.fee.gas_limit : localFee?.gas;
+    return (
+      <ScreenScaffold
+        title="Confirm transfer"
+        onBack={() => {
+          setPhase("form");
+          setError(null);
+        }}
+        footer={
+          <div className="flex gap-2">
+            <Button
+              variant="secondary"
+              className="flex-1"
+              disabled={busy}
+              onClick={() => {
+                setPhase("form");
+                setError(null);
+              }}
+            >
+              Back
+            </Button>
+            <Button
+              className="flex-1"
+              disabled={busy}
+              onClick={() => void confirmAndBroadcast()}
+            >
+              {busy ? "Signing…" : "Sign and send"}
+            </Button>
+          </div>
+        }
+      >
+        <div className="flex flex-col gap-3 pt-1">
+          <section className="rounded-[13px] border border-[var(--z-line)] px-3 py-3">
+            <KeyValueRow
+              label="Amount"
+              value={`${amount} ${token?.symbol ?? chain.entry.coinDenom}`}
+            />
+            <KeyValueRow label="To" value={truncateAddress(recipient.trim(), 10, 8)} />
+            <KeyValueRow
+              label="Route"
+              value={
+                <TruncatedValue>
+                  {cross
+                    ? `IBC · ${plan?.hops.map((hop) => hop.channelId).filter(Boolean).join(" → ") || "?"}`
+                    : "Direct · MsgSend"}
+                </TruncatedValue>
+              }
+            />
+            {!cross && memo ? <KeyValueRow label="Memo" value={memo} /> : null}
+          </section>
+
+          {cross && memoInfo ? (
+            <section className="rounded-[13px] border border-[var(--z-line)] px-3 py-3">
+              <SectionLabel>What the memo will do</SectionLabel>
+              <p className="mt-1.5 text-[11.5px] leading-snug text-fg">
+                {memoInfo.summary}
+              </p>
+              {memoInfo.warnings.map((warning) => (
+                <p key={warning} className="mt-1.5 text-[10.5px] text-[var(--z-warning)]">
+                  {warning}
+                </p>
+              ))}
+            </section>
+          ) : null}
+
+          <FeeSummary
+            rows={[
+              {
+                label: "Network fee",
+                value: feeCoin
+                  ? `${formatUnits(feeCoin.amount, chain.entry.feeDecimals)} ${chain.entry.feeDenom}`
+                  : "—",
+              },
+              { label: "Gas", value: gas ?? "—" },
+              ...(cross && preview
+                ? [
+                    {
+                      label: "Sign bytes",
+                      value: `${preview.preview.signBytesHash.slice(0, 12)}…`,
+                    },
+                  ]
+                : []),
+            ]}
+          />
+
+          {cross && preview?.feeNote ? (
+            <Callout tone="warning" title="Fee is an estimate">
+              {preview.feeNote}
+            </Callout>
+          ) : null}
+
+          {error ? (
+            <Callout tone="danger" title="Could not broadcast">
+              {error}
+            </Callout>
+          ) : (
+            <Callout tone="info" title="Signed on this device">
+              {cross
+                ? `You pay gas only on ${chain.entry.chainName}, in ${chain.entry.feeDenom}. Relayers carry the packet the rest of the way.`
+                : "Approving signs with your unlocked keyring and posts the tx to this chain's public REST endpoint."}
+            </Callout>
+          )}
+        </div>
       </ScreenScaffold>
     );
   }
@@ -435,29 +783,45 @@ export function SendScreen({
         </span>
       }
       footer={
-        <div className="flex gap-2">
-          <Button variant="secondary" className="flex-1" onClick={onBack}>
-            Cancel
-          </Button>
-          <Button
-            className="flex-1"
-            disabled={!canReview}
-            onClick={() => setReview(true)}
-          >
-            Review
-          </Button>
+        <div>
+          <div className="flex gap-2">
+            <Button variant="secondary" className="flex-1" onClick={onBack}>
+              Cancel
+            </Button>
+            <Button
+              className="flex-1"
+              disabled={!canReview || busy}
+              onClick={() => void review()}
+            >
+              {busy ? "Preparing…" : "Review"}
+            </Button>
+          </div>
+          <DisabledReason reason={canReview ? null : blockedReason} />
         </div>
       }
     >
       <div className="flex flex-col gap-3.5 pt-1">
+        <ResumeTrackingBanner
+          rows={pendingRoutes.rows.filter((row) => row.kind === "transfer")}
+          onResume={(row) => {
+            setMode("cross");
+            setTracked(row);
+            setTxHash(row.txHash);
+            setError(null);
+            setPhase("sent");
+          }}
+          onDismiss={pendingRoutes.forget}
+        />
+
         <Segmented<SendMode>
           size="sm"
           className="w-full"
           value={mode}
           onChange={(next) => {
             setMode(next);
-            setReview(false);
+            setPhase("form");
             setRecipient("");
+            setManual([]);
           }}
           options={[
             { value: "send", label: "Send" },
@@ -475,13 +839,27 @@ export function SendScreen({
             setChainId(id);
             setRecipient("");
             setAmount("");
-            setChannelId("");
+            setDenom("");
+            setManual([]);
             if (id === destChainId) {
               const other = chains.find((c) => c.chainId !== id);
               if (other) setDestChainId(other.chainId);
             }
           }}
         />
+
+        {cross ? (
+          <TokenPicker
+            tokens={tokens}
+            denom={token?.denom ?? ""}
+            hidden={hidden}
+            onSelect={(next) => {
+              setDenom(next);
+              setAmount("");
+              setManual([]);
+            }}
+          />
+        ) : null}
 
         {cross ? (
           <ChainOverlayPicker
@@ -492,15 +870,13 @@ export function SendScreen({
             onSelect={(id) => {
               setDestChainId(id);
               setRecipient("");
-              setChannelId("");
+              setManual([]);
             }}
           />
         ) : null}
 
         <section>
-          <p className="font-mono text-[9px] uppercase tracking-[0.16em] text-fg-dim">
-            To
-          </p>
+          <p className="font-mono text-[9px] uppercase tracking-[0.16em] text-fg-dim">To</p>
           <Input
             className="mt-1.5"
             placeholder={`${expectedPrefix ?? "cosmos"}1…`}
@@ -546,13 +922,17 @@ export function SendScreen({
             <p className="font-mono text-[9.5px] text-fg-dim">
               {hidden
                 ? "••••"
-                : balance
-                  ? `${formatUnits(balance.available, decimals)} available`
+                : token
+                  ? `${formatUnits(token.amount, decimals)} available`
                   : "balance unknown"}
             </p>
           </div>
           <div className="mt-1.5 flex items-baseline gap-2">
+            <label className="sr-only" htmlFor="send-amount">
+              Amount
+            </label>
             <input
+              id="send-amount"
               inputMode="decimal"
               placeholder="0.00"
               value={amount}
@@ -563,7 +943,7 @@ export function SendScreen({
               )}
             />
             <span className="font-mono text-[11px] uppercase tracking-[0.08em] text-fg-dim">
-              {chain.entry.coinDenom}
+              {token?.symbol ?? chain.entry.coinDenom}
             </span>
           </div>
           <div className="mt-2.5 flex gap-1.5">
@@ -592,61 +972,120 @@ export function SendScreen({
         </section>
 
         {cross && destChain ? (
-          <ChannelPanel
-            sourceChainId={chain.chainId}
-            destChainId={destChain.chainId}
-            channelId={channelId}
-            onChannelId={setChannelId}
-            options={channels}
-            loading={channelsLoading}
-            check={channelCheck}
+          <RoutePreview
+            compact
+            title="Route"
+            hops={plan?.hops ?? []}
+            estimatedDurationSeconds={plan?.plan.estimatedDurationSeconds ?? null}
+            warnings={plan?.warnings ?? result?.warnings ?? []}
+            requiresPfm={plan?.plan.requiresPfm ?? false}
+            gasChainName={chain.entry.chainName}
+            loading={planning && !plan}
+            error={result?.error ?? null}
+            onRetry={() => setRetryToken((n) => n + 1)}
+            emptyTitle={liveReads ? "No route yet" : "Route planning is off"}
+            emptyDescription={
+              liveReads
+                ? "Enter a valid recipient and an amount, and Zunia will plan the hops."
+                : "Turn on live balances in Settings → Preferences so Zunia can read channels."
+            }
+            footer={
+              plan ? (
+                <HopChannelList
+                  hops={plan.hops}
+                  manual={manual}
+                  onPick={(channel) =>
+                    setManual((rows) => [
+                      ...rows.filter(
+                        (row) =>
+                          row.fromChainId !== channel.fromChainId ||
+                          row.toChainId !== channel.toChainId,
+                      ),
+                      channel,
+                    ])
+                  }
+                  onClear={(fromChainId, toChainId) =>
+                    setManual((rows) =>
+                      rows.filter(
+                        (row) =>
+                          row.fromChainId !== fromChainId || row.toChainId !== toChainId,
+                      ),
+                    )
+                  }
+                />
+              ) : null
+            }
           />
         ) : null}
 
-        <Input
-          label="Memo (optional)"
-          placeholder="Visible to everyone on chain"
-          value={memo}
-          maxLength={256}
-          onChange={(e) => setMemo(e.target.value)}
-        />
+        {/*
+          RoutePreview drops its footer in the empty state, and that is exactly
+          when the channel editor is needed: discovery failed and there is no
+          route to hang it off. The one leg a cross-send needs is known anyway.
+        */}
+        {cross && destChain && !plan ? (
+          <section>
+            <SectionLabel>Channel</SectionLabel>
+            <p className="mb-1.5 mt-1 text-[10.5px] leading-snug text-fg-muted">
+              Nothing has confirmed a path yet. Pick or type the channel and Zunia will
+              plan again.
+            </p>
+            <HopChannelList
+              hops={[
+                {
+                  index: 0,
+                  chainId: chain.chainId,
+                  chainName: chain.entry.chainName,
+                  counterpartyChainId: destChain.chainId,
+                  counterpartyChainName: destChain.entry.chainName,
+                  channelId: "",
+                  port: "transfer",
+                  kind: "transfer" as const,
+                },
+              ]}
+              manual={manual}
+              onPick={(channel) =>
+                setManual((rows) => [
+                  ...rows.filter(
+                    (row) =>
+                      row.fromChainId !== channel.fromChainId ||
+                      row.toChainId !== channel.toChainId,
+                  ),
+                  channel,
+                ])
+              }
+              onClear={(fromChainId, toChainId) =>
+                setManual((rows) =>
+                  rows.filter(
+                    (row) =>
+                      row.fromChainId !== fromChainId || row.toChainId !== toChainId,
+                  ),
+                )
+              }
+            />
+          </section>
+        ) : null}
 
-        <section className="flex flex-col gap-2 rounded-[13px] border border-[var(--z-line)] px-3 py-3">
+        {!cross ? (
+          <Input
+            label="Memo (optional)"
+            placeholder="Visible to everyone on chain"
+            value={memo}
+            maxLength={256}
+            onChange={(e) => setMemo(e.target.value)}
+          />
+        ) : null}
+
+        <section className="flex flex-col gap-1.5 rounded-[13px] border border-[var(--z-line)] px-3 py-3">
           <KeyValueRow label="From" value={chain.entry.chainId} />
           {cross && destChain ? (
             <KeyValueRow label="To" value={destChain.entry.chainId} />
           ) : null}
           <KeyValueRow
-            label="Route"
-            value={
-              cross
-                ? `IBC · ${normalizeChannelId(channelId) || "channel ?"}`
-                : "Direct · MsgSend"
-            }
-          />
-          <KeyValueRow
             label="Gas price"
             value={`${chain.entry.gasPriceStep?.average ?? 0.025} ${chain.entry.feeMinimalDenom}`}
           />
         </section>
-
-        {review ? (
-          <Callout tone="warning" title="Review looks good">
-            <span className="block">
-              {amount} {chain.entry.coinDenom} to{" "}
-              {truncateAddress(recipient, 10, 8)}
-              {cross && destChain
-                ? ` via ${normalizeChannelId(channelId)} → ${destChain.entry.chainId}`
-                : ` on ${chain.entry.chainId}`}
-              {memo ? ` · memo "${memo}"` : ""}.
-            </span>
-            <span className="mt-1.5 block">
-              Broadcasting is not wired to a node yet, so nothing has been sent.
-              Everything above is validated locally
-              {cross ? " and the channel was checked on-chain" : ""}.
-            </span>
-          </Callout>
-        ) : null}
 
         <p className="flex items-center justify-center gap-1.5 pb-1 font-mono text-[9px] uppercase tracking-[0.12em] text-fg-dim">
           <IconSend width={16} height={16} />
@@ -659,10 +1098,9 @@ export function SendScreen({
           </Pill>
         ) : null}
 
-        {!balance && cross ? (
-          <Callout tone="info" title="Live balances help here">
-            Cross-send finds open IBC channels from each chain&rsquo;s public
-            endpoint. Turn on live balances if discovery stays empty.
+        {error ? (
+          <Callout tone="danger" title="Could not prepare the transfer">
+            {error}
           </Callout>
         ) : null}
       </div>

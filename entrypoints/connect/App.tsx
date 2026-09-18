@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   Button,
   Callout,
@@ -30,6 +37,28 @@ import { APPROVAL_ID, INITIAL_THEME, parentTargetOrigin } from "./params";
  */
 function postToParent(message: ConnectOverlayMessage): void {
   window.parent.postMessage(message, parentTargetOrigin());
+}
+
+/** Accessible name of the dialog. Every state below renders a title with this id. */
+const MODAL_TITLE_ID = "zunia-connect-title";
+
+/**
+ * Tab stops inside the frame, in DOM order.
+ *
+ * `tabIndex >= 0` rather than a `:not([tabindex="-1"])` selector: the account
+ * rows are real buttons carrying a roving `tabindex="-1"`, and treating one of
+ * those as the last stop would wrap focus in the wrong place.
+ */
+function tabbableElements(root: HTMLElement): HTMLElement[] {
+  const candidates = root.querySelectorAll<HTMLElement>(
+    "a[href], button, input, select, textarea, [tabindex]",
+  );
+  return Array.from(candidates).filter(
+    (el) =>
+      el.tabIndex >= 0 &&
+      !el.hasAttribute("disabled") &&
+      el.getClientRects().length > 0,
+  );
 }
 
 function ModalCard({
@@ -87,7 +116,10 @@ function ModalHeader({
     <div className="flex items-center gap-[11px]">
       <BrandMark />
       <span className="min-w-0 flex-1">
-        <span className="block text-[15px] font-medium leading-tight tracking-[-0.02em] text-fg">
+        <span
+          id={MODAL_TITLE_ID}
+          className="block text-[15px] font-medium leading-tight tracking-[-0.02em] text-fg"
+        >
           Connect Zunia
         </span>
         {/*
@@ -108,19 +140,31 @@ function AccountRow({
   name,
   address,
   selected,
+  tabbable,
   onSelect,
+  onKeyDown,
 }: {
   name: string;
   address: string;
   selected: boolean;
+  tabbable: boolean;
   onSelect: () => void;
+  /**
+   * Arrow-key roving lives on the radio itself rather than on the radiogroup
+   * container. Same behaviour (the container only ever saw these events by
+   * bubbling from here), but the element carrying the handler is a real button,
+   * so the group does not need a tabindex it should not have.
+   */
+  onKeyDown: (event: React.KeyboardEvent<HTMLButtonElement>) => void;
 }) {
   return (
     <button
       type="button"
       role="radio"
       aria-checked={selected}
+      tabIndex={tabbable ? 0 : -1}
       onClick={onSelect}
+      onKeyDown={onKeyDown}
       className={cn(
         "flex w-full items-center gap-2.5 rounded-[13px] px-3 py-[11px] text-left",
         "transition-colors duration-[var(--z-duration-base)]",
@@ -176,20 +220,64 @@ function ConnectApproval({
   busy: boolean;
   error: string | null;
 }) {
-  const [selected, setSelected] = useState(activeIndex);
+  const [picked, setPicked] = useState<number | null>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const noAccountsId = useId();
 
-  useEffect(() => {
-    if (accounts.some((a) => a.index === selected)) return;
-    const fallback = accounts.find((a) => a.index === activeIndex) ?? accounts[0];
-    if (fallback) setSelected(fallback.index);
-  }, [accounts, activeIndex, selected]);
+  // Derived, never synced from an effect. The list can change under the prompt
+  // (the chain-scoped addresses resolve after the stored ones), and an effect
+  // that reconciles a stale pick leaves one committed render where `selected`
+  // still names an account the user is no longer being offered — which is the
+  // index the Connect button would have sent.
+  const selected =
+    picked !== null && accounts.some((a) => a.index === picked)
+      ? picked
+      : accounts.some((a) => a.index === activeIndex)
+        ? activeIndex
+        : (accounts[0]?.index ?? activeIndex);
 
   const chainNames = approval.chainIds.map(
     (id) => findCatalogEntry(id)?.chainName ?? id,
   );
 
+  // Position of the one row that is in the tab order. Falls back to the first
+  // row so the group is always reachable even when the list is empty.
+  const focusedPosition = Math.max(
+    0,
+    accounts.findIndex((account) => account.index === selected),
+  );
+
+  /**
+   * Radiogroup keyboard contract: one tab stop for the whole group, arrows
+   * move between rows. With a long list this is also what keeps Connect two
+   * Tab presses away instead of eleven.
+   */
+  const onRowKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>) => {
+    const step =
+      event.key === "ArrowDown" || event.key === "ArrowRight"
+        ? 1
+        : event.key === "ArrowUp" || event.key === "ArrowLeft"
+          ? -1
+          : 0;
+    if (step === 0 || accounts.length === 0) return;
+    event.preventDefault();
+
+    const next = (focusedPosition + step + accounts.length) % accounts.length;
+    const account = accounts[next];
+    if (!account) return;
+    setPicked(account.index);
+    // Bound to a name first: `expr\n  ?.querySelectorAll(...)\n  [next]` parses
+    // as a computed member access on the previous line, not a new statement.
+    const rows =
+      listRef.current?.querySelectorAll<HTMLButtonElement>('[role="radio"]');
+    // Also scrolls the row into view inside the bounded list.
+    rows?.[next]?.focus();
+  };
+
   return (
-    <ModalCard className="p-[22px]">
+    // Bottom padding moves to the action row, which owns it so that the row can
+    // sit flush with the frame edge once it pins.
+    <ModalCard className="px-[22px] pb-0 pt-[22px]">
       <ModalHeader origin={approval.origin} onClose={onReject} />
 
       <p className="mt-3.5 text-[12px] leading-relaxed text-fg-muted">
@@ -208,43 +296,92 @@ function ConnectApproval({
         ))}
       </div>
 
-      <div className="mt-4 flex flex-col gap-2" role="radiogroup" aria-label="Account">
-        {accounts.map((account) => (
-          <AccountRow
-            key={account.index}
-            name={account.name}
-            address={account.address}
-            selected={account.index === selected}
-            onSelect={() => setSelected(account.index)}
-          />
-        ))}
+      {/*
+        The list is the only part of the card allowed to grow with the number
+        of accounts. Everything the decision needs — the origin, the chains and
+        the two buttons — stays outside it, so a wallet with twenty accounts
+        prompts exactly like a wallet with two.
+      */}
+      <div
+        ref={listRef}
+        // -mx-px/px-px: the scroller clips both axes, and without a 1px gutter
+        // it would eat the rows' focus ring at the left and right edges.
+        className="-mx-px mt-4 flex max-h-[220px] flex-col gap-2 overflow-y-auto overscroll-contain px-px"
+        role="radiogroup"
+        aria-label="Account"
+      >
+        {accounts.length === 0 ? (
+          <p
+            id={noAccountsId}
+            className="rounded-[13px] bg-[var(--z-glass)] px-3 py-[11px] text-[12px] leading-relaxed text-fg-muted"
+          >
+            No account is available for this network yet, so there is nothing to
+            connect. Open Zunia from the toolbar to add one, then ask the site
+            to try again.
+          </p>
+        ) : (
+          accounts.map((account, position) => (
+            <AccountRow
+              key={account.index}
+              name={account.name}
+              address={account.address}
+              selected={account.index === selected}
+              tabbable={position === focusedPosition}
+              onSelect={() => setPicked(account.index)}
+              onKeyDown={onRowKeyDown}
+            />
+          ))
+        )}
       </div>
 
-      {error ? (
-        <div className="mt-3">
-          <Callout tone="danger">{error}</Callout>
-        </div>
-      ) : null}
+      {/*
+        Sticky, not fixed: at the common short-list size this sits where it
+        always did. It only pins when the parent has clamped the frame shorter
+        than the card, which is the case where these buttons used to be
+        unreachable and `enable()` could only be settled by rejecting.
 
-      <div className="mt-4 flex gap-2.5">
-        <Button
-          variant="secondary"
-          size="lg"
-          className="h-[42px] flex-1 text-[12.5px]"
-          disabled={busy}
-          onClick={onReject}
-        >
-          Cancel
-        </Button>
-        <Button
-          size="lg"
-          className="h-[42px] flex-1 text-[12.5px]"
-          loading={busy}
-          disabled={accounts.length === 0}
-          onClick={() => onApprove(selected)}
-        >
-          Connect
-        </Button>
+        The failure Callout lives inside the sticky region rather than above it.
+        On a clamped frame the card is already taller than the iframe, so an
+        error rendered outside this region is drawn entirely below the fold and
+        nothing scrolls it into view: the button just stops spinning and the
+        request looks like it silently did nothing.
+      */}
+      <div className="sticky bottom-0 mt-4 bg-[var(--z-surface-raised)] pb-[22px]">
+        {error ? (
+          <div className="mb-3">
+            <Callout tone="danger">{error}</Callout>
+          </div>
+        ) : null}
+        <div className="flex gap-2.5">
+          <Button
+            variant="secondary"
+            size="lg"
+            className="h-[42px] flex-1 text-[12.5px]"
+            disabled={busy}
+            onClick={onReject}
+          >
+            Cancel
+          </Button>
+          {/*
+            No `title` here: Button composes `disabled:pointer-events-none`, so a
+            disabled control never receives hover and the browser never renders
+            its tooltip. The reason is carried by the paragraph in the list
+            above, which is visible, and by aria-describedby, which reaches a
+            screen reader.
+          */}
+          <Button
+            size="lg"
+            className="h-[42px] flex-1 text-[12.5px]"
+            loading={busy}
+            disabled={accounts.length === 0}
+            aria-describedby={
+              accounts.length === 0 ? noAccountsId : undefined
+            }
+            onClick={() => onApprove(selected)}
+          >
+            Connect
+          </Button>
+        </div>
       </div>
     </ModalCard>
   );
@@ -310,8 +447,16 @@ function ConnectBody() {
     });
   }, []);
 
-  // Report the rendered height so the parent frame can size the iframe to the
-  // card instead of guessing.
+  /**
+   * Report the rendered height so the parent can size the iframe to the card
+   * instead of guessing.
+   *
+   * This is the card's own bounded height, not the height of every account the
+   * wallet holds: the list has its own scroller, so the number stays under the
+   * frame ceiling for any account count. The parent still clamps it against the
+   * viewport, and a frame clamped shorter than the card is handled here by the
+   * document scrolling with the action row pinned — never by clipping it.
+   */
   useEffect(() => {
     const node = rootRef.current;
     if (!node || finished) return;
@@ -357,12 +502,31 @@ function ConnectBody() {
     }));
   }, [accounts, status]);
 
+  /**
+   * One outcome per prompt. `busy` disables Cancel and Connect while a decision
+   * is in flight, but the header's close control is not disabled by it and
+   * Escape still reaches the frame — so a second reject could post "rejected"
+   * to the page on top of an "approved" that had already gone out. A ref rather
+   * than state, so both callbacks keep the identities their dependency arrays
+   * claim.
+   */
+  const settling = useRef(false);
+
+  // Read out of `status` here rather than inside the callback: with
+  // `status?.activeAccountIndex` written in the dependency array the compiler
+  // infers the whole of `status` as the real dependency, cannot reconcile that
+  // with the narrower one written by hand, and bails out of optimising the
+  // entire component.
+  const activeAccountIndex = status?.activeAccountIndex;
+
   const approve = useCallback(
     async (accountIndex: number) => {
+      if (settling.current) return;
+      settling.current = true;
       setBusy(true);
       setError(null);
       try {
-        if (accountIndex !== status?.activeAccountIndex) {
+        if (accountIndex !== activeAccountIndex) {
           await sendToBackground("SET_ACTIVE_ACCOUNT", { index: accountIndex });
         }
         await sendToBackground("RESOLVE_APPROVAL", {
@@ -371,14 +535,18 @@ function ConnectBody() {
         });
         finish("approved");
       } catch (err) {
+        // Nothing was settled, so let the user retry or cancel.
+        settling.current = false;
         setError(err instanceof Error ? err.message : String(err));
         setBusy(false);
       }
     },
-    [finish, status?.activeAccountIndex],
+    [finish, activeAccountIndex],
   );
 
   const reject = useCallback(async () => {
+    if (settling.current) return;
+    settling.current = true;
     setBusy(true);
     try {
       await sendToBackground("REJECT_APPROVAL", {
@@ -400,6 +568,49 @@ function ConnectBody() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [busy, reject]);
 
+  /**
+   * Move focus into the frame, then keep it there.
+   *
+   * `aria-modal` only silences the rest of *this* document, and this document
+   * is an iframe: the dApp page behind the scrim keeps every one of its own tab
+   * stops. Tabbing past the last control here would hand focus to the page,
+   * leaving a modal prompt open with the keyboard somewhere else entirely — and
+   * Escape would then reach the content script rather than this frame. The
+   * container takes the initial focus rather than a button, so nothing is one
+   * Enter away from being approved or rejected.
+   */
+  useEffect(() => {
+    const node = rootRef.current;
+    if (!node) return;
+
+    node.focus({ preventScroll: true });
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Tab") return;
+      const stops = tabbableElements(node);
+      const first = stops[0];
+      const last = stops[stops.length - 1];
+      if (!first || !last) {
+        event.preventDefault();
+        node.focus({ preventScroll: true });
+        return;
+      }
+      // -1 covers the container and the body, which is where focus sits after a
+      // click on the card itself; backwards from there also leaves the frame.
+      const at = stops.indexOf(document.activeElement as HTMLElement);
+      if (event.shiftKey && at <= 0) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && at === stops.length - 1) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
   let body: React.ReactNode;
 
   if (finished) {
@@ -408,7 +619,9 @@ function ConnectBody() {
     body = (
       <ModalCard className="items-center justify-center gap-2 p-[22px] py-10 text-fg-dim">
         <Spinner />
-        <span className="text-[12px]">Opening Zunia…</span>
+        <span id={MODAL_TITLE_ID} className="text-[12px]">
+          Opening Zunia…
+        </span>
       </ModalCard>
     );
   } else if (!status.hasWallet) {
@@ -424,6 +637,10 @@ function ConnectBody() {
     // Locked: the unlock form comes first, then the approval renders in place.
     body = (
       <ModalCard className="h-[430px]">
+        {/* UnlockScreen draws its own heading; the dialog still needs a name. */}
+        <h2 id={MODAL_TITLE_ID} className="sr-only">
+          Unlock Zunia to continue
+        </h2>
         <UnlockScreen
           autoLockMs={status.autoLockMs}
           onUnlocked={() => void refresh()}
@@ -460,7 +677,18 @@ function ConnectBody() {
     );
   }
 
-  return <div ref={rootRef}>{body}</div>;
+  return (
+    <div
+      ref={rootRef}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby={MODAL_TITLE_ID}
+      tabIndex={-1}
+      className="outline-none"
+    >
+      {body}
+    </div>
+  );
 }
 
 export default function ConnectApp() {

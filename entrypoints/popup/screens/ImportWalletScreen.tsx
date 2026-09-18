@@ -41,7 +41,10 @@ export function ImportWalletScreen({
   hideProgress?: boolean;
 }) {
   const [step, setStep] = useState<Step>("phrase");
-  const [wordCount, setWordCount] = useState<WordCount>(12);
+  // What the user picked with the 12 / 24 control. The effective count below
+  // follows the phrase they typed or pasted, so this only decides the case
+  // where the box holds fewer than 12 words and nothing can be inferred yet.
+  const [chosenWordCount, setChosenWordCount] = useState<WordCount>(12);
   const [mnemonic, setMnemonic] = useState("");
   const [walletName, setWalletName] = useState("");
   const [password, setPassword] = useState("");
@@ -57,13 +60,13 @@ export function ImportWalletScreen({
     [mnemonic],
   );
 
-  // Flip 12 ↔ 24 from what the user typed or pasted. Leave 0–11 alone so a
-  // manual "24 words" choice still works while they start entering.
-  useEffect(() => {
-    const n = wordParts.length;
-    if (n > 12 && wordCount !== 24) setWordCount(24);
-    else if (n === 12 && wordCount !== 12) setWordCount(12);
-  }, [wordParts.length, wordCount]);
+  // Follow what the user typed or pasted; leave 0-11 words on their manual
+  // choice so a "24 words" selection still holds while they start entering.
+  // Derived rather than synced from an effect: the effect version wrote state
+  // on the render that changed the phrase, so every keystroke past the twelfth
+  // word cost the screen a second render pass.
+  const wordCount: WordCount =
+    wordParts.length > 12 ? 24 : wordParts.length === 12 ? 12 : chosenWordCount;
 
   useEffect(() => {
     onStepChange?.(STEPS.indexOf(step));
@@ -183,7 +186,7 @@ export function ImportWalletScreen({
             <Segmented
               className="relative w-full min-w-0"
               value={String(wordCount)}
-              onChange={(v) => setWordCount(Number(v) as WordCount)}
+              onChange={(v) => setChosenWordCount(Number(v) as WordCount)}
               options={[
                 { value: "12", label: "12 words" },
                 { value: "24", label: "24 words" },
@@ -214,10 +217,14 @@ export function ImportWalletScreen({
               className="relative"
             />
             <div className="relative flex flex-col gap-2.5">
+              {/* No autofocus: this step is reached from the footer's Continue
+                  button, which stays mounted, so keyboard focus is still on it
+                  and nothing is lost by leaving it there. Jumping past the
+                  heading would only hide what the password does and does not
+                  do. */}
               <Input
                 label="Wallet name"
                 placeholder="Main"
-                autoFocus
                 maxLength={32}
                 value={walletName}
                 onChange={(e) => setWalletName(e.target.value)}

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import {
   Avatar,
   Button,
@@ -31,10 +31,10 @@ export function ReceiveScreen({
   );
   const [copied, setCopied] = useState(false);
 
-  useEffect(() => {
-    if (!chainId && accounts.length > 0) setChainId(accounts[0]!.chainId);
-  }, [accounts, chainId]);
-
+  // The fallback to the first account is the whole default, so there is nothing
+  // for an effect to seed: writing `chainId` from an effect just to have the
+  // next line read it back re-rendered the screen a second time on open, and
+  // left one committed render pointing at an account that had gone away.
   const selected = accounts.find((a) => a.chainId === chainId) ?? accounts[0];
 
   async function copyAddress() {

@@ -65,7 +65,8 @@ const overlayCss = `
   left: 50%;
   top: 50%;
   transform: translate(-50%, -50%);
-  width: ${CONNECT_FRAME_WIDTH}px;
+  /* Centred with a transform, so the gutter has to be taken off both sides. */
+  width: min(${CONNECT_FRAME_WIDTH}px, calc(100vw - 32px));
   border-radius: 22px;
   overflow: hidden;
   background: var(--z-surface-raised);
@@ -117,9 +118,24 @@ const overlayCss = `
 .toast-text {
   flex: 1;
   min-width: 0;
+}
+
+.toast-title {
+  display: block;
   font-size: 11.5px;
   font-weight: 500;
   line-height: 1.35;
+}
+
+/* The host is the part worth reading character by character, so it gets the
+   mono face and its own line instead of being ellipsised out of a sentence. */
+.toast-detail {
+  display: block;
+  margin-top: 2px;
+  font-family: var(--z-font-mono);
+  font-size: 9.5px;
+  line-height: 1.35;
+  color: var(--z-fg-dim);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -172,6 +188,8 @@ interface ActiveOverlay {
   root: HTMLElement;
   frame: HTMLElement;
   iframe: HTMLIFrameElement;
+  /** Last height the prompt reported, kept so the clamp can be re-applied. */
+  reportedHeight: number;
 }
 
 export interface ConnectOverlayController {
@@ -207,6 +225,13 @@ export function createConnectOverlay(): ConnectOverlayController {
   let active: ActiveOverlay | null = null;
   let toastTimer: number | undefined;
 
+  function applyFrameHeight(overlay: ActiveOverlay): void {
+    overlay.iframe.style.height = `${clampFrameHeight(
+      overlay.reportedHeight,
+      window.innerHeight,
+    )}px`;
+  }
+
   function teardown(): void {
     if (!active) return;
     const { host } = active;
@@ -227,8 +252,17 @@ export function createConnectOverlay(): ConnectOverlayController {
 
     const text = document.createElement("span");
     text.className = "toast-text";
+
+    const title = document.createElement("span");
+    title.className = "toast-title";
+    title.textContent = "Connected";
+
+    const detail = document.createElement("span");
+    detail.className = "toast-detail";
     // textContent, never innerHTML: the hostname comes from the page's own URL.
-    text.textContent = `Connected to ${originHostLabel(window.location.origin)}`;
+    detail.textContent = originHostLabel(window.location.origin);
+
+    text.append(title, detail);
 
     const close = document.createElement("button");
     close.type = "button";
@@ -277,14 +311,21 @@ export function createConnectOverlay(): ConnectOverlayController {
     if (!message) return;
 
     if (message.action === "resize") {
-      current.iframe.style.height = `${clampFrameHeight(
-        message.height,
-        window.innerHeight,
-      )}px`;
+      current.reportedHeight = message.height;
+      applyFrameHeight(current);
       return;
     }
 
     finish(message.outcome);
+  }
+
+  function onWindowResize(): void {
+    // The ceiling is derived from the viewport, so a window the user shrinks
+    // after the prompt opened has to re-run the clamp. Without this the frame
+    // keeps a height the window can no longer show, and the part of the card
+    // that falls outside is unreachable: the overlay is position: fixed, so the
+    // page cannot be scrolled to it.
+    if (active) applyFrameHeight(active);
   }
 
   function onKeyDown(event: KeyboardEvent): void {
@@ -297,6 +338,7 @@ export function createConnectOverlay(): ConnectOverlayController {
 
   window.addEventListener("message", onWindowMessage);
   window.addEventListener("keydown", onKeyDown, true);
+  window.addEventListener("resize", onWindowResize);
 
   return {
     isActive: () => active !== null,
@@ -349,7 +391,14 @@ export function createConnectOverlay(): ConnectOverlayController {
       shadow.append(tokenStyle, overlayStyle, root);
       (document.body ?? document.documentElement).append(host);
 
-      active = { approvalId, host, root, frame, iframe };
+      active = {
+        approvalId,
+        host,
+        root,
+        frame,
+        iframe,
+        reportedHeight: CONNECT_FRAME_MIN_HEIGHT,
+      };
 
       const loaded = await new Promise<boolean>((resolve) => {
         const timer = window.setTimeout(() => resolve(false), FRAME_LOAD_TIMEOUT_MS);

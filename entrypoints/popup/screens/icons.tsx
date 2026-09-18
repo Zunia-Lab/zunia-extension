@@ -261,6 +261,20 @@ export function IconBridge(props: SVGProps<SVGSVGElement>) {
   );
 }
 
+/**
+ * Collectibles. A framed picture rather than a generic square: it has to read
+ * as "an image you own" next to Bridge and Governance in the same list.
+ */
+export function IconNft(props: SVGProps<SVGSVGElement>) {
+  return (
+    <IconBase {...props}>
+      <rect x="3" y="3" width="18" height="18" rx="3" />
+      <circle cx="8.5" cy="8.5" r="1.5" />
+      <path d="M21 15l-4.5-4.5L7 20" />
+    </IconBase>
+  );
+}
+
 export function IconTrash(props: SVGProps<SVGSVGElement>) {
   return (
     <IconBase {...props}>

@@ -47,6 +47,8 @@ import {
   saveCustomChain,
   type CustomChainDraft,
 } from "../lib/custom-chains";
+import { signAndBroadcast } from "../lib/wallet-tx";
+import type { AminoMsg, StdFee } from "../lib/amino-tx";
 import {
   fetchActivity,
   fetchDelegations,
@@ -55,9 +57,16 @@ import {
   fetchValidators,
 } from "../lib/chain-queries";
 import {
-  findIbcChannels,
-  validateIbcChannel,
-} from "../lib/ibc-channels";
+  channelService,
+  clearInterchainCaches,
+} from "../lib/interchain";
+import {
+  previewTx,
+  signAndBroadcastTx,
+  txKernelStatus,
+  type TxRequest,
+  type TxSignRequest,
+} from "../lib/tx-kernel";
 import {
   listAddressBook,
   removeAddressBookEntry,
@@ -285,6 +294,12 @@ async function routeMessage(
         return { ok: true, data: rows.flat().sort((a, b) => b.timestamp - a.timestamp) };
       }
 
+      // Channel discovery and validation are the interchain engine's, not this
+      // worker's: the hand-rolled copy that used to live in lib/ibc-channels.ts
+      // was deleted when @zunialab/interchain took over. The popup calls the
+      // engine directly for route planning; these two messages stay because the
+      // engine's caches live in whichever context asks, and a background answer
+      // survives a popup close.
       case "FIND_IBC_CHANNELS": {
         const payload = message.payload as {
           sourceChainId: string;
@@ -292,7 +307,7 @@ async function routeMessage(
         };
         return {
           ok: true,
-          data: await findIbcChannels(
+          data: await channelService().findIbcChannels(
             payload.sourceChainId,
             payload.destChainId,
           ),
@@ -307,10 +322,11 @@ async function routeMessage(
         };
         return {
           ok: true,
-          data: await validateIbcChannel(
+          data: await channelService().validateIbcChannel(
             payload.sourceChainId,
             payload.channelId,
             payload.destChainId,
+            { checkCounterparty: true },
           ),
         };
       }
@@ -349,6 +365,10 @@ async function routeMessage(
         if (payload.liveBalances === false) {
           await Promise.all([clearBalanceCache(), clearPriceCache()]);
         }
+        // The engine caches LCD bodies and the answer to "may we read?" for a
+        // second; flipping the switch either way must invalidate both, or the
+        // next read is decided by the old setting.
+        if (payload.liveBalances !== undefined) clearInterchainCaches();
         // Prices are quoted in the display currency, so a switch invalidates.
         if (payload.currency) await clearPriceCache();
         return { ok: true, data: await setSettings(payload) };
@@ -395,6 +415,46 @@ async function routeMessage(
       case "TOUCH_SESSION":
         await touchSession();
         return { ok: true };
+
+      case "SIGN_AND_BROADCAST": {
+        const payload = message.payload as {
+          chainId: string;
+          signerAddress: string;
+          msgs: AminoMsg[];
+          memo?: string;
+          gasLimit?: number;
+          fee?: StdFee;
+        };
+        if (!payload?.chainId || !payload.signerAddress || !payload.msgs?.length) {
+          return { ok: false, error: "chainId, signerAddress, and msgs required" };
+        }
+        const data = await signAndBroadcast(payload);
+        return { ok: true, data };
+      }
+
+      case "KERNEL_STATUS":
+        return { ok: true, data: await txKernelStatus() };
+
+      case "BUILD_TX_PREVIEW": {
+        const payload = message.payload as TxRequest;
+        if (!payload?.chainId || !payload.signerAddress || !payload.msgs?.length) {
+          return { ok: false, error: "chainId, signerAddress, and msgs required" };
+        }
+        return { ok: true, data: await previewTx(payload) };
+      }
+
+      case "SIGN_AND_BROADCAST_TX": {
+        const payload = message.payload as TxSignRequest;
+        if (!payload?.chainId || !payload.signerAddress || !payload.msgs?.length) {
+          return { ok: false, error: "chainId, signerAddress, and msgs required" };
+        }
+        if (!payload.expectSignBytesHash) {
+          // Without the hash there is nothing tying the signature to what the
+          // user approved, so this is refused rather than defaulted.
+          return { ok: false, error: "expectSignBytesHash is required" };
+        }
+        return { ok: true, data: await signAndBroadcastTx(payload) };
+      }
 
       default:
         return { ok: false, error: `Unknown message: ${(message as ExtensionMessage).type}` };

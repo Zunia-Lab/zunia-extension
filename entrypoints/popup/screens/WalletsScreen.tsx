@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Avatar,
   Button,
@@ -29,6 +29,21 @@ export function WalletsScreen({
   const [newName, setNewName] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const newNameRef = useRef<HTMLInputElement>(null);
+  const draftRef = useRef<HTMLInputElement>(null);
+
+  // Focus follows the disclosure in both cases, moved explicitly rather than
+  // with autoFocus: neither is a page-load jump. The control the user activated
+  // ("Add account", or a row's rename button) is swapped out for the field, so
+  // without this the keyboard user is left on a detached node and tabs from the
+  // top of the list again. Both fields carry an aria-label, so a screen reader
+  // is told which one it landed in.
+  useEffect(() => {
+    if (adding) newNameRef.current?.focus();
+  }, [adding]);
+  useEffect(() => {
+    if (editing !== null) draftRef.current?.focus();
+  }, [editing]);
 
   async function run(action: () => Promise<unknown>) {
     setBusy(true);
@@ -56,9 +71,10 @@ export function WalletsScreen({
         adding ? (
           <div className="flex flex-col gap-2">
             <Input
+              ref={newNameRef}
+              aria-label="Account name"
               placeholder="Account name"
               value={newName}
-              autoFocus
               maxLength={32}
               onChange={(e) => setNewName(e.target.value)}
             />
@@ -166,9 +182,10 @@ export function WalletsScreen({
                 {isEditing ? (
                   <div className="mt-2.5 flex gap-2">
                     <Input
+                      ref={draftRef}
                       className="flex-1"
+                      aria-label={`Rename ${account.name}`}
                       value={draft}
-                      autoFocus
                       maxLength={32}
                       onChange={(e) => setDraft(e.target.value)}
                     />

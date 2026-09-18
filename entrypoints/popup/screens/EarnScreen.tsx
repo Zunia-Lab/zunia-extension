@@ -4,6 +4,9 @@ import {
   Button,
   Callout,
   EmptyState,
+  FeeSummary,
+  Input,
+  KeyValueRow,
   Pill,
   ScreenScaffold,
   Spinner,
@@ -14,6 +17,7 @@ import {
   amountInlineClass,
   cn,
   focusRing,
+  truncateAddress,
 } from "@zunialab/ui";
 import type { ChainBalance } from "../../../lib/balances";
 import type {
@@ -21,7 +25,13 @@ import type {
   UnbondingInfo,
   ValidatorInfo,
 } from "../../../lib/chain-queries";
+import {
+  estimateFee,
+  msgDelegate,
+  msgWithdrawReward,
+} from "../../../lib/amino-tx";
 import { NO_VALUE, formatUnits } from "../../../lib/format";
+import { sendToBackground } from "../../../lib/popup-client";
 import type { ChainAccountView } from "../hooks/useChainAccounts";
 import {
   useDelegations,
@@ -209,12 +219,14 @@ export function EarnScreen({
   balances,
   initialChainId,
   onOpenChain,
+  onOpenValidator,
 }: {
   chains: ChainAccountView[];
   balances: Record<string, ChainBalance>;
   /** Set when arriving from a chain page, so Stake opens on that chain. */
   initialChainId?: string;
   onOpenChain: (chainId: string) => void;
+  onOpenValidator?: (validator: ValidatorInfo) => void;
 }) {
   const { settings, hidden } = usePrefs();
   const live = settings.liveBalances;
@@ -223,10 +235,17 @@ export function EarnScreen({
     initialChainId ?? chains[0]?.chainId ?? "",
   );
   const [picked, setPicked] = useState<string | null>(null);
+  const [sheet, setSheet] = useState<"delegate" | "claim" | null>(null);
+  const [delegateAmount, setDelegateAmount] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [txNote, setTxNote] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const chain = chains.find((c) => c.chainId === chainId) ?? chains[0];
   const decimals = chain?.entry.coinDecimals ?? 6;
   const symbol = chain?.entry.coinDenom ?? "";
+  const balance = chain ? balances[chain.chainId] : undefined;
+  const available = balance ? BigInt(balance.available) : null;
 
   const validators = useValidators(chain?.chainId ?? "", live);
   const delegations = useDelegations(chainIds, live);
@@ -266,6 +285,204 @@ export function EarnScreen({
       ? formatUnits(totals.rewards.toString(), decimals, 2)
       : NO_VALUE;
 
+  const claimable = chainDelegations.filter((d) => BigInt(d.rewards || "0") > 0n);
+  const pickedValidator = validators.rows.find(
+    (v) => v.operatorAddress === picked,
+  );
+  const fee = estimateFee({
+    gasLimit: sheet === "claim" ? Math.max(250_000, claimable.length * 120_000) : 250_000,
+    gasPrice: chain?.entry.gasPriceStep?.average ?? 0.025,
+    denom: chain?.entry.feeMinimalDenom ?? "uatom",
+  });
+
+  function toBaseUnits(input: string): bigint | null {
+    if (!/^\d*\.?\d*$/.test(input) || input === "" || input === ".") return null;
+    const [whole = "0", fraction = ""] = input.split(".");
+    if (fraction.length > decimals) return null;
+    return BigInt(whole + fraction.padEnd(decimals, "0"));
+  }
+
+  async function runBroadcast(
+    msgs: ReturnType<typeof msgDelegate>[],
+    gasLimit: number,
+  ) {
+    if (!chain?.address) throw new Error("No signer address");
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await sendToBackground<{ txhash: string }>(
+        "SIGN_AND_BROADCAST",
+        {
+          chainId: chain.chainId,
+          signerAddress: chain.address,
+          msgs,
+          fee: estimateFee({
+            gasLimit,
+            gasPrice: chain.entry.gasPriceStep?.average ?? 0.025,
+            denom: chain.entry.feeMinimalDenom,
+          }),
+          gasLimit,
+        },
+      );
+      setTxNote(result.txhash);
+      setSheet(null);
+      setDelegateAmount("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function confirmDelegate() {
+    if (!chain || !picked) return;
+    const units = toBaseUnits(delegateAmount);
+    if (units === null || units <= 0n) {
+      setError("Enter a valid amount");
+      return;
+    }
+    await runBroadcast(
+      [
+        msgDelegate({
+          delegatorAddress: chain.address,
+          validatorAddress: picked,
+          amount: {
+            denom: chain.entry.coinMinimalDenom,
+            amount: units.toString(),
+          },
+        }),
+      ],
+      250_000,
+    );
+  }
+
+  async function confirmClaim() {
+    if (!chain || claimable.length === 0) return;
+    await runBroadcast(
+      claimable.map((d) =>
+        msgWithdrawReward({
+          delegatorAddress: chain.address,
+          validatorAddress: d.validatorAddress,
+        }),
+      ),
+      Math.max(250_000, claimable.length * 120_000),
+    );
+  }
+
+  if (sheet === "delegate" && chain && picked) {
+    return (
+      <ScreenScaffold
+        title="Confirm delegate"
+        onBack={() => {
+          setSheet(null);
+          setError(null);
+        }}
+        footer={
+          <div className="flex gap-2">
+            <Button
+              variant="secondary"
+              className="flex-1"
+              disabled={busy}
+              onClick={() => setSheet(null)}
+            >
+              Back
+            </Button>
+            <Button
+              className="flex-1"
+              disabled={busy || !delegateAmount}
+              onClick={() => void confirmDelegate()}
+            >
+              {busy ? "Signing…" : "Sign and broadcast"}
+            </Button>
+          </div>
+        }
+      >
+        <div className="flex flex-col gap-3 pt-1">
+          <KeyValueRow
+            label="Validator"
+            value={pickedValidator?.moniker ?? truncateAddress(picked, 8, 6)}
+          />
+          <Input
+            label="Amount"
+            placeholder="0.00"
+            value={delegateAmount}
+            onChange={(e) => setDelegateAmount(e.target.value)}
+            hint={
+              available !== null
+                ? `${formatUnits(available.toString(), decimals)} available`
+                : undefined
+            }
+          />
+          <FeeSummary
+            rows={[
+              {
+                label: "Network fee",
+                value: `${formatUnits(fee.amount[0]!.amount, decimals)} ${symbol}`,
+              },
+              { label: "Gas", value: fee.gas },
+            ]}
+          />
+          {error ? (
+            <Callout tone="danger" title="Could not broadcast">
+              {error}
+            </Callout>
+          ) : null}
+        </div>
+      </ScreenScaffold>
+    );
+  }
+
+  if (sheet === "claim" && chain) {
+    return (
+      <ScreenScaffold
+        title="Claim rewards"
+        onBack={() => {
+          setSheet(null);
+          setError(null);
+        }}
+        footer={
+          <div className="flex gap-2">
+            <Button
+              variant="secondary"
+              className="flex-1"
+              disabled={busy}
+              onClick={() => setSheet(null)}
+            >
+              Back
+            </Button>
+            <Button
+              className="flex-1"
+              disabled={busy || claimable.length === 0}
+              onClick={() => void confirmClaim()}
+            >
+              {busy ? "Signing…" : `Claim ${claimable.length}`}
+            </Button>
+          </div>
+        }
+      >
+        <div className="flex flex-col gap-3 pt-1">
+          <Callout tone="info" title={`${claimable.length} validator(s)`}>
+            Withdraws pending rewards with MsgWithdrawDelegationReward.
+          </Callout>
+          <FeeSummary
+            rows={[
+              {
+                label: "Network fee",
+                value: `${formatUnits(fee.amount[0]!.amount, decimals)} ${symbol}`,
+              },
+              { label: "Gas", value: fee.gas },
+            ]}
+          />
+          {error ? (
+            <Callout tone="danger" title="Could not broadcast">
+              {error}
+            </Callout>
+          ) : null}
+        </div>
+      </ScreenScaffold>
+    );
+  }
+
   return (
     <ScreenScaffold
       title="Earn"
@@ -277,6 +494,7 @@ export function EarnScreen({
             onChange={(next) => {
               setChainId(next);
               setPicked(null);
+              setTxNote(null);
             }}
           />
         ) : undefined
@@ -290,7 +508,14 @@ export function EarnScreen({
           >
             Compare
           </Button>
-          <Button className="flex-1" disabled={!picked}>
+          <Button
+            className="flex-1"
+            disabled={!picked || !chain?.address}
+            onClick={() => {
+              setError(null);
+              setSheet("delegate");
+            }}
+          >
             Delegate
           </Button>
         </div>
@@ -337,7 +562,15 @@ export function EarnScreen({
                   : ""}
               </span>
             </p>
-            <Button size="sm" variant="secondary" disabled>
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled={!live || claimable.length === 0 || !chain?.address}
+              onClick={() => {
+                setError(null);
+                setSheet("claim");
+              }}
+            >
               Claim all
             </Button>
           </div>
@@ -347,6 +580,13 @@ export function EarnScreen({
           <Callout tone="info" title="On-chain reads are off">
             Turn on live balances in Preferences to load validators, positions
             and rewards from each chain's public endpoint.
+          </Callout>
+        ) : null}
+
+        {txNote ? (
+          <Callout tone="info" title="Broadcast accepted">
+            Tx {truncateAddress(txNote, 10, 8)}. Inclusion still depends on the
+            network.
           </Callout>
         ) : null}
 
@@ -385,13 +625,10 @@ export function EarnScreen({
                       symbol={symbol}
                       hidden={hidden}
                       selected={picked === validator.operatorAddress}
-                      onSelect={() =>
-                        setPicked((v) =>
-                          v === validator.operatorAddress
-                            ? null
-                            : validator.operatorAddress,
-                        )
-                      }
+                      onSelect={() => {
+                        setPicked(validator.operatorAddress);
+                        onOpenValidator?.(validator);
+                      }}
                     />
                   </li>
                 ))}
@@ -444,9 +681,9 @@ export function EarnScreen({
           </TabsContent>
         </Tabs>
 
-        <Callout tone="neutral" title="Delegating needs signing">
-          Positions and rewards are read live. The delegate and claim
-          transactions land with the broadcasting path.
+        <Callout tone="neutral" title="Signed on this device">
+          Delegate and claim build amino messages, sign with the unlocked
+          keyring, and post to this chain&rsquo;s public REST endpoint.
         </Callout>
       </div>
     </ScreenScaffold>

@@ -35,9 +35,9 @@ function hostOf(origin: string): string {
   }
 }
 
-function daysLeft(iso?: string): number | null {
+function daysLeft(iso: string | undefined, now: number): number | null {
   if (!iso) return null;
-  const ms = Date.parse(iso) - Date.now();
+  const ms = Date.parse(iso) - now;
   if (!Number.isFinite(ms) || ms <= 0) return null;
   return Math.ceil(ms / 86_400_000);
 }
@@ -63,6 +63,18 @@ export function useNotifications({
   unbonding: UnbondingInfo[];
 }) {
   const [read, setRead] = useState<string[]>([]);
+  // The feed's timestamps and "Nd left" labels need a clock, but reading it
+  // inside the memo below makes the derivation impure: React can re-render the
+  // same inputs twice (StrictMode, a concurrent retry) and produce two
+  // different feeds, with row ids that no longer match what was marked read.
+  // Sample it once, then step it forward on an interval — which is also what
+  // keeps the labels honest in a surface that stays open, like the side panel.
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    const handle = window.setInterval(() => setNow(Date.now()), 60_000);
+    return () => window.clearInterval(handle);
+  }, []);
 
   useEffect(() => {
     void browser.storage.local
@@ -95,12 +107,12 @@ export function useNotifications({
         title: "Rewards ready to claim",
         meta: `${formatUnits(balance.rewards, balance.decimals, 3)} ${balance.symbol} on ${chainNames.get(chainId) ?? chainId}`,
         target: { route: "earn" },
-        timestamp: Date.now(),
+        timestamp: now,
       });
     }
 
     for (const row of unbonding) {
-      const remaining = daysLeft(row.completionTime);
+      const remaining = daysLeft(row.completionTime, now);
       rows.push({
         id: `unbonding:${row.chainId}:${row.validatorAddress}:${row.completionTime}`,
         kind: "unbonding",
@@ -110,7 +122,7 @@ export function useNotifications({
             ? `${formatUnits(row.amount, row.decimals, 3)} ${row.symbol} is liquid again`
             : `${formatUnits(row.amount, row.decimals, 3)} ${row.symbol} · ${remaining}d left`,
         target: { route: "earn" },
-        timestamp: Date.parse(row.completionTime) || Date.now(),
+        timestamp: Date.parse(row.completionTime) || now,
       });
     }
 
@@ -129,7 +141,7 @@ export function useNotifications({
     }
 
     for (const proposal of proposals) {
-      const remaining = daysLeft(proposal.votingEndTime);
+      const remaining = daysLeft(proposal.votingEndTime, now);
       if (proposal.status !== "voting" || remaining === null) continue;
       rows.push({
         id: `gov:${proposal.chainId}:${proposal.id}`,
@@ -137,7 +149,7 @@ export function useNotifications({
         title: `Proposal ${proposal.id} ends in ${remaining}d`,
         meta: `${chainNames.get(proposal.chainId) ?? proposal.chainId} · ${proposal.title}`,
         target: { route: "governance" },
-        timestamp: Date.parse(proposal.votingEndTime ?? "") || Date.now(),
+        timestamp: Date.parse(proposal.votingEndTime ?? "") || now,
       });
     }
 
@@ -147,7 +159,16 @@ export function useNotifications({
         if (a.read !== b.read) return a.read ? 1 : -1;
         return b.timestamp - a.timestamp;
       });
-  }, [approvals, balances, chainNames, activity, proposals, unbonding, read]);
+  }, [
+    approvals,
+    balances,
+    chainNames,
+    activity,
+    proposals,
+    unbonding,
+    read,
+    now,
+  ]);
 
   const markAllRead = useCallback(() => {
     const ids = Array.from(new Set([...read, ...notices.map((n) => n.id)]));

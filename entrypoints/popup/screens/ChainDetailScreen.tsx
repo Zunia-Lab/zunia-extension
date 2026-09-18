@@ -28,11 +28,14 @@ import { usePrefs } from "../state/Prefs";
 import type { PopupRoute } from "../routes";
 import {
   IconActivity,
+  IconChevronRight,
+  IconNft,
   IconReceive,
   IconSend,
   IconStake,
   IconSwap,
 } from "./icons";
+import { nftChainSupport } from "../../../lib/nft";
 
 function Action({
   label,
@@ -134,6 +137,10 @@ export function ChainDetailScreen({
   );
   const recent = activity.slice(0, 8);
   const extras = (balance?.tokens ?? []).filter((t) => t.kind !== "native");
+  // Only 118 of the 332 registry chains declare `cosmwasm`, so the NFT row is
+  // usually the disabled one. It says why rather than disappearing, because a
+  // missing entry reads as a bug and an empty NFT list reads as "you own none".
+  const nftSupport = nftChainSupport(chain.chainId);
 
   const show = (raw: string | undefined) => {
     if (hidden) return "••••";
@@ -230,6 +237,35 @@ export function ChainDetailScreen({
             onClick={() => onNavigate("earn", chain.chainId)}
           />
         </section>
+
+        {/* Collectibles, as a row rather than a fifth action button: four
+            buttons already fill a 360px popup, and this one has to be able to
+            carry a sentence when the chain cannot hold NFTs at all. */}
+        <button
+          type="button"
+          disabled={!nftSupport.supported}
+          onClick={() => onNavigate("nft", chain.chainId)}
+          className={cn(
+            "flex w-full items-center gap-2.5 rounded-[14px] border border-[var(--z-line)] px-3 py-2.5 text-left",
+            "hover:bg-[var(--z-state-hover)] disabled:cursor-not-allowed disabled:hover:bg-transparent",
+            focusRing,
+          )}
+        >
+          <span className="flex size-[26px] shrink-0 items-center justify-center rounded-[9px] border border-[var(--z-line)] text-fg-muted">
+            <IconNft width={15} height={15} />
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block text-[12.5px] text-fg">NFTs</span>
+            <span className="mt-0.5 block text-[10px] leading-snug text-fg-muted">
+              {nftSupport.supported
+                ? "CW721 collections held by this address."
+                : nftSupport.reason}
+            </span>
+          </span>
+          {nftSupport.supported ? (
+            <IconChevronRight width={14} height={14} className="shrink-0 text-fg-dim" />
+          ) : null}
+        </button>
 
         <section className="divide-y divide-[var(--z-line)] rounded-[14px] border border-[var(--z-line)] px-3 py-1">
           <Breakdown

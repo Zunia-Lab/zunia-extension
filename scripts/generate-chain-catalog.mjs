@@ -72,6 +72,16 @@ function readRegistry(registryDir) {
       feeMinimalDenom: fee.coinMinimalDenom,
       feeDecimals: fee.coinDecimals ?? currency.coinDecimals ?? 6,
       gasPriceStep: fee.gasPriceStep,
+      // Registry capability flags, carried through verbatim.
+      //
+      // These decide whether a chain can hold CW721 tokens at all: 118 of the
+      // 332 rows declare "cosmwasm" and the NFT surface refuses to query the
+      // rest. Dropping the array - which this script used to do - left every
+      // client unable to tell "this chain has no CosmWasm" from "we did not
+      // check", and the only honest thing a client could then render was an
+      // empty list. `undefined` stays distinct from `[]`: 19 registry rows
+      // publish no feature list at all, and "absent" is not "declared none".
+      features: Array.isArray(raw.features) ? raw.features : undefined,
       // Only ~40% of the registry carries a price id; the rest stay unpriced.
       coinGeckoId: currency.coinGeckoId ?? raw.stakeCurrency?.coinGeckoId,
       rpc: raw.rpc,
@@ -100,6 +110,11 @@ function serialize(entries) {
     ];
     if (e.gasPriceStep) {
       parts.push(`gasPriceStep: ${JSON.stringify(e.gasPriceStep)}`);
+    }
+    // Emitted only when the registry row has one, so `features === undefined`
+    // keeps meaning "this chain publishes no list" rather than "no features".
+    if (e.features) {
+      parts.push(`features: ${JSON.stringify(e.features)}`);
     }
     if (e.coinGeckoId) {
       parts.push(`coinGeckoId: ${JSON.stringify(e.coinGeckoId)}`);
@@ -149,4 +164,12 @@ console.log(
   `chain catalog: ${entries.length} chains (${mainnets} mainnet, ${
     entries.length - mainnets
   } testnet) → ${path.relative(rootDir, outFile)}`,
+);
+
+// Printed because the NFT and swap surfaces are gated on it: a drop to zero
+// here means every client silently loses CW721 support.
+const cosmwasm = entries.filter((e) => e.features?.includes("cosmwasm")).length;
+const noFeatures = entries.filter((e) => !e.features).length;
+console.log(
+  `  features: ${cosmwasm} declare cosmwasm, ${noFeatures} publish no feature list`,
 );

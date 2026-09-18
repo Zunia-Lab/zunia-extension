@@ -389,6 +389,27 @@ async function fetchChainBalance(
   };
 }
 
+async function mapPool<T, R>(
+  items: readonly T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  async function run() {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await worker(items[i]!, i);
+    }
+  }
+  const agents = Array.from(
+    { length: Math.min(concurrency, Math.max(items.length, 1)) },
+    () => run(),
+  );
+  await Promise.all(agents);
+  return results;
+}
+
 /**
  * Balances for the given chains, cached for a minute so switching tabs in the
  * popup does not re-hit every endpoint.
@@ -402,6 +423,11 @@ export async function getChainBalances(
     return [];
   }
 
+  // Placeholder / failed derives have no address — skip instead of spamming
+  // LCD with `/balances/` and poisoning the cache.
+  const usable = accounts.filter((a) => a.address.trim().length > 0);
+  if (usable.length === 0) return [];
+
   const cached = (
     await browser.storage.local.get(STORAGE_KEYS.balanceCache)
   )[STORAGE_KEYS.balanceCache] as CacheRecord | undefined;
@@ -409,7 +435,7 @@ export async function getChainBalances(
     !options.force &&
     cached &&
     Date.now() - cached.fetchedAt < CACHE_TTL_MS &&
-    accounts.every((a) => {
+    usable.every((a) => {
       const hit = cached.balances[`${a.chainId}:${a.address}`];
       // Refresh when older cache entries lack IBC display names / logos.
       return (
@@ -420,29 +446,29 @@ export async function getChainBalances(
       );
     });
   if (fresh && cached) {
-    return accounts.map((a) => cached.balances[`${a.chainId}:${a.address}`]!);
+    return usable.map((a) => cached.balances[`${a.chainId}:${a.address}`]!);
   }
 
-  const results = await Promise.all(
-    accounts.map((a) =>
-      fetchChainBalance(a.chainId, a.address).catch(
-        (err: unknown): ChainBalance => ({
-          chainId: a.chainId,
-          available: "0",
-          staked: "0",
-          rewards: "0",
-          denom: "",
-          decimals: 6,
-          symbol: a.chainId,
-          tokens: [],
-          error: err instanceof Error ? err.message : "Request failed",
-        }),
-      ),
+  // Cap fan-out: Select-all networks previously opened hundreds of LCD calls
+  // at once, which starved the MV3 worker and left the popup with no balances.
+  const results = await mapPool(usable, 6, async (a) =>
+    fetchChainBalance(a.chainId, a.address).catch(
+      (err: unknown): ChainBalance => ({
+        chainId: a.chainId,
+        available: "0",
+        staked: "0",
+        rewards: "0",
+        denom: "",
+        decimals: 6,
+        symbol: a.chainId,
+        tokens: [],
+        error: err instanceof Error ? err.message : "Request failed",
+      }),
     ),
   );
 
   const map: Record<string, ChainBalance> = {};
-  accounts.forEach((a, i) => {
+  usable.forEach((a, i) => {
     map[`${a.chainId}:${a.address}`] = results[i]!;
   });
   await browser.storage.local.set({

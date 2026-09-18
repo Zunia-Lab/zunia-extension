@@ -3,19 +3,24 @@ import {
   Button,
   Callout,
   EmptyState,
+  FeeSummary,
   Pill,
   ScreenScaffold,
   Spinner,
   cn,
   focusRing,
+  truncateAddress,
 } from "@zunialab/ui";
 import type { ProposalInfo, ProposalStatus } from "../../../lib/chain-queries";
+import { estimateFee, msgVote, type VoteOption as AminoVote } from "../../../lib/amino-tx";
+import { formatUnits } from "../../../lib/format";
+import { sendToBackground } from "../../../lib/popup-client";
 import type { ChainAccountView } from "../hooks/useChainAccounts";
 import { useProposals } from "../hooks/useChainQuery";
 import { usePrefs } from "../state/Prefs";
 import { IconGovernance } from "./icons";
 
-type VoteOption = "yes" | "no" | "veto" | "abstain";
+type VoteOption = AminoVote;
 
 const VOTE_LABELS: Record<VoteOption, string> = {
   yes: "Yes",
@@ -160,6 +165,9 @@ export function GovernanceScreen({
   const chainIds = useMemo(() => chains.map((c) => c.chainId), [chains]);
   const { rows, loading } = useProposals(chainIds, live);
   const [votes, setVotes] = useState<Record<string, VoteOption>>({});
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [txHash, setTxHash] = useState<string | null>(null);
 
   const names = new Map(chains.map((c) => [c.chainId, c.entry.chainName]));
   const sorted = useMemo(
@@ -177,6 +185,43 @@ export function GovernanceScreen({
   const selectedProposal = selected
     ? sorted.find((p) => `${p.chainId}:${p.id}` === selected[0])
     : undefined;
+  const voterChain = selectedProposal
+    ? chains.find((c) => c.chainId === selectedProposal.chainId)
+    : undefined;
+  const fee = estimateFee({
+    gasLimit: 200_000,
+    gasPrice: voterChain?.entry.gasPriceStep?.average ?? 0.025,
+    denom: voterChain?.entry.feeMinimalDenom ?? "uatom",
+  });
+
+  async function signVote() {
+    if (!selectedProposal || !selected || !voterChain?.address) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await sendToBackground<{ txhash: string }>(
+        "SIGN_AND_BROADCAST",
+        {
+          chainId: selectedProposal.chainId,
+          signerAddress: voterChain.address,
+          msgs: [
+            msgVote({
+              proposalId: selectedProposal.id,
+              voter: voterChain.address,
+              option: selected[1],
+            }),
+          ],
+          fee,
+          gasLimit: 200_000,
+        },
+      );
+      setTxHash(result.txhash);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
 
   return (
     <ScreenScaffold
@@ -189,8 +234,14 @@ export function GovernanceScreen({
       }
       footer={
         selectedProposal && selected ? (
-          <Button className="w-full" disabled>
-            Sign vote · {VOTE_LABELS[selected[1]]}
+          <Button
+            className="w-full"
+            disabled={busy || !voterChain?.address}
+            onClick={() => void signVote()}
+          >
+            {busy
+              ? "Signing…"
+              : `Sign vote · ${VOTE_LABELS[selected[1]]}`}
           </Button>
         ) : undefined
       }
@@ -235,10 +286,33 @@ export function GovernanceScreen({
           </ul>
         )}
 
+        {selectedProposal && voterChain ? (
+          <FeeSummary
+            rows={[
+              {
+                label: "Est. fee",
+                value: `${formatUnits(fee.amount[0]!.amount, voterChain.entry.coinDecimals)} ${voterChain.entry.coinDenom}`,
+              },
+            ]}
+          />
+        ) : null}
+
+        {error ? (
+          <Callout tone="danger" title="Could not broadcast">
+            {error}
+          </Callout>
+        ) : null}
+
+        {txHash ? (
+          <Callout tone="info" title="Vote broadcast">
+            Tx {truncateAddress(txHash, 10, 8)}
+          </Callout>
+        ) : null}
+
         {sorted.length > 0 ? (
-          <Callout tone="neutral" title="Voting needs signing">
-            Picking an option stages the vote locally. Broadcasting arrives with
-            the signing path.
+          <Callout tone="neutral" title="Signed on this device">
+            Votes build MsgVote amino, sign with the unlocked keyring, and post
+            to the chain REST endpoint.
           </Callout>
         ) : null}
       </div>
