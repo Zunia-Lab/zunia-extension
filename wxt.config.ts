@@ -2,6 +2,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "wxt";
 import tailwindcss from "@tailwindcss/vite";
+import type { Connect } from "vite";
 import { CONNECT_CONFIG } from "./config/connect";
 import {
   HOST_PERMISSIONS,
@@ -41,7 +42,7 @@ export default defineConfig({
         // render as a blank white page in unpackaged dev.
         name: "zunia-dev-local-network-access",
         configureServer(server) {
-          const middleware: import("connect").NextHandleFunction = (
+          const middleware: Connect.NextHandleFunction = (
             req,
             res,
             next,
