@@ -20,8 +20,8 @@ import { SigningPasswordProvider } from "./state/SigningPassword";
 import { BottomNav } from "./components/BottomNav";
 import { MoreDrawer } from "./components/MoreDrawer";
 import {
-  PARENT_ROUTE,
   isTabRoute,
+  pushLocation,
   type PopupLocation,
   type PopupRoute,
 } from "./routes";
@@ -36,7 +36,6 @@ import { SwapScreen } from "./screens/SwapScreen";
 import { ActivityScreen } from "./screens/ActivityScreen";
 import { ChainDetailScreen } from "./screens/ChainDetailScreen";
 import { TxDetailScreen } from "./screens/TxDetailScreen";
-import { AssetDetailScreen } from "./screens/AssetDetailScreen";
 import { ValidatorDetailScreen } from "./screens/ValidatorDetailScreen";
 import { SendScreen } from "./screens/SendScreen";
 import { ReceiveScreen } from "./screens/ReceiveScreen";
@@ -65,7 +64,6 @@ const UNLOCKED_ROUTES: PopupRoute[] = [
   "activity",
   "chain",
   "tx",
-  "asset",
   "validator",
   "send",
   "receive",
@@ -98,28 +96,63 @@ function initialRouteFromUrl(): PopupRoute | null {
 
 type ExtensionState = ReturnType<typeof useExtensionState>;
 
+/** A view opened without the data it shows, e.g. after the popup reloaded. */
+function Unavailable({
+  title,
+  description,
+  onBack,
+}: {
+  title: string;
+  description: string;
+  onBack: () => void;
+}) {
+  return (
+    <ScreenScaffold title={title} onBack={onBack}>
+      <div className="pt-6">
+        <EmptyState
+          title={`${title} unavailable`}
+          description={description}
+          action={
+            <Button size="sm" onClick={onBack}>
+              Go back
+            </Button>
+          }
+        />
+      </div>
+    </ScreenScaffold>
+  );
+}
+
 /** Stable identity for the empty address book. */
 const NO_CONTACTS: AddressBookEntry[] = [];
 
 function AppBody({ state }: { state: ExtensionState }) {
   const { status, settings, approvals, grants, error, loading, refresh } =
     state;
-  const [override, setOverrideState] = useState<PopupLocation | null>(() => {
+  // Where the user has been, newest last. Back pops; the bottom bar and the
+  // end of a flow start over. Empty means the default screen for the state.
+  const [history, setHistory] = useState<PopupLocation[]>(() => {
     const route = initialRouteFromUrl();
-    return route ? { route } : null;
+    return route ? [{ route }] : [];
   });
+  const override = history[history.length - 1] ?? null;
   // When the user last navigated. A dApp request newer than that takes over the
   // screen; an older one waits until the user comes back to it.
   const [navigatedAt, setNavigatedAt] = useState(0);
-  const setOverride = useCallback((next: PopupLocation | null) => {
-    setOverrideState(next);
+  const navigate = useCallback((next: PopupLocation) => {
+    setHistory((prev) => pushLocation(prev, next));
+    setNavigatedAt(Date.now());
+  }, []);
+  const resetTo = useCallback((next: PopupLocation | null) => {
+    setHistory(next ? pushLocation([], next) : []);
+    setNavigatedAt(Date.now());
+  }, []);
+  const back = useCallback(() => {
+    setHistory((prev) => prev.slice(0, -1));
     setNavigatedAt(Date.now());
   }, []);
   const [menuOpen, setMenuOpen] = useState(false);
   const [contacts, setContacts] = useState<AddressBookEntry[]>(NO_CONTACTS);
-  const [selectedTx, setSelectedTx] = useState<ActivityItem | null>(null);
-  const [selectedValidator, setSelectedValidator] =
-    useState<ValidatorInfo | null>(null);
 
   const unlocked = Boolean(status?.unlocked);
   const {
@@ -204,41 +237,37 @@ function AppBody({ state }: { state: ExtensionState }) {
   const route = location.route;
 
   const go = useCallback(
-    (next: PopupRoute | null, chainId?: string) => {
-      setOverride(next ? { route: next, chainId } : null);
-    },
-    [setOverride],
+    (next: PopupRoute, chainId?: string) => navigate({ route: next, chainId }),
+    [navigate],
   );
 
   const openTx = useCallback(
     (item: ActivityItem) => {
-      setSelectedTx(item);
-      setOverride({
+      navigate({
         route: "tx",
         chainId: item.chainId,
         hash: item.hash,
+        tx: item,
       });
     },
-    [setOverride],
+    [navigate],
   );
 
   const openValidator = useCallback(
     (validator: ValidatorInfo) => {
-      setSelectedValidator(validator);
-      setOverride({
+      navigate({
         route: "validator",
         chainId: validator.chainId,
         operatorAddress: validator.operatorAddress,
+        validator,
       });
     },
-    [setOverride],
+    [navigate],
   );
 
-  const openAsset = useCallback(
-    (chainId: string) => {
-      setOverride({ route: "asset", chainId });
-    },
-    [setOverride],
+  const openChain = useCallback(
+    (chainId: string) => navigate({ route: "chain", chainId }),
+    [navigate],
   );
 
   // A CW721 token is identified by three things, so all three travel in the
@@ -246,20 +275,15 @@ function AppBody({ state }: { state: ExtensionState }) {
   // address is only meaningful on its own chain.
   const openNftToken = useCallback(
     (input: { chainId: string; collectionAddress: string; tokenId: string }) => {
-      setOverride({
+      navigate({
         route: "nft-token",
         chainId: input.chainId,
         collectionAddress: input.collectionAddress,
         tokenId: input.tokenId,
       });
     },
-    [setOverride],
+    [navigate],
   );
-
-  const back = useCallback(() => {
-    const parent = PARENT_ROUTE[route] ?? "home";
-    setOverride(parent === "home" ? null : { route: parent });
-  }, [route, setOverride]);
 
   const activeAccount = status?.accounts.find(
     (a) => a.index === status.activeAccountIndex,
@@ -272,7 +296,7 @@ function AppBody({ state }: { state: ExtensionState }) {
     <>
       {children}
       {showTabs ? (
-        <BottomNav value={route} onChange={(next) => go(next)} />
+        <BottomNav value={route} onChange={(next) => resetTo({ route: next })} />
       ) : null}
     </>
   );
@@ -301,9 +325,9 @@ function AppBody({ state }: { state: ExtensionState }) {
 
       {route === "create" ? (
         <CreateWalletScreen
-          onBack={() => go(null)}
+          onBack={back}
           onDone={() => {
-            go(null);
+            resetTo(null);
             void refresh();
           }}
         />
@@ -311,9 +335,9 @@ function AppBody({ state }: { state: ExtensionState }) {
 
       {route === "import" ? (
         <ImportWalletScreen
-          onBack={() => go(null)}
+          onBack={back}
           onDone={() => {
-            go(null);
+            resetTo(null);
             void refresh();
           }}
         />
@@ -324,9 +348,9 @@ function AppBody({ state }: { state: ExtensionState }) {
           autoLockMs={status.autoLockMs}
           onForgot={() => go("forgot-password")}
           onUnlocked={() => {
-            go(
+            resetTo(
               approvals.length > 0 || initialRouteFromUrl() === "approve"
-                ? "approve"
+                ? { route: "approve" }
                 : null,
             );
             void refresh();
@@ -336,9 +360,9 @@ function AppBody({ state }: { state: ExtensionState }) {
 
       {route === "forgot-password" ? (
         <ForgotPasswordScreen
-          onBack={() => go(null)}
+          onBack={back}
           onRemoved={() => {
-            go(null);
+            resetTo(null);
             void refresh();
           }}
         />
@@ -361,7 +385,7 @@ function AppBody({ state }: { state: ExtensionState }) {
                 void reloadPrices(true);
               }}
               onNavigate={(next) => go(next)}
-              onOpenAsset={openAsset}
+              onOpenChain={openChain}
               onOpenTx={openTx}
               onOpenMenu={() => setMenuOpen(true)}
               onRefresh={() => void refresh()}
@@ -400,37 +424,32 @@ function AppBody({ state }: { state: ExtensionState }) {
           )
         : null}
 
-      {route === "tx" && selectedTx ? (
-        <TxDetailScreen item={selectedTx} onBack={back} />
+      {route === "tx" ? (
+        location.tx ? (
+          <TxDetailScreen item={location.tx} onBack={back} />
+        ) : (
+          <Unavailable
+            title="Transaction"
+            description="Open it again from Activity to see its details."
+            onBack={back}
+          />
+        )
       ) : null}
 
-      {route === "asset" ? (
-        selectedChain ? (
-          <AssetDetailScreen
-            chain={selectedChain}
-            balance={balances[selectedChain.chainId]}
-            price={prices[selectedChain.chainId]}
+      {route === "validator" ? (
+        location.validator ? (
+          <ValidatorDetailScreen
+            validator={location.validator}
             onBack={back}
             onNavigate={(next, chainId) => go(next, chainId)}
           />
         ) : (
-          <ScreenScaffold title="Asset" onBack={back}>
-            <div className="pt-6">
-              <EmptyState
-                title="Asset unavailable"
-                description="This chain is no longer enabled."
-              />
-            </div>
-          </ScreenScaffold>
+          <Unavailable
+            title="Validator"
+            description="Open it again from Earn to see its details."
+            onBack={back}
+          />
         )
-      ) : null}
-
-      {route === "validator" && selectedValidator ? (
-        <ValidatorDetailScreen
-          validator={selectedValidator}
-          onBack={back}
-          onNavigate={(next, chainId) => go(next, chainId)}
-        />
       ) : null}
 
       {route === "chain" ? (
@@ -442,6 +461,7 @@ function AppBody({ state }: { state: ExtensionState }) {
             loading={balancesLoading}
             onBack={back}
             onNavigate={(next, chainId) => go(next, chainId)}
+            onOpenTx={openTx}
           />
         ) : (
           // A chain can disappear while its page is open (disabled in Networks,
@@ -485,7 +505,7 @@ function AppBody({ state }: { state: ExtensionState }) {
           onBack={back}
           onAddChain={() => go("add-chain")}
           onSaved={() => {
-            go(null);
+            resetTo(null);
             void refresh();
             void reloadChains().then(() => {
               void reloadBalances(true);
@@ -524,20 +544,23 @@ function AppBody({ state }: { state: ExtensionState }) {
         />
       ) : null}
 
-      {route === "nft-token" &&
-      location.chainId &&
-      location.collectionAddress &&
-      location.tokenId ? (
-        <NftDetailScreen
-          chainId={location.chainId}
-          collectionAddress={location.collectionAddress}
-          tokenId={location.tokenId}
-          chains={chains}
-          contacts={contacts}
-          // Back goes to the list on the same chain rather than to the list's
-          // default chain, which is where the user actually came from.
-          onBack={() => go("nft", location.chainId)}
-        />
+      {route === "nft-token" ? (
+        location.chainId && location.collectionAddress && location.tokenId ? (
+          <NftDetailScreen
+            chainId={location.chainId}
+            collectionAddress={location.collectionAddress}
+            tokenId={location.tokenId}
+            chains={chains}
+            contacts={contacts}
+            onBack={back}
+          />
+        ) : (
+          <Unavailable
+            title="NFT"
+            description="Open it again from your collection to see it."
+            onBack={back}
+          />
+        )
       ) : null}
 
       {route === "bridge" ? (
@@ -589,7 +612,7 @@ function AppBody({ state }: { state: ExtensionState }) {
           onBack={back}
           onNavigate={(next) => go(next)}
           onRemoved={() => {
-            go(null);
+            resetTo(null);
             void refresh();
           }}
         />
@@ -620,14 +643,20 @@ function AppBody({ state }: { state: ExtensionState }) {
           approvals={approvals}
           status={status}
           requirePassword={Boolean(settings?.requirePasswordOnSign)}
-          onDone={() => {
+          onDone={(answeredId) => {
+            void refresh();
+            // More requests queued: stay here and show the next one.
+            if (approvals.some((item) => item.id !== answeredId)) return;
             // A window opened only to answer requests closes with the last one.
-            if (initialRouteFromUrl() === "approve" && approvals.length <= 1) {
+            if (initialRouteFromUrl() === "approve") {
               window.close();
               return;
             }
-            go(null);
-            void refresh();
+            // Opened on purpose: go back to where it was opened from. Shown
+            // because a request arrived: mark it seen so the screen underneath
+            // comes back.
+            if (override?.route === "approve") back();
+            else setNavigatedAt(Date.now());
           }}
         />
       ) : null}

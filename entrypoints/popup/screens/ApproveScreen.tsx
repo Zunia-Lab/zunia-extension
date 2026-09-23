@@ -162,7 +162,8 @@ export function ApproveScreen({
   approvals: ApprovalRequest[];
   status: SessionStatus;
   requirePassword: boolean;
-  onDone: () => void;
+  /** Called with the id of the request just answered, or nothing when leaving. */
+  onDone: (answeredId?: string) => void;
 }) {
   const current = approvals[0];
   const [password, setPassword] = useState("");
@@ -189,9 +190,9 @@ export function ApproveScreen({
     return (
       <ScreenScaffold
         title="Requests"
-        onBack={onDone}
+        onBack={() => onDone()}
         footer={
-          <Button className="w-full" size="lg" onClick={onDone}>
+          <Button className="w-full" size="lg" onClick={() => onDone()}>
             Back to wallet
           </Button>
         }
@@ -229,7 +230,7 @@ export function ApproveScreen({
         password: needsPassword ? password : undefined,
       });
       setPassword("");
-      onDone();
+      onDone(current!.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       setBusy(null);
@@ -246,7 +247,7 @@ export function ApproveScreen({
     } catch {
       // Already gone from the queue (expired, or the tab closed): nothing left to reject.
     }
-    onDone();
+    onDone(current!.id);
   }
 
   return (

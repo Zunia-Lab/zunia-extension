@@ -336,7 +336,7 @@ export function HomeScreen({
   onHostGranted,
   onReloadBalances,
   onNavigate,
-  onOpenAsset,
+  onOpenChain,
   onOpenTx,
   onOpenMenu,
   onRefresh,
@@ -352,7 +352,7 @@ export function HomeScreen({
   onHostGranted: () => void;
   onReloadBalances: () => void;
   onNavigate: (route: PopupRoute) => void;
-  onOpenAsset: (chainId: string) => void;
+  onOpenChain: (chainId: string) => void;
   onOpenTx: (item: ActivityItem) => void;
   onOpenMenu: () => void;
   onRefresh: () => void;
@@ -601,7 +601,7 @@ export function HomeScreen({
                     price={prices[chain.chainId]}
                     currency={currency}
                     hidden={hidden}
-                    onOpen={() => onOpenAsset(chain.chainId)}
+                    onOpen={() => onOpenChain(chain.chainId)}
                   />
                 </li>
               ))}
@@ -642,7 +642,7 @@ export function HomeScreen({
                       price={prices[chain.chainId]}
                       currency={currency}
                       hidden={hidden}
-                      onOpen={() => onOpenAsset(chain.chainId)}
+                      onOpen={() => onOpenChain(chain.chainId)}
                     />
                   </li>
                 ))}

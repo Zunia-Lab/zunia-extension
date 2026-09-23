@@ -1,0 +1,40 @@
+import { describe, expect, it } from "vitest";
+import { MAX_HISTORY, pushLocation, type PopupLocation } from "./routes";
+
+describe("popup history", () => {
+  it("pushes views and pops back to where the user came from", () => {
+    let stack: PopupLocation[] = [];
+    stack = pushLocation(stack, { route: "settings" });
+    stack = pushLocation(stack, { route: "security" });
+    stack = pushLocation(stack, { route: "reveal" });
+    expect(stack.map((l) => l.route)).toEqual(["settings", "security", "reveal"]);
+    expect(stack.slice(0, -1).at(-1)?.route).toBe("security");
+  });
+
+  it("starts over on a tab root", () => {
+    const stack = pushLocation([{ route: "chain", chainId: "osmosis-1" }], {
+      route: "swap",
+      chainId: "osmosis-1",
+    });
+    expect(stack).toEqual([{ route: "swap", chainId: "osmosis-1" }]);
+    expect(pushLocation(stack, { route: "home" })).toEqual([]);
+  });
+
+  it("does not stack the same view twice", () => {
+    const stack = pushLocation([{ route: "chain", chainId: "a" }], {
+      route: "chain",
+      chainId: "a",
+    });
+    expect(stack).toHaveLength(1);
+    expect(pushLocation(stack, { route: "chain", chainId: "b" })).toHaveLength(2);
+  });
+
+  it("keeps a bounded history", () => {
+    let stack: PopupLocation[] = [];
+    for (let i = 0; i < MAX_HISTORY + 10; i++) {
+      stack = pushLocation(stack, { route: "chain", chainId: `c${i}` });
+    }
+    expect(stack).toHaveLength(MAX_HISTORY);
+    expect(stack.at(-1)?.chainId).toBe(`c${MAX_HISTORY + 9}`);
+  });
+});

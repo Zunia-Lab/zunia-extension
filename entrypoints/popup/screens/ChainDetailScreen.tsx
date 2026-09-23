@@ -14,6 +14,7 @@ import {
   focusRing,
 } from "@zunialab/ui";
 import type { ChainBalance } from "../../../lib/balances";
+import type { ActivityItem } from "../../../lib/chain-queries";
 import type { SpotPrice } from "../../../lib/prices";
 import { toWholeCoins } from "../../../lib/portfolio";
 import {
@@ -109,8 +110,9 @@ function Breakdown({
 }
 
 /**
- * One enabled chain: live balance breakdown, money actions, other denoms,
- * and recent transactions from the public endpoint.
+ * One enabled chain, and the screen a token on Home opens: live balance
+ * breakdown with fiat values, money actions, other denoms, and recent
+ * transactions from the public endpoint.
  */
 export function ChainDetailScreen({
   chain,
@@ -119,6 +121,7 @@ export function ChainDetailScreen({
   loading,
   onBack,
   onNavigate,
+  onOpenTx,
 }: {
   chain: ChainAccountView;
   balance?: ChainBalance;
@@ -126,6 +129,7 @@ export function ChainDetailScreen({
   loading: boolean;
   onBack: () => void;
   onNavigate: (route: PopupRoute, chainId: string) => void;
+  onOpenTx: (item: ActivityItem) => void;
 }) {
   const { settings, hidden } = usePrefs();
   const entry = chain.entry;
@@ -381,38 +385,49 @@ export function ChainDetailScreen({
                 return (
                   <li
                     key={`${item.chainId}:${item.hash}`}
-                    className="flex items-center gap-2.5 border-b border-[var(--z-line)] py-2.5 last:border-b-0"
+                    className="border-b border-[var(--z-line)] last:border-b-0"
                   >
-                    <span
-                      className="flex size-8 shrink-0 items-center justify-center rounded-full border text-[15px] font-semibold leading-none"
-                      style={{
-                        color: presentation.fg,
-                        background: presentation.bg,
-                        borderColor: presentation.border,
-                      }}
-                      aria-label={presentation.label}
+                    <button
+                      type="button"
+                      onClick={() => onOpenTx(item)}
+                      className={cn(
+                        "-mx-1.5 flex w-[calc(100%+12px)] items-center gap-2.5 rounded-[10px] px-1.5 py-2.5 text-left",
+                        "hover:bg-[var(--z-state-hover)]",
+                        focusRing,
+                      )}
                     >
-                      {presentation.icon}
-                    </span>
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate text-[11.5px] font-medium text-fg">
-                        {item.title}
-                      </span>
-                      <span className="mt-[2px] block truncate font-mono text-[8.5px] text-fg-dim">
-                        {item.subtitle} · {relativeTime(item.timestamp)}
-                      </span>
-                    </span>
-                    {signed ? (
                       <span
-                        className={cn(
-                          amountInlineClass,
-                          "shrink-0",
-                          amountClass,
-                        )}
+                        className="flex size-8 shrink-0 items-center justify-center rounded-full border text-[15px] font-semibold leading-none"
+                        style={{
+                          color: presentation.fg,
+                          background: presentation.bg,
+                          borderColor: presentation.border,
+                        }}
+                        role="img"
+                        aria-label={presentation.label}
                       >
-                        {hidden ? "••••" : signed}
+                        {presentation.icon}
                       </span>
-                    ) : null}
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-[11.5px] font-medium text-fg">
+                          {item.title}
+                        </span>
+                        <span className="mt-[2px] block truncate font-mono text-[8.5px] text-fg-dim">
+                          {item.subtitle} · {relativeTime(item.timestamp)}
+                        </span>
+                      </span>
+                      {signed ? (
+                        <span
+                          className={cn(
+                            amountInlineClass,
+                            "shrink-0",
+                            amountClass,
+                          )}
+                        >
+                          {hidden ? "••••" : signed}
+                        </span>
+                      ) : null}
+                    </button>
                   </li>
                 );
               })}
