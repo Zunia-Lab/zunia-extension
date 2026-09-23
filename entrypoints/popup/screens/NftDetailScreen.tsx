@@ -55,7 +55,7 @@ import {
 import { sendToBackground } from "../../../lib/popup-client";
 import type { TxPreview } from "../../../lib/tx-kernel";
 import type { ChainAccountView } from "../hooks/useChainAccounts";
-import { OverlayMenu, OverlayMenuItem } from "../components/OverlayMenu";
+import { ChainSheet, PickerTrigger } from "../components/ChainSheet";
 import { useKernelSigning } from "./interchain-ui";
 import {
   BridgeOverride,
@@ -65,8 +65,7 @@ import {
   useNftChains,
   useNftMediaGate,
 } from "./nft-ui";
-import { IconChevronDown } from "./icons";
-import { useSignedSend } from "../state/SigningPassword";
+import { signingError, useSignedSend } from "../state/SigningPassword";
 
 type Phase = "view" | "transfer" | "confirm" | "sent";
 type Destination = "same" | "cross";
@@ -443,7 +442,7 @@ export function NftDetailScreen({
       setSent(result);
       setPhase("sent");
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : String(caught));
+      setError(signingError(caught));
     } finally {
       setBusy(false);
     }
@@ -702,46 +701,30 @@ export function NftDetailScreen({
 
           {cross ? (
             <section className="flex flex-col gap-2">
-              <div className="relative">
-                <button
-                  type="button"
-                  aria-haspopup="listbox"
-                  aria-expanded={destPickerOpen}
-                  disabled={destChains.length === 0}
-                  onClick={() => setDestPickerOpen((v) => !v)}
-                  className={cn(
-                    "flex w-full items-center gap-2 rounded-[13px] border border-[var(--z-line)] px-3 py-2 text-left",
-                    "hover:bg-[var(--z-state-hover)] disabled:cursor-not-allowed disabled:opacity-50",
-                    focusRing,
-                  )}
-                >
-                  <span className="min-w-0 flex-1 truncate text-[12px] text-fg">
-                    {destChain?.entry.chainName ??
-                      (destChains.length === 0
-                        ? "No other CosmWasm network is enabled"
-                        : "Pick a destination network")}
-                  </span>
-                  <IconChevronDown width={14} height={14} className="shrink-0 text-fg-dim" />
-                </button>
-                <OverlayMenu open={destPickerOpen} onClose={() => setDestPickerOpen(false)}>
-                  {destChains.map((option) => (
-                    <OverlayMenuItem
-                      key={option.chainId}
-                      selected={option.chainId === destChainId}
-                      onSelect={() => {
-                        setDestChainId(option.chainId);
-                        setChannelId("");
-                        setChannelNote(null);
-                        setDestPickerOpen(false);
-                      }}
-                    >
-                      <span className="min-w-0 flex-1 truncate text-[11px] text-fg">
-                        {option.entry.chainName}
-                      </span>
-                    </OverlayMenuItem>
-                  ))}
-                </OverlayMenu>
-              </div>
+              <PickerTrigger
+                className="rounded-[13px] py-2"
+                expanded={destPickerOpen}
+                disabled={destChains.length === 0}
+                onClick={() => setDestPickerOpen(true)}
+                title={
+                  destChain?.entry.chainName ??
+                  (destChains.length === 0
+                    ? "No other CosmWasm network is enabled"
+                    : "Pick a destination network")
+                }
+              />
+              <ChainSheet
+                open={destPickerOpen}
+                onClose={() => setDestPickerOpen(false)}
+                title="Destination network"
+                chains={destChains}
+                selectedId={destChainId ?? undefined}
+                onSelect={(id) => {
+                  setDestChainId(id);
+                  setChannelId("");
+                  setChannelNote(null);
+                }}
+              />
 
               {/* The bridge is host configuration and ships unset, so this is
                   the state most users will see. It names the missing piece

@@ -1,8 +1,17 @@
-import { useEffect, useRef, useState } from "react";
-import { cn, focusRing } from "@zunialab/ui";
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  Dialog,
+  DialogClose,
+  DialogTitle,
+  SheetContent,
+  cn,
+  focusRing,
+  truncateAddress,
+} from "@zunialab/ui";
 import { extractBech32Address } from "../../../lib/address-payload";
 import type { AddressBookEntry } from "../../../lib/address-book";
 import { IconBook, IconClose, IconQr } from "../screens/icons";
+import { PickerSheet, type PickerItem } from "./PickerSheet";
 
 type BarcodeDetectorLike = {
   detect: (source: ImageBitmapSource) => Promise<Array<{ rawValue?: string }>>;
@@ -53,7 +62,11 @@ export function AddressFieldActions({
   );
 }
 
-/** Full-screen picker over the current screen (does not navigate away). */
+/**
+ * Saved recipients as a searchable sheet over the current screen. Only
+ * contacts whose address fits the destination chain are listed, so a pick can
+ * never fill in an address the chain would reject.
+ */
 export function AddressBookPicker({
   contacts,
   expectedPrefix,
@@ -65,62 +78,36 @@ export function AddressBookPicker({
   onPick: (address: string) => void;
   onClose: () => void;
 }) {
-  const filtered = expectedPrefix
-    ? contacts.filter((c) => c.address.startsWith(`${expectedPrefix}1`))
-    : contacts;
+  const items = useMemo<PickerItem[]>(
+    () =>
+      contacts
+        .filter((c) => !expectedPrefix || c.address.startsWith(`${expectedPrefix}1`))
+        .map((contact) => ({
+          id: contact.id,
+          label: contact.label,
+          sublabel: truncateAddress(contact.address, 12, 8),
+          keywords: [contact.address],
+        })),
+    [contacts, expectedPrefix],
+  );
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col bg-bg">
-      <header className="flex items-center gap-2 border-b border-[var(--z-line)] px-3 py-2.5">
-        <button
-          type="button"
-          aria-label="Close"
-          onClick={onClose}
-          className={cn(
-            "flex size-8 items-center justify-center rounded-full text-fg-dim hover:bg-[var(--z-state-hover)] hover:text-fg",
-            focusRing,
-          )}
-        >
-          <IconClose width={16} height={16} />
-        </button>
-        <h2 className="flex-1 text-[14px] font-medium text-fg">Address book</h2>
-        <span className="font-mono text-[10px] text-fg-dim">
-          {filtered.length}
-        </span>
-      </header>
-      <div className="min-h-0 flex-1 overflow-y-auto p-3">
-        {filtered.length === 0 ? (
-          <p className="px-1 pt-6 text-center text-[12.5px] text-fg-dim">
-            {contacts.length === 0
-              ? "No saved recipients yet."
-              : `No contacts match ${expectedPrefix}1…`}
-          </p>
-        ) : (
-          <ul className="flex flex-col gap-1.5">
-            {filtered.map((contact) => (
-              <li key={contact.id}>
-                <button
-                  type="button"
-                  onClick={() => onPick(contact.address)}
-                  className={cn(
-                    "flex w-full flex-col gap-0.5 rounded-[12px] border border-[var(--z-line)] px-3 py-2.5 text-left",
-                    "hover:bg-[var(--z-state-hover)]",
-                    focusRing,
-                  )}
-                >
-                  <span className="truncate text-[13px] font-medium text-fg">
-                    {contact.label}
-                  </span>
-                  <span className="truncate font-mono text-[10px] text-fg-dim">
-                    {contact.address}
-                  </span>
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
-    </div>
+    <PickerSheet
+      open
+      onClose={onClose}
+      title="Address book"
+      items={items}
+      searchPlaceholder="Search by name or address"
+      emptyLabel={
+        contacts.length === 0
+          ? "No saved recipients yet."
+          : `No saved address starts with ${expectedPrefix}1.`
+      }
+      onSelect={(id) => {
+        const contact = contacts.find((c) => c.id === id);
+        if (contact) onPick(contact.address);
+      }}
+    />
   );
 }
 
@@ -222,55 +209,63 @@ export function QrScanOverlay({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col bg-bg">
-      <header className="flex items-center gap-2 border-b border-[var(--z-line)] px-3 py-2.5">
-        <button
-          type="button"
-          aria-label="Close"
-          onClick={onClose}
-          className={cn(
-            "flex size-8 items-center justify-center rounded-full text-fg-dim hover:bg-[var(--z-state-hover)] hover:text-fg",
-            focusRing,
+    <Dialog
+      open
+      onOpenChange={(next) => {
+        if (!next) onClose();
+      }}
+    >
+      <SheetContent
+        aria-describedby={undefined}
+        className="flex h-[92vh] max-h-[92vh] flex-col overflow-hidden px-0 pb-0 pt-3"
+      >
+        <header className="flex items-center gap-2 border-b border-[var(--z-line)] px-3 pb-2.5">
+          <DialogClose
+            aria-label="Close"
+            className={cn(
+              "flex size-8 items-center justify-center rounded-full text-fg-dim hover:bg-[var(--z-state-hover)] hover:text-fg",
+              focusRing,
+            )}
+          >
+            <IconClose width={16} height={16} />
+          </DialogClose>
+          <DialogTitle className="flex-1 text-[14px]">Scan address</DialogTitle>
+        </header>
+        <div className="flex min-h-0 flex-1 flex-col gap-3 p-3">
+          {supported ? (
+            <div className="relative min-h-0 flex-1 overflow-hidden rounded-[16px] bg-black">
+              <video
+                ref={videoRef}
+                muted
+                playsInline
+                className="size-full object-cover"
+              />
+            </div>
+          ) : (
+            <p className="px-1 pt-4 text-center text-[12.5px] text-fg-dim">
+              Point your camera at a wallet QR, or upload a screenshot.
+            </p>
           )}
-        >
-          <IconClose width={16} height={16} />
-        </button>
-        <h2 className="flex-1 text-[14px] font-medium text-fg">Scan address</h2>
-      </header>
-      <div className="flex min-h-0 flex-1 flex-col gap-3 p-3">
-        {supported ? (
-          <div className="relative min-h-0 flex-1 overflow-hidden rounded-[16px] bg-black">
-            <video
-              ref={videoRef}
-              muted
-              playsInline
-              className="size-full object-cover"
+          {error ? (
+            <p className="text-center text-[11.5px] text-[var(--z-danger)]">
+              {error}
+            </p>
+          ) : null}
+          <label className="flex w-full cursor-pointer items-center justify-center rounded-[12px] border border-[var(--z-line)] py-2.5 text-[12.5px] font-medium text-fg transition-colors hover:bg-[var(--z-state-hover)]">
+            Upload QR image
+            <input
+              type="file"
+              accept="image/*"
+              className="sr-only"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) void onFile(file);
+                e.target.value = "";
+              }}
             />
-          </div>
-        ) : (
-          <p className="px-1 pt-4 text-center text-[12.5px] text-fg-dim">
-            Point your camera at a wallet QR, or upload a screenshot.
-          </p>
-        )}
-        {error ? (
-          <p className="text-center text-[11.5px] text-[var(--z-danger)]">
-            {error}
-          </p>
-        ) : null}
-        <label className="flex w-full cursor-pointer items-center justify-center rounded-[12px] border border-[var(--z-line)] py-2.5 text-[12.5px] font-medium text-fg transition-colors hover:bg-[var(--z-state-hover)]">
-          Upload QR image
-          <input
-            type="file"
-            accept="image/*"
-            className="sr-only"
-            onChange={(e) => {
-              const file = e.target.files?.[0];
-              if (file) void onFile(file);
-              e.target.value = "";
-            }}
-          />
-        </label>
-      </div>
-    </div>
+          </label>
+        </div>
+      </SheetContent>
+    </Dialog>
   );
 }

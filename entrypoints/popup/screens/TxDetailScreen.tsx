@@ -2,9 +2,12 @@ import {
   Button,
   ScreenScaffold,
   TxDetail,
+  truncateAddress,
 } from "@zunialab/ui";
 import type { ActivityItem } from "../../../lib/chain-queries";
 import { findCatalogEntry } from "../../../lib/chain-catalog";
+import { useToast } from "../state/Toasts";
+import { IconCopy } from "./icons";
 
 export function TxDetailScreen({
   item,
@@ -14,6 +17,17 @@ export function TxDetailScreen({
   onBack: () => void;
 }) {
   const chain = findCatalogEntry(item.chainId);
+  const toast = useToast();
+
+  async function copyHash() {
+    try {
+      await navigator.clipboard.writeText(item.hash);
+      toast("Hash copied", { meta: truncateAddress(item.hash, 6, 4) });
+    } catch {
+      toast("Could not copy the hash", { tone: "danger" });
+    }
+  }
+
   return (
     <ScreenScaffold title="Transaction" onBack={onBack}>
       <div className="flex flex-col gap-4 pt-1">
@@ -27,8 +41,11 @@ export function TxDetailScreen({
               summary: `${item.title} · ${item.subtitle}`,
             },
           ]}
-          fees={[{ label: "Fee", value: "—" }]}
         />
+        <Button variant="secondary" onClick={() => void copyHash()}>
+          <IconCopy width={15} height={15} />
+          Copy hash
+        </Button>
         {chain?.rest ? (
           <Button variant="secondary" asChild>
             <a

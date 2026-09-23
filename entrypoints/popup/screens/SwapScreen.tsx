@@ -78,7 +78,7 @@ import {
   useSwapVenue,
 } from "./interchain-ui";
 import { IconSwap } from "./icons";
-import { useSignedSend } from "../state/SigningPassword";
+import { signingError, useSignedSend } from "../state/SigningPassword";
 
 const PERCENTS = [25, 50, 75, 100] as const;
 
@@ -432,7 +432,7 @@ export function SwapScreen({
         setPhase("sent");
       }
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : String(caught));
+      setError(signingError(caught));
     } finally {
       setBusy(false);
     }

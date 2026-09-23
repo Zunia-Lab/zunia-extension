@@ -6,7 +6,6 @@ import {
   FeeSummary,
   Pill,
   ScreenScaffold,
-  Spinner,
   cn,
   focusRing,
   truncateAddress,
@@ -18,7 +17,8 @@ import type { ChainAccountView } from "../hooks/useChainAccounts";
 import { useProposals } from "../hooks/useChainQuery";
 import { usePrefs } from "../state/Prefs";
 import { IconGovernance } from "./icons";
-import { useSignedSend } from "../state/SigningPassword";
+import { signingError, useSignedSend } from "../state/SigningPassword";
+import { ListSkeleton } from "../components/ListSkeleton";
 
 type VoteOption = AminoVote;
 
@@ -218,7 +218,7 @@ export function GovernanceScreen({
       );
       setTxHash(result.txhash);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(signingError(err));
     } finally {
       setBusy(false);
     }
@@ -256,9 +256,7 @@ export function GovernanceScreen({
         ) : null}
 
         {loading ? (
-          <div className="flex justify-center py-10">
-            <Spinner />
-          </div>
+          <ListSkeleton rows={4} avatar={false} label="Loading proposals" />
         ) : sorted.length === 0 ? (
           <EmptyState
             icon={<IconGovernance width={16} height={16} />}

@@ -1,17 +1,11 @@
 import { useState } from "react";
-import {
-  Avatar,
-  Button,
-  Callout,
-  ScreenScaffold,
-  Spinner,
-  cn,
-  focusRing,
-} from "@zunialab/ui";
+import { Avatar, Button, Callout, ScreenScaffold, Skeleton } from "@zunialab/ui";
 import type { SessionStatus } from "../../../lib/session";
+import { ChainSheet, PickerTrigger } from "../components/ChainSheet";
 import { QrCode } from "../components/QrCode";
 import { useChainAccounts } from "../hooks/useChainAccounts";
-import { IconCheck, IconCopy } from "./icons";
+import { useToast } from "../state/Toasts";
+import { IconCopy } from "./icons";
 
 export function ReceiveScreen({
   status,
@@ -29,7 +23,8 @@ export function ReceiveScreen({
   const [chainId, setChainId] = useState<string | null>(
     initialChainId ?? null,
   );
-  const [copied, setCopied] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const toast = useToast();
 
   // The fallback to the first account is the whole default, so there is nothing
   // for an effect to seed: writing `chainId` from an effect just to have the
@@ -39,9 +34,12 @@ export function ReceiveScreen({
 
   async function copyAddress() {
     if (!selected) return;
-    await navigator.clipboard.writeText(selected.address);
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1600);
+    try {
+      await navigator.clipboard.writeText(selected.address);
+      toast("Address copied", { meta: selected.entry.chainName });
+    } catch {
+      toast("Could not copy. Select the address and copy it by hand.", { tone: "danger" });
+    }
   }
 
   return (
@@ -55,52 +53,39 @@ export function ReceiveScreen({
           disabled={!selected}
           onClick={() => void copyAddress()}
         >
-          {copied ? (
-            <IconCheck width={16} height={16} />
-          ) : (
-            <IconCopy width={16} height={16} />
-          )}
-          {copied ? "Address copied" : "Copy address"}
+          <IconCopy width={16} height={16} />
+          Copy address
         </Button>
       }
     >
       {loading && accounts.length === 0 ? (
-        <div className="flex items-center justify-center gap-2 py-16 text-fg-dim">
-          <Spinner />
-          <span className="text-[12px]">Deriving addresses…</span>
+        <div className="flex flex-col gap-4 pt-1" role="status" aria-label="Deriving addresses">
+          <Skeleton className="h-[50px] w-full rounded-[12px]" />
+          <Skeleton className="h-[260px] w-full rounded-[18px]" />
         </div>
       ) : null}
 
       {selected ? (
         <div className="flex flex-col gap-4 pt-1">
-          <ul className="-mx-1 flex gap-1.5 overflow-x-auto px-1 pb-1">
-            {accounts.map((chain) => {
-              const active = chain.chainId === selected.chainId;
-              return (
-                <li key={chain.chainId} className="shrink-0">
-                  <button
-                    type="button"
-                    onClick={() => setChainId(chain.chainId)}
-                    className={cn(
-                      "flex items-center gap-1.5 rounded-full border py-1 pl-1 pr-2.5 text-[11.5px] font-medium",
-                      "transition-colors duration-[var(--z-duration-base)]",
-                      active
-                        ? "border-[color-mix(in_srgb,var(--z-accent)_50%,var(--z-line))] bg-[color-mix(in_srgb,var(--z-accent)_12%,transparent)] text-fg"
-                        : "border-[var(--z-line)] text-fg-muted hover:bg-[var(--z-state-hover)] hover:text-fg",
-                      focusRing,
-                    )}
-                  >
-                    <Avatar
-                      src={chain.iconUrl}
-                      fallback={chain.entry.chainName}
-                      size={18}
-                    />
-                    {chain.entry.chainName}
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
+          <PickerTrigger
+            expanded={pickerOpen}
+            onClick={() => setPickerOpen(true)}
+            aria-label={`Network: ${selected.entry.chainName}`}
+            icon={
+              <Avatar src={selected.iconUrl} fallback={selected.entry.chainName} size={26} />
+            }
+            title={selected.entry.chainName}
+            subtitle={selected.entry.chainId}
+            detail={accounts.length > 1 ? `${accounts.length} networks` : undefined}
+          />
+          <ChainSheet
+            open={pickerOpen}
+            onClose={() => setPickerOpen(false)}
+            title="Receive on"
+            chains={accounts}
+            selectedId={selected.chainId}
+            onSelect={setChainId}
+          />
 
           <div className="flex flex-col items-center gap-3 rounded-[18px] border border-[var(--z-line)] bg-[var(--z-glass)] px-4 py-5">
             <QrCode value={selected.address} size={168} />

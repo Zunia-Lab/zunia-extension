@@ -8,8 +8,9 @@
  * editor — lives here so the three screens cannot drift apart.
  */
 
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import {
+  Avatar,
   Button,
   Callout,
   Input,
@@ -46,7 +47,9 @@ import { sendToBackground } from "../../../lib/popup-client";
 import type { KernelStatus } from "../../../lib/kernel";
 import type { ChainAccount } from "../../../lib/session";
 import type { ChainAccountView } from "../hooks/useChainAccounts";
-import { OverlayMenu, OverlayMenuItem } from "../components/OverlayMenu";
+import { PickerSheet, type PickerItem } from "../components/PickerSheet";
+import { usePickerMemory } from "../hooks/usePickerMemory";
+import { IconChevronDown } from "./icons";
 
 /* -------------------------------------------------------------------------- *
  * Assets the wallet can spend
@@ -885,6 +888,30 @@ export function AssetSide({
 }) {
   const [open, setOpen] = useState(false);
   const amountId = useId();
+  const memory = usePickerMemory("token");
+  const items = useMemo<PickerItem[]>(
+    () =>
+      options.map((option) => ({
+        id: option.key,
+        label: option.label,
+        sublabel: option.chainName,
+        keywords: [option.symbol, option.denom, option.chainId],
+        icon: (
+          <Avatar
+            src={option.iconUrl ?? option.chainIconUrl}
+            fallback={option.symbol}
+            size={24}
+          />
+        ),
+        trailing:
+          option.amount === "0" ? null : (
+            <span className="font-mono text-[9.5px] tabular-nums text-fg-dim">
+              {formatUnits(option.amount, option.decimals)}
+            </span>
+          ),
+      })),
+    [options],
+  );
   return (
     <section className="rounded-[13px] border border-[var(--z-line)] px-3 py-2.5">
       <div className="flex items-baseline justify-between gap-2">
@@ -894,52 +921,51 @@ export function AssetSide({
         <span className="truncate font-mono text-[9.5px] text-fg-dim">{meta}</span>
       </div>
       <div className="mt-2 flex items-center gap-2">
-        <div className="relative min-w-0 shrink-0">
-          <button
-            type="button"
-            aria-haspopup="listbox"
-            aria-expanded={open}
-            disabled={options.length === 0}
-            onClick={() => setOpen((v) => !v)}
-            className={cn(
-              "flex max-w-[140px] items-center gap-1.5 rounded-full border border-[var(--z-line)] py-1 pl-2 pr-2",
-              "transition-colors duration-[var(--z-duration-base)] hover:bg-[var(--z-state-hover)]",
-              "disabled:cursor-not-allowed disabled:opacity-50",
-              focusRing,
-            )}
-          >
-            <span className="min-w-0 text-left">
-              <span className="block truncate font-mono text-[10.5px] uppercase tracking-[0.06em] text-fg">
-                {asset?.symbol ?? emptyLabel}
-              </span>
-              <span className="block truncate font-mono text-[8.5px] text-fg-dim">
-                {asset?.chainName ?? "—"}
-              </span>
+        <button
+          type="button"
+          aria-haspopup="dialog"
+          aria-expanded={open}
+          aria-label={`${label} asset: ${asset ? `${asset.symbol} on ${asset.chainName}` : emptyLabel}`}
+          disabled={options.length === 0}
+          onClick={() => setOpen(true)}
+          className={cn(
+            "flex min-w-0 max-w-[140px] shrink-0 items-center gap-1.5 rounded-full border border-[var(--z-line)] py-1 pl-1 pr-2",
+            "transition-colors duration-[var(--z-duration-base)] hover:bg-[var(--z-state-hover)]",
+            "disabled:cursor-not-allowed disabled:opacity-50",
+            focusRing,
+          )}
+        >
+          <Avatar
+            src={asset?.iconUrl ?? asset?.chainIconUrl}
+            fallback={asset?.symbol ?? "?"}
+            size={22}
+          />
+          <span className="min-w-0 text-left">
+            <span className="block truncate font-mono text-[10.5px] uppercase tracking-[0.06em] text-fg">
+              {asset?.symbol ?? emptyLabel}
             </span>
-          </button>
-          <OverlayMenu open={open} onClose={() => setOpen(false)} className="w-[220px]">
-            {options.map((option) => (
-              <OverlayMenuItem
-                key={option.key}
-                selected={option.key === asset?.key}
-                onSelect={() => {
-                  onSelect(option.key);
-                  setOpen(false);
-                }}
-              >
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-[11px] text-fg">{option.label}</span>
-                  <span className="block truncate font-mono text-[9px] text-fg-dim">
-                    {option.chainName}
-                  </span>
-                </span>
-                <span className="shrink-0 font-mono text-[9px] tabular-nums text-fg-dim">
-                  {formatUnits(option.amount, option.decimals)}
-                </span>
-              </OverlayMenuItem>
-            ))}
-          </OverlayMenu>
-        </div>
+            <span className="block truncate font-mono text-[8.5px] text-fg-dim">
+              {asset?.chainName ?? "-"}
+            </span>
+          </span>
+          <IconChevronDown width={12} height={12} className="shrink-0 text-fg-dim" />
+        </button>
+        <PickerSheet
+          open={open}
+          onClose={() => setOpen(false)}
+          title={`${label}: choose an asset`}
+          items={items}
+          selectedId={asset?.key}
+          searchPlaceholder="Search by token or network"
+          favorites={memory.favorites}
+          recents={memory.recents}
+          onToggleFavorite={memory.toggleFavorite}
+          emptyLabel={emptyLabel}
+          onSelect={(key) => {
+            memory.remember(key);
+            onSelect(key);
+          }}
+        />
         <label className="sr-only" htmlFor={amountId}>
           {label} amount
         </label>

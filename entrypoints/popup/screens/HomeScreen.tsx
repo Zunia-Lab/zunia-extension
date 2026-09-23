@@ -5,6 +5,7 @@ import {
   ConnectedBanner,
   EmptyState,
   ScreenScaffold,
+  SearchField,
   Tabs,
   TabsContent,
   TabsList,
@@ -31,6 +32,7 @@ import {
 import type { PriceMap, SpotPrice } from "../../../lib/prices";
 import type { ActivityItem } from "../../../lib/chain-queries";
 import { computePortfolio, toWholeCoins } from "../../../lib/portfolio";
+import { searchItems } from "../../../lib/picker";
 import { sendToBackground } from "../../../lib/popup-client";
 import {
   NO_VALUE,
@@ -42,10 +44,10 @@ import { PopupHeader } from "../components/PopupHeader";
 import type { ChainAccountView } from "../hooks/useChainAccounts";
 import { useActivity } from "../hooks/useChainQuery";
 import { usePrefs } from "../state/Prefs";
+import { useToast } from "../state/Toasts";
 import type { PopupRoute } from "../routes";
 import {
   IconActivity,
-  IconCheck,
   IconChevronDown,
   IconCopy,
   IconEye,
@@ -57,6 +59,9 @@ import {
   IconStake,
   IconSwap,
 } from "./icons";
+
+/** Past this many networks the list gets a search box. */
+const SEARCH_FROM = 5;
 
 function hostOf(origin: string): string {
   try {
@@ -357,8 +362,9 @@ export function HomeScreen({
   onOpenMenu: () => void;
   onRefresh: () => void;
 }) {
-  const [copied, setCopied] = useState(false);
   const [enabling, setEnabling] = useState(false);
+  const [query, setQuery] = useState("");
+  const toast = useToast();
   const { settings, update, hidden, toggleHidden } = usePrefs();
   const active =
     status.accounts.find((a) => a.index === status.activeAccountIndex) ??
@@ -369,6 +375,21 @@ export function HomeScreen({
   // The header names one chain, so show that chain's address rather than the
   // account's default derivation, which belongs to a different prefix.
   const headerAddress = primary?.address ?? active?.address;
+  const visibleChains = useMemo(() => {
+    const byId = new Map(chains.map((chain) => [chain.chainId, chain]));
+    return searchItems(
+      chains.map((chain) => ({
+        id: chain.chainId,
+        label: chain.entry.chainName,
+        sublabel: chain.entry.coinDenom,
+        keywords: [
+          chain.chainId,
+          ...(balances[chain.chainId]?.tokens ?? []).map((token) => token.symbol),
+        ],
+      })),
+      query,
+    ).flatMap((item) => byId.get(item.id) ?? []);
+  }, [chains, balances, query]);
   const staked = chains.filter((c) => {
     const b = balances[c.chainId];
     return b && b.staked !== "0";
@@ -415,9 +436,12 @@ export function HomeScreen({
 
   async function copyAddress() {
     if (!headerAddress) return;
-    await navigator.clipboard.writeText(headerAddress);
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1600);
+    try {
+      await navigator.clipboard.writeText(headerAddress);
+      toast("Address copied", { meta: primary?.entry.chainName });
+    } catch {
+      toast("Could not copy the address", { tone: "danger" });
+    }
   }
 
   return (
@@ -528,6 +552,7 @@ export function HomeScreen({
           <button
             type="button"
             onClick={() => void copyAddress()}
+            aria-label={headerAddress ? `Copy address ${headerAddress}` : "No address yet"}
             className={cn(
               "mt-2 inline-flex items-center gap-1.5 font-mono text-[10px] text-fg-dim",
               "transition-colors duration-[var(--z-duration-base)] hover:text-fg",
@@ -535,11 +560,7 @@ export function HomeScreen({
             )}
           >
             {headerAddress ? truncateAddress(headerAddress, 10, 6) : NO_VALUE}
-            {copied ? (
-              <IconCheck width={11} height={11} className="text-accent" />
-            ) : (
-              <IconCopy width={11} height={11} />
-            )}
+            <IconCopy width={11} height={11} />
           </button>
         </section>
 
@@ -592,8 +613,21 @@ export function HomeScreen({
           </TabsList>
 
           <TabsContent value="tokens" className="pt-0.5">
+            {chains.length > SEARCH_FROM ? (
+              <SearchField
+                className="mb-1.5 mt-2"
+                value={query}
+                onValueChange={setQuery}
+                placeholder="Search networks and tokens"
+              />
+            ) : null}
+            {query && visibleChains.length === 0 ? (
+              <p className="py-6 text-center text-[12px] text-fg-muted">
+                Nothing matches &ldquo;{query.trim()}&rdquo;.
+              </p>
+            ) : null}
             <ul className="flex flex-col">
-              {chains.map((chain) => (
+              {visibleChains.map((chain) => (
                 <li key={chain.chainId}>
                   <NetworkRow
                     chain={chain}

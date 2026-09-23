@@ -377,6 +377,9 @@ export async function resetWallet(password?: string): Promise<void> {
     STORAGE_KEYS.balanceCache,
     STORAGE_KEYS.addressBook,
     STORAGE_KEYS.passwordThrottle,
+    STORAGE_KEYS.pickerMemory,
+    STORAGE_KEYS.pendingTransfers,
+    STORAGE_KEYS.readNotifications,
   ]);
 }
 

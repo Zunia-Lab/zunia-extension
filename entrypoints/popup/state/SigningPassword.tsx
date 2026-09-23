@@ -32,6 +32,12 @@ export class SigningCancelledError extends Error {
   }
 }
 
+/** The message to show for a failed signing attempt, or null when the user cancelled it. */
+export function signingError(caught: unknown): string | null {
+  if (caught instanceof SigningCancelledError) return null;
+  return caught instanceof Error ? caught.message : String(caught);
+}
+
 export function SigningPasswordProvider({
   required,
   children,

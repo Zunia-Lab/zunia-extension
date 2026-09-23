@@ -363,3 +363,27 @@ export function IconSparkle(props: SVGProps<SVGSVGElement>) {
     </IconBase>
   );
 }
+
+/** Favorite marker. `filled` for a favorite, outline otherwise. */
+export function IconStar({
+  filled,
+  ...props
+}: SVGProps<SVGSVGElement> & { filled?: boolean }) {
+  return (
+    <IconBase {...props} fill={filled ? "currentColor" : "none"}>
+      <path d="m12 3.5 2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9Z" />
+    </IconBase>
+  );
+}
+
+/** Two arrows, for swapping the two sides of a pair. */
+export function IconFlip(props: SVGProps<SVGSVGElement>) {
+  return (
+    <IconBase {...props}>
+      <path d="M7 4v16" />
+      <path d="m3 8 4-4 4 4" />
+      <path d="M17 20V4" />
+      <path d="m21 16-4 4-4-4" />
+    </IconBase>
+  );
+}

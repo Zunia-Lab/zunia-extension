@@ -135,7 +135,7 @@ export function MoreDrawer({
   ];
 
   return (
-    <Drawer open={open} onClose={onClose}>
+    <Drawer open={open} onClose={onClose} title="More">
       <div className="flex items-start gap-2.5">
         <Avatar
           seed={account?.address ?? account?.name ?? "zunia"}

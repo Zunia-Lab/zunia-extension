@@ -9,7 +9,7 @@ import {
   KeyValueRow,
   Pill,
   ScreenScaffold,
-  Spinner,
+  SearchField,
   Tabs,
   TabsContent,
   TabsList,
@@ -31,6 +31,7 @@ import {
   msgWithdrawReward,
 } from "../../../lib/amino-tx";
 import { NO_VALUE, formatUnits } from "../../../lib/format";
+import { searchItems } from "../../../lib/picker";
 import type { ChainAccountView } from "../hooks/useChainAccounts";
 import {
   useDelegations,
@@ -38,8 +39,13 @@ import {
   useValidators,
 } from "../hooks/useChainQuery";
 import { usePrefs } from "../state/Prefs";
+import { ChainSheet } from "../components/ChainSheet";
+import { ListSkeleton } from "../components/ListSkeleton";
 import { IconChevronDown, IconStake } from "./icons";
-import { useSignedSend } from "../state/SigningPassword";
+import { signingError, useSignedSend } from "../state/SigningPassword";
+
+/** Validators listed before a search; the set runs to hundreds on some chains. */
+const VALIDATORS_SHOWN = 40;
 
 function pct(value: number, digits = 1): string {
   return `${(value * 100).toFixed(digits)}%`;
@@ -67,10 +73,13 @@ function ChainSelect({
   const active = chains.find((c) => c.chainId === value);
 
   return (
-    <div className="relative">
+    <>
       <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        aria-label={`Network: ${active?.entry.chainName ?? "pick a network"}`}
+        onClick={() => setOpen(true)}
         className={cn(
           "flex items-center gap-1.5 rounded-full border border-[var(--z-line)] py-1 pl-1.5 pr-2",
           "transition-colors duration-[var(--z-duration-base)] hover:bg-[var(--z-state-hover)]",
@@ -87,63 +96,17 @@ function ChainSelect({
         <span className="max-w-[92px] truncate text-[11px] text-fg-muted">
           {active?.entry.chainName ?? "Chain"}
         </span>
-        <IconChevronDown
-          width={16}
-          height={16}
-          className={cn("text-fg-dim transition-transform", open && "rotate-180")}
-        />
+        <IconChevronDown width={16} height={16} className="text-fg-dim" />
       </button>
-
-      {open ? (
-        <>
-          <button
-            type="button"
-            aria-label="Close chain picker"
-            className="fixed inset-0 z-30 cursor-default"
-            onClick={() => setOpen(false)}
-          />
-          <ul
-            className={cn(
-              "absolute right-0 top-[calc(100%+6px)] z-40 max-h-[240px] w-[196px] overflow-y-auto",
-              "rounded-[14px] border border-[var(--z-line-strong)] bg-[var(--z-surface-raised)] p-1",
-              "shadow-[var(--z-shadow-overlay)]",
-            )}
-          >
-            {chains.map((chain) => (
-              <li key={chain.chainId}>
-                <button
-                  type="button"
-                  onClick={() => {
-                    onChange(chain.chainId);
-                    setOpen(false);
-                  }}
-                  className={cn(
-                    "flex w-full items-center gap-2 rounded-[10px] px-2 py-1.5 text-left",
-                    "hover:bg-[var(--z-state-hover)]",
-                    chain.chainId === value && "bg-[var(--z-state-selected)]",
-                    focusRing,
-                  )}
-                >
-                  <Avatar
-                    src={chain.iconUrl}
-                    fallback={chain.entry.chainName}
-                    size={20}
-                  />
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-[12px] text-fg">
-                      {chain.entry.chainName}
-                    </span>
-                    <span className="block truncate font-mono text-[9px] text-fg-dim">
-                      {chain.chainId}
-                    </span>
-                  </span>
-                </button>
-              </li>
-            ))}
-          </ul>
-        </>
-      ) : null}
-    </div>
+      <ChainSheet
+        open={open}
+        onClose={() => setOpen(false)}
+        title="Staking network"
+        chains={chains}
+        selectedId={value}
+        onSelect={onChange}
+      />
+    </>
   );
 }
 
@@ -241,6 +204,7 @@ export function EarnScreen({
   const [busy, setBusy] = useState(false);
   const [txNote, setTxNote] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [validatorQuery, setValidatorQuery] = useState("");
 
   const chain = chains.find((c) => c.chainId === chainId) ?? chains[0];
   const decimals = chain?.entry.coinDecimals ?? 6;
@@ -290,6 +254,18 @@ export function EarnScreen({
   const pickedValidator = validators.rows.find(
     (v) => v.operatorAddress === picked,
   );
+  const shownValidators = useMemo(() => {
+    if (!validatorQuery.trim()) return validators.rows.slice(0, VALIDATORS_SHOWN);
+    const byAddress = new Map(validators.rows.map((v) => [v.operatorAddress, v]));
+    return searchItems(
+      validators.rows.map((v) => ({
+        id: v.operatorAddress,
+        label: v.moniker,
+        keywords: [v.operatorAddress],
+      })),
+      validatorQuery,
+    ).flatMap((item) => byAddress.get(item.id) ?? []);
+  }, [validators.rows, validatorQuery]);
   const fee = estimateFee({
     gasLimit: sheet === "claim" ? Math.max(250_000, claimable.length * 120_000) : 250_000,
     gasPrice: chain?.entry.gasPriceStep?.average ?? 0.025,
@@ -329,7 +305,7 @@ export function EarnScreen({
       setSheet(null);
       setDelegateAmount("");
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(signingError(err));
     } finally {
       setBusy(false);
     }
@@ -496,6 +472,7 @@ export function EarnScreen({
               setChainId(next);
               setPicked(null);
               setTxNote(null);
+              setValidatorQuery("");
             }}
           />
         ) : undefined
@@ -599,10 +576,16 @@ export function EarnScreen({
           </TabsList>
 
           <TabsContent value="validators" className="pt-1">
+            {validators.rows.length > 8 ? (
+              <SearchField
+                className="mb-1.5 mt-1"
+                value={validatorQuery}
+                onValueChange={setValidatorQuery}
+                placeholder="Search validators"
+              />
+            ) : null}
             {validators.loading ? (
-              <div className="flex justify-center py-8">
-                <Spinner />
-              </div>
+              <ListSkeleton rows={5} label="Loading validators" />
             ) : validators.rows.length === 0 ? (
               <EmptyState
                 icon={<IconStake width={16} height={16} />}
@@ -613,9 +596,13 @@ export function EarnScreen({
                     : "Validators load once on-chain reads are on."
                 }
               />
+            ) : shownValidators.length === 0 ? (
+              <p className="py-6 text-center text-[12px] text-fg-muted">
+                No validator matches &ldquo;{validatorQuery.trim()}&rdquo;.
+              </p>
             ) : (
               <ul className="-mx-1 flex flex-col">
-                {validators.rows.slice(0, 40).map((validator) => (
+                {shownValidators.map((validator) => (
                   <li key={validator.operatorAddress}>
                     <ValidatorItem
                       validator={validator}
@@ -639,9 +626,7 @@ export function EarnScreen({
 
           <TabsContent value="mine" className="pt-1">
             {delegations.loading ? (
-              <div className="flex justify-center py-8">
-                <Spinner />
-              </div>
+              <ListSkeleton rows={2} label="Loading your stake" />
             ) : delegations.rows.length === 0 ? (
               <EmptyState
                 icon={<IconStake width={16} height={16} />}
@@ -661,9 +646,7 @@ export function EarnScreen({
 
           <TabsContent value="unbonding" className="pt-1">
             {unbonding.loading ? (
-              <div className="flex justify-center py-8">
-                <Spinner />
-              </div>
+              <ListSkeleton rows={2} label="Loading unbonding stake" />
             ) : unbonding.rows.length === 0 ? (
               <EmptyState
                 icon={<IconStake width={16} height={16} />}

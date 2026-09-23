@@ -1,16 +1,18 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Button,
   Callout,
   EmptyState,
   Input,
   ScreenScaffold,
+  SearchField,
   cn,
   focusRing,
 } from "@zunialab/ui";
 import type { AddressBookEntry } from "../../../lib/address-book";
 import { sendToBackground } from "../../../lib/popup-client";
 import { isBech32, prefixOf } from "../../../lib/format";
+import { searchItems } from "../../../lib/picker";
 import { IconBook, IconPlus, IconTrash } from "./icons";
 
 export function AddressBookScreen({
@@ -27,7 +29,16 @@ export function AddressBookScreen({
   const [address, setAddress] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [query, setQuery] = useState("");
   const labelRef = useRef<HTMLInputElement>(null);
+
+  const shown = useMemo(() => {
+    const byId = new Map(contacts.map((c) => [c.id, c]));
+    return searchItems(
+      contacts.map((c) => ({ id: c.id, label: c.label, keywords: [c.address] })),
+      query,
+    ).flatMap((item) => byId.get(item.id) ?? []);
+  }, [contacts, query]);
 
   // Focus follows the disclosure, moved here rather than with autoFocus. This
   // is not a page-load jump: the "Add address" button that held focus is
@@ -144,8 +155,22 @@ export function AddressBookScreen({
           />
         ) : null}
 
+        {contacts.length > 3 && !adding ? (
+          <SearchField
+            value={query}
+            onValueChange={setQuery}
+            placeholder="Search by name or address"
+          />
+        ) : null}
+
+        {query.trim() && shown.length === 0 ? (
+          <p className="py-6 text-center text-[12px] text-fg-muted">
+            No saved address matches &ldquo;{query.trim()}&rdquo;.
+          </p>
+        ) : null}
+
         <ul className="flex flex-col gap-2">
-          {contacts.map((contact) => (
+          {shown.map((contact) => (
             <li
               key={contact.id}
               className="flex items-center gap-2.5 rounded-[12px] border border-[var(--z-line)] px-3 py-2.5"

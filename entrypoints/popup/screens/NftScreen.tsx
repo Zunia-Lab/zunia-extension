@@ -23,6 +23,7 @@ import {
   NFT_MEDIA_PRIVACY_NOTE,
   NftGrid,
   ScreenScaffold,
+  SearchField,
   Spinner,
   cn,
   focusRing,
@@ -32,6 +33,7 @@ import {
 
 import { NFT_DETAIL_CONCURRENCY, NFT_DETAIL_PREFETCH } from "../../../config/nft";
 import { describeInterchainError } from "../../../lib/interchain";
+import { searchItems } from "../../../lib/picker";
 import {
   loadToken,
   mediaTargetFor,
@@ -43,7 +45,8 @@ import {
 import type { PopupRoute } from "../routes";
 import type { ChainAccountView } from "../hooks/useChainAccounts";
 import { usePrefs } from "../state/Prefs";
-import { OverlayMenu, OverlayMenuItem } from "../components/OverlayMenu";
+import { ChainSheet, PickerTrigger } from "../components/ChainSheet";
+import { TileSkeleton } from "../components/ListSkeleton";
 import {
   ContractManager,
   ScanDisclosure,
@@ -52,7 +55,7 @@ import {
   useNftDiscovery,
   useNftMediaGate,
 } from "./nft-ui";
-import { IconChevronDown, IconNft, IconRefresh } from "./icons";
+import { IconNft, IconRefresh } from "./icons";
 
 /**
  * Stable identity for "no collections yet".
@@ -206,6 +209,7 @@ export function NftScreen({
   );
   const [pickerOpen, setPickerOpen] = useState(false);
   const [contractsToken, setContractsToken] = useState(0);
+  const [query, setQuery] = useState("");
 
   const chain =
     supported.find((row) => row.chainId === picked) ?? supported[0] ?? null;
@@ -289,6 +293,36 @@ export function NftScreen({
   }
 
   const total = collections.reduce((sum, row) => sum + row.tokenIds.length, 0);
+
+  // A search that names the collection keeps all of it; otherwise only the
+  // tokens whose name or id match are shown, and empty collections drop out.
+  const q = query.trim();
+  const visible = collections.flatMap((collection) => {
+    const items = itemsFor(collection);
+    if (!q) return [{ collection, items }];
+    const collectionHit =
+      searchItems(
+        [
+          {
+            id: collection.contractAddress,
+            label: collection.info?.name ?? "",
+            keywords: [collection.info?.symbol ?? "", collection.contractAddress],
+          },
+        ],
+        q,
+      ).length > 0;
+    if (collectionHit) return [{ collection, items }];
+    const byId = new Map(items.map((item) => [item.tokenId, item]));
+    const hits = searchItems(
+      items.map((item) => ({
+        id: item.tokenId,
+        label: item.name ?? `#${item.tokenId}`,
+        keywords: [item.tokenId],
+      })),
+      q,
+    ).flatMap((hit) => byId.get(hit.id) ?? []);
+    return hits.length > 0 ? [{ collection, items: hits }] : [];
+  });
   // The chain the rendered collections came from, which is the discovery run's
   // chain and not the picker's: those differ for one render after a switch, and
   // opening a token against the wrong chain would query the wrong contract.
@@ -318,52 +352,31 @@ export function NftScreen({
         {/* Chain picker. Only CosmWasm chains are listed; the rest are named
             underneath with the reason, so a missing chain is never a mystery. */}
         {supported.length > 0 ? (
-          <section className="relative">
-            <button
-              type="button"
-              aria-haspopup="listbox"
-              aria-expanded={pickerOpen}
-              onClick={() => setPickerOpen((v) => !v)}
-              className={cn(
-                "flex w-full items-center gap-2 rounded-[13px] border border-[var(--z-line)] px-3 py-2 text-left",
-                "hover:bg-[var(--z-state-hover)]",
-                focusRing,
-              )}
-            >
-              <span className="flex size-[26px] shrink-0 items-center justify-center rounded-[9px] border border-[var(--z-line)] text-fg-muted">
-                <IconNft width={15} height={15} />
-              </span>
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-[12.5px] text-fg">
-                  {chain?.entry.chainName ?? "Pick a network"}
+          <section>
+            <PickerTrigger
+              className="rounded-[13px] py-2"
+              expanded={pickerOpen}
+              onClick={() => setPickerOpen(true)}
+              aria-label={`Network: ${chain?.entry.chainName ?? "pick a network"}`}
+              icon={
+                <span className="flex size-[26px] items-center justify-center rounded-[9px] border border-[var(--z-line)] text-fg-muted">
+                  <IconNft width={15} height={15} />
                 </span>
-                <span className="block truncate font-mono text-[9px] text-fg-dim">
-                  {owner ? truncateAddress(owner, 8, 6) : "no address"}
-                </span>
-              </span>
-              <IconChevronDown width={14} height={14} className="shrink-0 text-fg-dim" />
-            </button>
-            <OverlayMenu open={pickerOpen} onClose={() => setPickerOpen(false)}>
-              {supported.map((option) => (
-                <OverlayMenuItem
-                  key={option.chainId}
-                  selected={option.chainId === chainId}
-                  onSelect={() => {
-                    setPicked(option.chainId);
-                    setPickerOpen(false);
-                  }}
-                >
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-[11px] text-fg">
-                      {option.entry.chainName}
-                    </span>
-                    <span className="block truncate font-mono text-[9px] text-fg-dim">
-                      {option.chainId}
-                    </span>
-                  </span>
-                </OverlayMenuItem>
-              ))}
-            </OverlayMenu>
+              }
+              title={chain?.entry.chainName ?? "Pick a network"}
+              subtitle={owner ? truncateAddress(owner, 8, 6) : "no address"}
+            />
+            <ChainSheet
+              open={pickerOpen}
+              onClose={() => setPickerOpen(false)}
+              title="NFT network"
+              chains={supported}
+              selectedId={chainId}
+              onSelect={(id) => {
+                setPicked(id);
+                setQuery("");
+              }}
+            />
           </section>
         ) : null}
 
@@ -432,7 +445,21 @@ export function NftScreen({
         {/* One grid per collection: the collection is the unit a user thinks
             in, and a flat grid of tokens from three contracts is unreadable at
             360px. */}
-        {collections.map((collection) => (
+        {total > 4 ? (
+          <SearchField
+            value={query}
+            onValueChange={setQuery}
+            placeholder="Search collections and tokens"
+          />
+        ) : null}
+
+        {q && visible.length === 0 ? (
+          <p className="py-6 text-center text-[12px] text-fg-muted">
+            Nothing matches &ldquo;{q}&rdquo;.
+          </p>
+        ) : null}
+
+        {visible.map(({ collection, items }) => (
           <section key={collection.contractAddress} className="flex flex-col gap-2">
             <div className="flex items-baseline gap-2">
               <span className="min-w-0 flex-1">
@@ -462,7 +489,7 @@ export function NftScreen({
                 `minItemWidth` 140 keeps two columns inside the popup's 328px
                 content box (2x140 + 8px gap). */}
             <NftGrid
-              items={itemsFor(collection)}
+              items={items}
               loadMedia={artworkReady}
               loading={detail.loading}
               minItemWidth={140}
@@ -492,10 +519,7 @@ export function NftScreen({
         ) : null}
 
         {discovery.loading && !discovery.result ? (
-          <div className="flex items-center justify-center gap-2 py-6 text-fg-dim">
-            <Spinner />
-            <span className="text-[11px]">Asking each collection…</span>
-          </div>
+          <TileSkeleton tiles={4} label="Asking each collection" />
         ) : null}
 
         {detail.notRead > 0 ? (

@@ -17,6 +17,7 @@ import { useBalances } from "./hooks/useBalances";
 import { usePrices } from "./hooks/usePrices";
 import { PrefsProvider } from "./state/Prefs";
 import { SigningPasswordProvider } from "./state/SigningPassword";
+import { ToastProvider } from "./state/Toasts";
 import { BottomNav } from "./components/BottomNav";
 import { MoreDrawer } from "./components/MoreDrawer";
 import {
@@ -692,7 +693,9 @@ export default function App() {
         <SigningPasswordProvider
           required={Boolean(state.settings?.requirePasswordOnSign)}
         >
-          <AppBody state={state} />
+          <ToastProvider>
+            <AppBody state={state} />
+          </ToastProvider>
         </SigningPasswordProvider>
       </PrefsProvider>
     </ThemeProvider>

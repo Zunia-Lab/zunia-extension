@@ -3,7 +3,7 @@ import {
   Callout,
   EmptyState,
   ScreenScaffold,
-  Spinner,
+  SearchField,
   activityAmountClass,
   activityPresentation,
   amountInlineClass,
@@ -12,6 +12,8 @@ import {
 } from "@zunialab/ui";
 import type { ActivityItem } from "../../../lib/chain-queries";
 import { formatUnits } from "../../../lib/format";
+import { searchItems } from "../../../lib/picker";
+import { ListSkeleton } from "../components/ListSkeleton";
 import type { ChainAccountView } from "../hooks/useChainAccounts";
 import { useActivity } from "../hooks/useChainQuery";
 import { usePrefs } from "../state/Prefs";
@@ -147,11 +149,25 @@ export function ActivityScreen({
   const chainIds = useMemo(() => chains.map((c) => c.chainId), [chains]);
   const { rows, loading } = useActivity(chainIds, live);
   const [filter, setFilter] = useState<FilterId>("all");
+  const [query, setQuery] = useState("");
 
-  const filtered = useMemo(
-    () => rows.filter((r) => matchesFilter(r, filter)),
-    [rows, filter],
-  );
+  const filtered = useMemo(() => {
+    const kept = rows.filter((r) => matchesFilter(r, filter));
+    if (!query.trim()) return kept;
+    const chainNames = new Map(chains.map((c) => [c.chainId, c.entry.chainName]));
+    const byKey = new Map(kept.map((r) => [`${r.chainId}:${r.hash}`, r]));
+    return searchItems(
+      kept.map((r) => ({
+        id: `${r.chainId}:${r.hash}`,
+        label: r.title,
+        sublabel: r.subtitle,
+        keywords: [r.symbol, r.hash, r.chainId, chainNames.get(r.chainId) ?? ""],
+      })),
+      query,
+    )
+      .flatMap((item) => byKey.get(item.id) ?? [])
+      .sort((a, b) => b.timestamp - a.timestamp);
+  }, [rows, filter, query, chains]);
 
   const groups = useMemo(() => {
     const map = new Map<string, ActivityItem[]>();
@@ -179,6 +195,7 @@ export function ActivityScreen({
             <li key={option.id}>
               <button
                 type="button"
+                aria-pressed={option.id === filter}
                 onClick={() => setFilter(option.id)}
                 className={cn(
                   "whitespace-nowrap rounded-full border px-2.5 py-1 font-mono text-[9.5px] uppercase tracking-[0.08em]",
@@ -195,6 +212,14 @@ export function ActivityScreen({
           ))}
         </ul>
 
+        {rows.length > 0 ? (
+          <SearchField
+            value={query}
+            onValueChange={setQuery}
+            placeholder="Search by name, token, network, or hash"
+          />
+        ) : null}
+
         {!live ? (
           <Callout tone="info" title="On-chain reads are off">
             Turn on live balances in Preferences to pull recent transactions
@@ -202,10 +227,12 @@ export function ActivityScreen({
           </Callout>
         ) : null}
 
-        {loading ? (
-          <div className="flex justify-center py-10">
-            <Spinner />
-          </div>
+        {loading && rows.length === 0 ? (
+          <ListSkeleton rows={5} label="Loading activity" />
+        ) : groups.length === 0 && query.trim() ? (
+          <p className="py-6 text-center text-[12px] text-fg-muted">
+            Nothing matches &ldquo;{query.trim()}&rdquo;.
+          </p>
         ) : groups.length === 0 ? (
           <EmptyState
             icon={<IconActivity width={16} height={16} />}
@@ -237,8 +264,8 @@ export function ActivityScreen({
 
         {live && groups.length > 0 ? (
           <p className="pb-1 text-center font-mono text-[9.5px] text-fg-dim">
-            Public nodes prune history. Older transactions live in the
-            dashboard.
+            Public nodes prune history, so older transactions may be missing
+            here. A block explorer keeps the full record.
           </p>
         ) : null}
       </div>

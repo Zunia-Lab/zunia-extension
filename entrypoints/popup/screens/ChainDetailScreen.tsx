@@ -37,6 +37,7 @@ import {
   IconSwap,
 } from "./icons";
 import { nftChainSupport } from "../../../lib/nft";
+import { ListSkeleton } from "../components/ListSkeleton";
 
 function Action({
   label,
@@ -354,9 +355,7 @@ export function ChainDetailScreen({
               public endpoint.
             </p>
           ) : activityLoading && recent.length === 0 ? (
-            <div className="flex justify-center py-6">
-              <Spinner />
-            </div>
+            <ListSkeleton rows={3} label="Loading recent activity" />
           ) : recent.length === 0 ? (
             <EmptyState
               icon={<IconActivity width={16} height={16} />}

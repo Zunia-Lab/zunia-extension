@@ -41,6 +41,8 @@ export const STORAGE_KEYS = {
   nftBridges: "zunia.nftBridges",
   /** Consecutive wrong passwords and when the next attempt is allowed. No secrets. */
   passwordThrottle: "zunia.passwordThrottle",
+  /** Favorite and recent picks per picker kind (chain, token, contact ids). */
+  pickerMemory: "zunia.pickerMemory",
   /** Unlocked mnemonic ONLY in chrome.storage.session. */
   sessionMnemonic: "zunia.session.mnemonic",
   sessionUnlockedAt: "zunia.session.unlockedAt",

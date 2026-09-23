@@ -61,7 +61,10 @@ import {
 import type { TxPreview } from "../../../lib/tx-kernel";
 import type { ChainAccountView } from "../hooks/useChainAccounts";
 import { usePrefs } from "../state/Prefs";
-import { OverlayMenu, OverlayMenuItem } from "../components/OverlayMenu";
+import { useToast } from "../state/Toasts";
+import { ChainSheet, PickerTrigger } from "../components/ChainSheet";
+import { PickerSheet, type PickerItem } from "../components/PickerSheet";
+import { usePickerMemory } from "../hooks/usePickerMemory";
 import {
   AddressBookPicker,
   AddressFieldActions,
@@ -78,8 +81,8 @@ import {
   useResolveAddresses,
   useRouteTracking,
 } from "./interchain-ui";
-import { IconChevronDown, IconSend } from "./icons";
-import { useSignedSend } from "../state/SigningPassword";
+import { IconSend } from "./icons";
+import { signingError, useSignedSend } from "../state/SigningPassword";
 
 const PERCENTS = [25, 50, 75, 100] as const;
 type SendMode = "send" | "cross";
@@ -110,6 +113,7 @@ function ChainOverlayPicker({
   chain,
   chains,
   balance,
+  balances,
   hidden,
   onSelect,
 }: {
@@ -117,6 +121,7 @@ function ChainOverlayPicker({
   chain?: ChainAccountView;
   chains: ChainAccountView[];
   balance?: ChainBalance;
+  balances?: Record<string, ChainBalance>;
   hidden: boolean;
   onSelect: (chainId: string) => void;
 }) {
@@ -128,66 +133,45 @@ function ChainOverlayPicker({
       <p className="font-mono text-[9px] uppercase tracking-[0.16em] text-fg-dim">
         {label}
       </p>
-      <div className="relative mt-1.5">
-        <button
-          type="button"
-          aria-haspopup="listbox"
-          aria-expanded={open}
-          onClick={() => setOpen((v) => !v)}
-          className={cn(
-            "flex w-full items-center gap-2.5 rounded-[12px] border border-[var(--z-line)] px-3 py-2.5 text-left",
-            "transition-colors duration-[var(--z-duration-base)] hover:bg-[var(--z-state-hover)]",
-            focusRing,
-          )}
-        >
+      <PickerTrigger
+        className="mt-1.5"
+        expanded={open}
+        onClick={() => setOpen(true)}
+        aria-label={`${label}: ${chain?.entry.chainName ?? "pick a network"}`}
+        icon={
           <Avatar
             src={chain?.iconUrl}
             fallback={chain?.entry.chainName ?? "?"}
             size={26}
           />
-          <span className="min-w-0 flex-1">
-            <span className="block truncate text-[12.5px] font-medium text-fg">
-              {chain?.entry.coinDenom ?? "—"}
+        }
+        title={chain?.entry.coinDenom ?? "-"}
+        subtitle={chain?.entry.chainName ?? "Pick a network"}
+        detail={
+          balance
+            ? hidden
+              ? "••••"
+              : `${formatUnits(balance.available, decimals)} free`
+            : undefined
+        }
+      />
+      <ChainSheet
+        open={open}
+        onClose={() => setOpen(false)}
+        title={label}
+        chains={chains}
+        selectedId={chain?.chainId}
+        onSelect={onSelect}
+        trailing={(option) => {
+          const held = balances?.[option.chainId];
+          if (!held) return null;
+          return (
+            <span className="font-mono text-[9.5px] tabular-nums text-fg-dim">
+              {hidden ? "••••" : formatUnits(held.available, option.entry.coinDecimals)}
             </span>
-            <span className="block truncate font-mono text-[9.5px] text-fg-dim">
-              {chain?.entry.chainName ?? "Pick a network"}
-            </span>
-          </span>
-          {balance ? (
-            <span className="shrink-0 font-mono text-[10px] text-fg-dim">
-              {hidden ? "••••" : `${formatUnits(balance.available, decimals)} free`}
-            </span>
-          ) : null}
-          <IconChevronDown
-            width={16}
-            height={16}
-            className={cn(
-              "shrink-0 text-fg-dim transition-transform",
-              open && "rotate-180",
-            )}
-          />
-        </button>
-        <OverlayMenu open={open} onClose={() => setOpen(false)}>
-          {chains.map((option) => (
-            <OverlayMenuItem
-              key={option.chainId}
-              selected={option.chainId === chain?.chainId}
-              onSelect={() => {
-                onSelect(option.chainId);
-                setOpen(false);
-              }}
-            >
-              <Avatar src={option.iconUrl} fallback={option.entry.chainName} size={20} />
-              <span className="min-w-0 flex-1 truncate text-[11.5px] text-fg">
-                {option.entry.chainName}
-              </span>
-              <span className="font-mono text-[9px] uppercase text-fg-dim">
-                {option.entry.coinDenom}
-              </span>
-            </OverlayMenuItem>
-          ))}
-        </OverlayMenu>
-      </div>
+          );
+        }}
+      />
     </section>
   );
 }
@@ -205,57 +189,58 @@ function TokenPicker({
   onSelect: (denom: string) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const memory = usePickerMemory("token");
   const selected = tokens.find((token) => token.denom === denom) ?? tokens[0];
+  const items = useMemo<PickerItem[]>(
+    () =>
+      tokens.map((token) => ({
+        id: token.denom,
+        label: token.displayName,
+        sublabel: shortDenom(token.denom),
+        keywords: [token.symbol, token.denom],
+        icon: <Avatar src={token.iconUrl} fallback={token.symbol} size={24} />,
+        trailing: (
+          <span className="font-mono text-[9.5px] tabular-nums text-fg-dim">
+            {hidden ? "••••" : formatUnits(token.amount, token.decimals)}
+          </span>
+        ),
+      })),
+    [tokens, hidden],
+  );
   if (tokens.length <= 1) return null;
   return (
     <section>
       <p className="font-mono text-[9px] uppercase tracking-[0.16em] text-fg-dim">Token</p>
-      <div className="relative mt-1.5">
-        <button
-          type="button"
-          aria-haspopup="listbox"
-          aria-expanded={open}
-          onClick={() => setOpen((v) => !v)}
-          className={cn(
-            "flex w-full items-center justify-between gap-2 rounded-[12px] border border-[var(--z-line)] px-3 py-2 text-left",
-            "transition-colors duration-[var(--z-duration-base)] hover:bg-[var(--z-state-hover)]",
-            focusRing,
-          )}
-        >
-          <span className="min-w-0">
-            <span className="block truncate text-[12px] text-fg">
-              {selected?.displayName ?? "—"}
-            </span>
-            <span className="block truncate font-mono text-[9px] text-fg-dim">
-              {selected && selected.denom.startsWith("ibc/")
-                ? `${selected.denom.slice(0, 14)}…`
-                : (selected?.denom ?? "")}
-            </span>
-          </span>
-          <IconChevronDown width={16} height={16} className="shrink-0 text-fg-dim" />
-        </button>
-        <OverlayMenu open={open} onClose={() => setOpen(false)}>
-          {tokens.map((token) => (
-            <OverlayMenuItem
-              key={token.denom}
-              selected={token.denom === selected?.denom}
-              onSelect={() => {
-                onSelect(token.denom);
-                setOpen(false);
-              }}
-            >
-              <span className="min-w-0 flex-1 truncate text-[11.5px] text-fg">
-                {token.displayName}
-              </span>
-              <span className="font-mono text-[9px] tabular-nums text-fg-dim">
-                {hidden ? "••••" : formatUnits(token.amount, token.decimals)}
-              </span>
-            </OverlayMenuItem>
-          ))}
-        </OverlayMenu>
-      </div>
+      <PickerTrigger
+        className="mt-1.5 py-2"
+        expanded={open}
+        onClick={() => setOpen(true)}
+        aria-label={`Token: ${selected?.displayName ?? "none"}`}
+        title={selected?.displayName ?? "-"}
+        subtitle={selected ? shortDenom(selected.denom) : undefined}
+      />
+      <PickerSheet
+        open={open}
+        onClose={() => setOpen(false)}
+        title="Choose a token"
+        items={items}
+        selectedId={selected?.denom}
+        searchPlaceholder="Search tokens"
+        favorites={memory.favorites}
+        recents={memory.recents}
+        onToggleFavorite={memory.toggleFavorite}
+        onSelect={(id) => {
+          memory.remember(id);
+          onSelect(id);
+        }}
+      />
     </section>
   );
+}
+
+/** IBC denoms are long hashes; the start is enough to tell two apart. */
+function shortDenom(denom: string): string {
+  return denom.startsWith("ibc/") ? `${denom.slice(0, 14)}…` : denom;
 }
 
 export function SendScreen({
@@ -272,6 +257,7 @@ export function SendScreen({
   onBack: () => void;
 }) {
   const signedSend = useSignedSend();
+  const toast = useToast();
   const { hidden, settings } = usePrefs();
   const liveReads = settings.liveBalances;
   const [mode, setMode] = useState<SendMode>("send");
@@ -550,6 +536,7 @@ export function SendScreen({
           setTracked(record);
         }
         setTxHash(broadcastResult.txhash);
+        toast("Transfer sent", { meta: truncateAddress(broadcastResult.txhash, 6, 4) });
       } else {
         const broadcastResult = await signedSend<{ txhash: string }>(
           "SIGN_AND_BROADCAST",
@@ -569,10 +556,11 @@ export function SendScreen({
           },
         );
         setTxHash(broadcastResult.txhash);
+        toast("Transaction sent", { meta: truncateAddress(broadcastResult.txhash, 6, 4) });
       }
       setPhase("sent");
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : String(caught));
+      setError(signingError(caught));
     } finally {
       setBusy(false);
     }
@@ -836,6 +824,7 @@ export function SendScreen({
           chain={chain}
           chains={chains}
           balance={balance}
+          balances={balances}
           hidden={hidden}
           onSelect={(id) => {
             setChainId(id);
