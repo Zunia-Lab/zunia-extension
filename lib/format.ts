@@ -40,7 +40,7 @@ function baseUnitsToNumber(amount: string, decimals: number): number {
 
 /**
  * Full-precision display for amount inputs (Send MAX, etc.).
- * Not compact — callers parse this back to base units.
+ * Not compact: callers parse this back to base units.
  */
 export function formatUnitsExact(
   amount: string,
@@ -110,7 +110,7 @@ export function shortAddress(address: string): string {
 }
 
 /** Placeholder used everywhere a real number is not available yet. */
-export const NO_VALUE = "—";
+export const NO_VALUE = "-";
 
 /** Replace a rendered amount with dots when the user hides balances. */
 export function maskAmount(value: string, hidden: boolean): string {

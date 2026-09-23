@@ -66,7 +66,7 @@ function StepRail({
 /**
  * Full-tab onboarding. Runs the same create/import flows as the popup, but with
  * room for a persistent step rail so a 12 or 24 word phrase is readable without
- * scrolling — which is exactly when people make transcription mistakes.
+ * scrolling, which is exactly when people make transcription mistakes.
  */
 export default function OnboardingApp() {
   const state = useExtensionState();

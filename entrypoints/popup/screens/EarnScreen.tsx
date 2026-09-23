@@ -41,7 +41,7 @@ import {
 import { usePrefs } from "../state/Prefs";
 import { ChainSheet } from "../components/ChainSheet";
 import { ListSkeleton } from "../components/ListSkeleton";
-import { IconChevronDown, IconStake } from "./icons";
+import { IconChevronDown, IconChevronRight, IconStake } from "./icons";
 import { signingError, useSignedSend } from "../state/SigningPassword";
 
 /** Validators listed before a search; the set runs to hundreds on some chains. */
@@ -110,6 +110,10 @@ function ChainSelect({
   );
 }
 
+/**
+ * A tap picks the validator for the Delegate footer; the arrow beside it opens
+ * the validator page. Two sibling buttons, since a button cannot hold another.
+ */
 function ValidatorItem({
   validator,
   delegated,
@@ -118,6 +122,7 @@ function ValidatorItem({
   hidden,
   selected,
   onSelect,
+  onOpen,
 }: {
   validator: ValidatorInfo;
   delegated?: DelegationInfo;
@@ -126,53 +131,78 @@ function ValidatorItem({
   hidden: boolean;
   selected: boolean;
   onSelect: () => void;
+  onOpen?: () => void;
 }) {
   return (
-    <button
-      type="button"
-      onClick={onSelect}
+    <div
       className={cn(
-        "flex w-full items-center gap-2.5 rounded-[12px] border px-2.5 py-2.5 text-left",
+        "flex items-center rounded-[12px] border",
         "transition-colors duration-[var(--z-duration-base)]",
         selected
           ? "border-[var(--z-line-strong)] bg-[var(--z-state-selected)]"
-          : "border-transparent hover:bg-[var(--z-state-hover)]",
-        focusRing,
+          : "border-transparent",
       )}
     >
-      <Avatar fallback={validator.moniker} size={28} />
-      <span className="min-w-0 flex-1">
-        <span className="block truncate text-[12.5px] font-medium text-fg">
-          {validator.moniker}
+      <button
+        type="button"
+        aria-pressed={selected}
+        onClick={onSelect}
+        className={cn(
+          "flex min-w-0 flex-1 items-center gap-2.5 rounded-[12px] py-2.5 pl-2.5 text-left",
+          onOpen ? "pr-1" : "pr-2.5",
+          "transition-colors duration-[var(--z-duration-base)]",
+          !selected && "hover:bg-[var(--z-state-hover)]",
+          focusRing,
+        )}
+      >
+        <Avatar fallback={validator.moniker} size={28} />
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-[12.5px] font-medium text-fg">
+            {validator.moniker}
+          </span>
+          <span
+            className={cn(
+              "mt-0.5 block truncate font-mono text-[9.5px]",
+              validator.jailed ? "text-[var(--z-danger)]" : "text-fg-dim",
+            )}
+          >
+            {validator.jailed
+              ? "jailed · earns no rewards"
+              : `${pct(validator.commission, 0)} comm · ${pct(validator.votingPower, 2)} power`}
+          </span>
         </span>
-        <span
+        {validator.jailed ? (
+          <Pill tone="danger">Jailed</Pill>
+        ) : (
+          <span className="max-w-[40%] shrink-0 text-right">
+            <span className={cn(amountInlineClass, "block truncate")}>
+              {delegated
+                ? hidden
+                  ? "••••"
+                  : `${formatUnits(delegated.amount, decimals, 2)} ${symbol}`
+                : NO_VALUE}
+            </span>
+            <span className="mt-[3px] block font-mono text-[9px] text-fg-dim">
+              {delegated ? "delegated" : "not staked"}
+            </span>
+          </span>
+        )}
+      </button>
+      {onOpen ? (
+        <button
+          type="button"
+          aria-label={`${validator.moniker} details`}
+          onClick={onOpen}
           className={cn(
-            "mt-0.5 block truncate font-mono text-[9.5px]",
-            validator.jailed ? "text-[var(--z-danger)]" : "text-fg-dim",
+            "mr-1 flex size-8 shrink-0 items-center justify-center rounded-full text-fg-dim",
+            "transition-colors duration-[var(--z-duration-base)] hover:bg-[var(--z-state-hover)] hover:text-fg",
+            focusRing,
           )}
         >
-          {validator.jailed
-            ? "jailed · redelegate"
-            : `${pct(validator.commission, 0)} comm · ${pct(validator.votingPower, 2)} power`}
-        </span>
-      </span>
-      {validator.jailed ? (
-        <Pill tone="danger">Move</Pill>
-      ) : (
-        <span className="shrink-0 text-right">
-          <span className={cn(amountInlineClass, "block")}>
-            {delegated
-              ? hidden
-                ? "••••"
-                : `${formatUnits(delegated.amount, decimals, 2)} ${symbol}`
-              : NO_VALUE}
-          </span>
-          <span className="mt-[3px] block font-mono text-[9px] text-fg-dim">
-            {delegated ? "delegated" : "not staked"}
-          </span>
-        </span>
-      )}
-    </button>
+          <IconChevronRight width={16} height={16} />
+        </button>
+      ) : null}
+    </div>
   );
 }
 
@@ -181,15 +211,21 @@ export function EarnScreen({
   chains,
   balances,
   initialChainId,
+  initialValidator,
   onOpenChain,
   onOpenValidator,
+  onSelectionChange,
 }: {
   chains: ChainAccountView[];
   balances: Record<string, ChainBalance>;
   /** Set when arriving from a chain page, so Stake opens on that chain. */
   initialChainId?: string;
+  /** The validator picked before the user left, restored on the way back. */
+  initialValidator?: string;
   onOpenChain: (chainId: string) => void;
   onOpenValidator?: (validator: ValidatorInfo) => void;
+  /** Lets the popup keep the network and pick across a visit to another view. */
+  onSelectionChange?: (chainId: string, operatorAddress: string | null) => void;
 }) {
   const signedSend = useSignedSend();
   const { settings, hidden } = usePrefs();
@@ -198,7 +234,9 @@ export function EarnScreen({
   const [chainId, setChainId] = useState(
     initialChainId ?? chains[0]?.chainId ?? "",
   );
-  const [picked, setPicked] = useState<string | null>(null);
+  const [picked, setPicked] = useState<string | null>(
+    initialValidator ?? null,
+  );
   const [sheet, setSheet] = useState<"delegate" | "claim" | null>(null);
   const [delegateAmount, setDelegateAmount] = useState("");
   const [busy, setBusy] = useState(false);
@@ -216,17 +254,10 @@ export function EarnScreen({
   const delegations = useDelegations(chainIds, live);
   const unbonding = useUnbonding(chainIds, live);
 
-  const totals = useMemo(() => {
-    let staked = 0n;
-    let rewards = 0n;
-    for (const c of chains) {
-      const b = balances[c.chainId];
-      if (!b) continue;
-      staked += BigInt(b.staked || "0");
-      rewards += BigInt(b.rewards || "0");
-    }
-    return { staked, rewards };
-  }, [chains, balances]);
+  // Each chain stakes its own coin, so the hero reads the network in the
+  // header rather than adding base units of different denoms together.
+  const stakedHere = BigInt(balance?.staked || "0");
+  const rewardsHere = BigInt(balance?.rewards || "0");
 
   const chainDelegations = delegations.rows.filter(
     (d) => d.chainId === chain?.chainId,
@@ -241,13 +272,13 @@ export function EarnScreen({
 
   const heroStaked = hidden
     ? "••••"
-    : live && totals.staked > 0n
-      ? formatUnits(totals.staked.toString(), decimals, 2)
+    : live && stakedHere > 0n
+      ? formatUnits(stakedHere.toString(), decimals, 2)
       : NO_VALUE;
   const heroRewards = hidden
     ? "••••"
-    : live && totals.rewards > 0n
-      ? formatUnits(totals.rewards.toString(), decimals, 2)
+    : live && rewardsHere > 0n
+      ? formatUnits(rewardsHere.toString(), decimals, 2)
       : NO_VALUE;
 
   const claimable = chainDelegations.filter((d) => BigInt(d.rewards || "0") > 0n);
@@ -255,7 +286,15 @@ export function EarnScreen({
     (v) => v.operatorAddress === picked,
   );
   const shownValidators = useMemo(() => {
-    if (!validatorQuery.trim()) return validators.rows.slice(0, VALIDATORS_SHOWN);
+    if (!validatorQuery.trim()) {
+      const head = validators.rows.slice(0, VALIDATORS_SHOWN);
+      // A pick restored from a search further down the set stays on screen.
+      const kept =
+        picked && !head.some((v) => v.operatorAddress === picked)
+          ? validators.rows.filter((v) => v.operatorAddress === picked)
+          : [];
+      return [...kept, ...head];
+    }
     const byAddress = new Map(validators.rows.map((v) => [v.operatorAddress, v]));
     return searchItems(
       validators.rows.map((v) => ({
@@ -265,12 +304,26 @@ export function EarnScreen({
       })),
       validatorQuery,
     ).flatMap((item) => byAddress.get(item.id) ?? []);
-  }, [validators.rows, validatorQuery]);
+  }, [validators.rows, validatorQuery, picked]);
   const fee = estimateFee({
     gasLimit: sheet === "claim" ? Math.max(250_000, claimable.length * 120_000) : 250_000,
     gasPrice: chain?.entry.gasPriceStep?.average ?? 0.025,
     denom: chain?.entry.feeMinimalDenom ?? "uatom",
   });
+  const feeRows = [
+    {
+      label: "Network fee",
+      value: chain
+        ? `${formatUnits(fee.amount[0]!.amount, chain.entry.feeDecimals)} ${chain.entry.feeDenom}`
+        : NO_VALUE,
+    },
+    { label: "Gas", value: Number(fee.gas).toLocaleString("en-US") },
+  ];
+
+  function pick(next: string | null) {
+    setPicked(next);
+    onSelectionChange?.(chain?.chainId ?? chainId, next);
+  }
 
   function toBaseUnits(input: string): bigint | null {
     if (!/^\d*\.?\d*$/.test(input) || input === "" || input === ".") return null;
@@ -278,6 +331,14 @@ export function EarnScreen({
     if (fraction.length > decimals) return null;
     return BigInt(whole + fraction.padEnd(decimals, "0"));
   }
+  const delegateUnits = delegateAmount ? toBaseUnits(delegateAmount) : null;
+  const delegateError = !delegateAmount
+    ? null
+    : delegateUnits === null || delegateUnits <= 0n
+      ? "Enter a valid amount"
+      : available !== null && delegateUnits > available
+        ? "More than your available balance"
+        : null;
 
   async function runBroadcast(
     msgs: ReturnType<typeof msgDelegate>[],
@@ -366,7 +427,7 @@ export function EarnScreen({
             </Button>
             <Button
               className="flex-1"
-              disabled={busy || !delegateAmount}
+              disabled={busy || !delegateAmount || delegateError !== null}
               onClick={() => void confirmDelegate()}
             >
               {busy ? "Signing…" : "Sign and broadcast"}
@@ -380,25 +441,20 @@ export function EarnScreen({
             value={pickedValidator?.moniker ?? truncateAddress(picked, 8, 6)}
           />
           <Input
-            label="Amount"
+            label={`Amount (${symbol})`}
+            inputMode="decimal"
             placeholder="0.00"
             value={delegateAmount}
             onChange={(e) => setDelegateAmount(e.target.value)}
+            state={delegateError ? "error" : "default"}
             hint={
-              available !== null
-                ? `${formatUnits(available.toString(), decimals)} available`
-                : undefined
+              delegateError ??
+              (available !== null
+                ? `${formatUnits(available.toString(), decimals)} ${symbol} available`
+                : undefined)
             }
           />
-          <FeeSummary
-            rows={[
-              {
-                label: "Network fee",
-                value: `${formatUnits(fee.amount[0]!.amount, decimals)} ${symbol}`,
-              },
-              { label: "Gas", value: fee.gas },
-            ]}
-          />
+          <FeeSummary rows={feeRows} />
           {error ? (
             <Callout tone="danger" title="Could not broadcast">
               {error}
@@ -438,18 +494,17 @@ export function EarnScreen({
         }
       >
         <div className="flex flex-col gap-3 pt-1">
-          <Callout tone="info" title={`${claimable.length} validator(s)`}>
+          <Callout
+            tone="info"
+            title={
+              claimable.length === 1
+                ? "1 validator"
+                : `${claimable.length} validators`
+            }
+          >
             Withdraws pending rewards with MsgWithdrawDelegationReward.
           </Callout>
-          <FeeSummary
-            rows={[
-              {
-                label: "Network fee",
-                value: `${formatUnits(fee.amount[0]!.amount, decimals)} ${symbol}`,
-              },
-              { label: "Gas", value: fee.gas },
-            ]}
-          />
+          <FeeSummary rows={feeRows} />
           {error ? (
             <Callout tone="danger" title="Could not broadcast">
               {error}
@@ -471,6 +526,7 @@ export function EarnScreen({
             onChange={(next) => {
               setChainId(next);
               setPicked(null);
+              onSelectionChange?.(next, null);
               setTxNote(null);
               setValidatorQuery("");
             }}
@@ -478,28 +534,27 @@ export function EarnScreen({
         ) : undefined
       }
       footer={
-        <div className="flex gap-2">
-          <Button
-            variant="secondary"
-            className="flex-1"
-            onClick={() => chain && onOpenChain(chain.chainId)}
-          >
-            Compare
-          </Button>
-          <Button
-            className="flex-1"
-            disabled={!picked || !chain?.address}
-            onClick={() => {
-              setError(null);
-              setSheet("delegate");
-            }}
-          >
-            Delegate
-          </Button>
-        </div>
+        <Button
+          className="w-full"
+          disabled={!pickedValidator || pickedValidator.jailed || !chain?.address}
+          onClick={() => {
+            setError(null);
+            setSheet("delegate");
+          }}
+        >
+          <span className="min-w-0 truncate">
+            {!pickedValidator
+              ? picked && validators.loading
+                ? "Loading validators…"
+                : "Pick a validator to delegate"
+              : pickedValidator.jailed
+                ? "This validator is jailed"
+                : `Delegate to ${pickedValidator.moniker}`}
+          </span>
+        </Button>
       }
     >
-      <div className="flex flex-col gap-3.5 pt-1">
+      <div className="flex flex-col gap-3 pt-1">
         <section
           className={cn(
             "rounded-[16px] border border-[var(--z-line-strong)] px-3.5 py-3",
@@ -613,10 +668,18 @@ export function EarnScreen({
                       symbol={symbol}
                       hidden={hidden}
                       selected={picked === validator.operatorAddress}
-                      onSelect={() => {
-                        setPicked(validator.operatorAddress);
-                        onOpenValidator?.(validator);
-                      }}
+                      onSelect={() =>
+                        pick(
+                          picked === validator.operatorAddress
+                            ? null
+                            : validator.operatorAddress,
+                        )
+                      }
+                      onOpen={
+                        onOpenValidator
+                          ? () => onOpenValidator(validator)
+                          : undefined
+                      }
                     />
                   </li>
                 ))}
@@ -637,7 +700,15 @@ export function EarnScreen({
               <ul className="flex flex-col gap-1.5">
                 {delegations.rows.map((row) => (
                   <li key={`${row.chainId}:${row.validatorAddress}`}>
-                    <PositionRow row={row} hidden={hidden} onOpen={onOpenChain} />
+                    <PositionRow
+                      row={row}
+                      chainName={
+                        chains.find((c) => c.chainId === row.chainId)?.entry
+                          .chainName ?? row.chainId
+                      }
+                      hidden={hidden}
+                      onOpen={onOpenChain}
+                    />
                   </li>
                 ))}
               </ul>
@@ -676,10 +747,12 @@ export function EarnScreen({
 
 function PositionRow({
   row,
+  chainName,
   hidden,
   onOpen,
 }: {
   row: DelegationInfo;
+  chainName: string;
   hidden: boolean;
   onOpen: (chainId: string) => void;
 }) {
@@ -699,16 +772,16 @@ function PositionRow({
           {row.moniker}
         </span>
         <span className="mt-0.5 block truncate font-mono text-[9.5px] text-fg-dim">
-          {row.chainId}
+          {chainName}
         </span>
       </span>
-      <span className="shrink-0 text-right">
-        <span className={cn(amountInlineClass, "block")}>
+      <span className="max-w-[48%] shrink-0 text-right">
+        <span className={cn(amountInlineClass, "block truncate")}>
           {hidden
             ? "••••"
             : `${formatUnits(row.amount, row.decimals, 2)} ${row.symbol}`}
         </span>
-        <span className="mt-[3px] block font-mono text-[11px] font-bold tabular-nums text-accent">
+        <span className="mt-[3px] block truncate font-mono text-[11px] font-bold tabular-nums text-accent">
           {hidden ? "••••" : `+${formatUnits(row.rewards, row.decimals, 2)}`}
         </span>
       </span>
@@ -734,7 +807,7 @@ function UnbondingRow({
           {daysUntil(row.completionTime)}
         </span>
       </span>
-      <span className={cn(amountInlineClass, "shrink-0 text-fg-muted")}>
+      <span className={cn(amountInlineClass, "max-w-[45%] shrink-0 truncate text-fg-muted")}>
         {hidden
           ? "••••"
           : `${formatUnits(row.amount, row.decimals, 2)} ${row.symbol}`}

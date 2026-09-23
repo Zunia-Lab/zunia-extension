@@ -17,6 +17,7 @@ import {
 } from "../../../lib/address-book";
 import { sendToBackground } from "../../../lib/popup-client";
 import { IconBook, IconClose, IconQr, IconStar } from "../screens/icons";
+import { fieldFocusWithin } from "./field-focus";
 import { PickerSheet, type PickerItem } from "./PickerSheet";
 
 type BarcodeDetectorLike = {
@@ -327,7 +328,12 @@ export function QrScanOverlay({
               {error}
             </p>
           ) : null}
-          <label className="flex w-full cursor-pointer items-center justify-center rounded-[12px] border border-[var(--z-line)] py-2.5 text-[12.5px] font-medium text-fg transition-colors hover:bg-[var(--z-state-hover)]">
+          <label
+            className={cn(
+              "flex w-full cursor-pointer items-center justify-center rounded-[12px] border border-[var(--z-line)] py-2.5 text-[12.5px] font-medium text-fg hover:bg-[var(--z-state-hover)]",
+              fieldFocusWithin,
+            )}
+          >
             Upload QR image
             <input
               type="file"

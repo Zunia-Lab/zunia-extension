@@ -323,7 +323,7 @@ export interface ChainAccount {
 
 /**
  * Bech32 address of the active account on each requested chain.
- * Requires an unlocked session — the phrase never leaves the worker.
+ * Requires an unlocked session; the phrase never leaves the worker.
  */
 export async function getChainAccounts(
   chainIds: string[],
@@ -449,7 +449,7 @@ export function registerSessionLifecycle(): void {
     }
   });
 
-  // Chromium service worker suspend — wipe session if configured.
+  // Chromium service worker suspend: wipe session if configured.
   const runtime = browser.runtime as typeof browser.runtime & {
     onSuspend?: { addListener: (cb: () => void) => void };
   };

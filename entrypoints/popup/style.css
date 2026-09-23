@@ -15,8 +15,8 @@
   detached approval window (lib/provider-handler.ts) is sized from the OUTER
   frame, so its viewport loses the title bar, and a raised browser minimum font
   size grows the content inside whatever height is given. Pinning to 600px with
-  overflow:hidden made both of those clip the pinned footer — the Reject and
-  Approve buttons — with no way to scroll to it.
+  overflow:hidden made both of those clip the pinned footer (the Reject and
+  Approve buttons) with no way to scroll to it.
 
   So: track the viewport, and only below --popup-shell-min-height fall back to
   scrolling the shell inside #root. At a 600px viewport every used value here
@@ -38,8 +38,8 @@
 html {
   margin: 0;
   width: 360px;
-  /* No height. When a host window is shorter than --popup-height — the approve
-     fallback window, whose 360x600 outer size yields a ~565px viewport — the
+  /* No height. When a host window is shorter than --popup-height (the approve
+     fallback window, whose 360x600 outer size yields a ~565px viewport), the
      document scrolls, so a pinned footer stays reachable instead of being
      clipped off the bottom with no way to get to it. */
   overflow-x: hidden;
@@ -117,8 +117,8 @@ body::before {
   body {
     width: 360px;
     /* A floor, never a cap. Capping the height here would let body's
-       overflow:hidden clip a screen taller than the window — the onboarding and
-       approve-in-a-tab cases — with nothing left to scroll. As a floor the card
+       overflow:hidden clip a screen taller than the window (the onboarding and
+       approve-in-a-tab cases) with nothing left to scroll. As a floor the card
        keeps its 600px look when the window can afford it and grows when it
        cannot, and the document scrolls. */
     min-height: min(var(--popup-height), 100%);

@@ -156,7 +156,7 @@ export function CreateWalletScreen({
 
   /**
    * Switching word count throws the current phrase away. The reset happens here
-   * — in the handler that causes it — rather than in the effect, so the reveal
+   * (in the handler that causes it) rather than in the effect, so the reveal
    * and copy acknowledgements can never outlive the phrase they were given for.
    */
   function chooseWordCount(next: WordCount) {
@@ -379,7 +379,7 @@ export function CreateWalletScreen({
                 {generating
                   ? "Generating…"
                   : phrase.status === "failed"
-                    ? `Could not generate a recovery phrase — ${phrase.message}. Go back and try again.`
+                    ? `Could not generate a recovery phrase: ${phrase.message}. Go back and try again.`
                     : "Waiting for phrase…"}
               </p>
             )}
@@ -390,7 +390,7 @@ export function CreateWalletScreen({
           <>
             <StepHeading
               title="Confirm your phrase"
-              subtitle={`Pick word #${currentIndex() + 1} — ${cursor + 1} of ${
+              subtitle={`Pick word #${currentIndex() + 1}, ${cursor + 1} of ${
                 verifyIdx.length
               }.`}
               className="relative"

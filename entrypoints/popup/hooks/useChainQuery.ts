@@ -63,7 +63,7 @@ function useQuery<T>(
   const current = settled?.cacheKey === cacheKey ? settled : null;
   // Both derived rather than stored: the previous chain's rows must not read as
   // settled on the render that switches chains, and a stored `loading` needs a
-  // setState inside the effect to say so — a cascading render on every switch.
+  // setState inside the effect to say so: a cascading render on every switch.
   const rows: T[] = current ? current.rows : NO_ROWS;
   const loading = enabled && (current === null || current.attempt !== attempt);
 

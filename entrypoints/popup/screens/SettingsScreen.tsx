@@ -15,6 +15,15 @@ const LOCK_LABELS: Record<number, string> = {
   3_600_000: "60 min",
 };
 
+/** The version Chrome installed, so the label cannot drift from a release. */
+function manifestVersion(): string | null {
+  try {
+    return browser.runtime.getManifest().version;
+  } catch {
+    return null;
+  }
+}
+
 /** Settings hub. Each group links to a focused screen instead of one long list. */
 export function SettingsScreen({
   status,
@@ -35,15 +44,18 @@ export function SettingsScreen({
   const active =
     status.accounts.find((a) => a.index === status.activeAccountIndex) ??
     status.accounts[0];
+  const version = manifestVersion();
 
   return (
     <ScreenScaffold
       title="Settings"
       onBack={onBack}
       right={
-        <span className="font-mono text-[9px] uppercase tracking-[0.12em] text-fg-dim">
-          v0.1.0
-        </span>
+        version ? (
+          <span className="font-mono text-[9px] uppercase tracking-[0.12em] text-fg-dim">
+            v{version}
+          </span>
+        ) : undefined
       }
       footer={
         <Button
@@ -92,7 +104,7 @@ export function SettingsScreen({
           />
           <SettingsLink
             title="Connected dApps"
-            description={`${grants.length} active ${grants.length === 1 ? "grant" : "grants"}`}
+            description={`${grants.length} connected ${grants.length === 1 ? "site" : "sites"}`}
             onClick={() => onNavigate("sites")}
           />
         </SettingsGroup>

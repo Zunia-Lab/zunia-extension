@@ -134,7 +134,7 @@ export default defineContentScript({
      * Background asks this tab to raise the connect prompt.
      *
      * `browser.runtime.onMessage` in a content script only receives extension
-     * traffic — a web page cannot post here — but the sender id is checked
+     * traffic (a web page cannot post here), but the sender id is checked
      * anyway, and the payload origin has to match this document. A prompt that
      * named some other site would be a phishing surface, not a bug.
      */

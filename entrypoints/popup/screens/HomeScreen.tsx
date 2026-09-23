@@ -12,7 +12,6 @@ import {
   TabsTrigger,
   TokenLogo,
   activityAmountClass,
-  activityPresentation,
   amountHeroClass,
   amountInlineClass,
   amountPrimaryClass,
@@ -40,6 +39,7 @@ import {
   formatUnits,
   relativeTime,
 } from "../../../lib/format";
+import { ActivityBadge } from "../components/ActivityBadge";
 import { PopupHeader } from "../components/PopupHeader";
 import type { ChainAccountView } from "../hooks/useChainAccounts";
 import { useActivity } from "../hooks/useChainQuery";
@@ -60,8 +60,18 @@ import {
   IconSwap,
 } from "./icons";
 
-/** Past this many networks the list gets a search box. */
-const SEARCH_FROM = 5;
+/** Past this many networks the list gets a search box and a held-only filter. */
+const FILTER_FROM = 6;
+
+/** True when the network holds anything: spendable, staked, or other tokens. */
+function holdsFunds(balance: ChainBalance | undefined): boolean {
+  if (!balance) return false;
+  return (
+    balance.available !== "0" ||
+    balance.staked !== "0" ||
+    balance.tokens.some((token) => token.amount !== "0")
+  );
+}
 
 function hostOf(origin: string): string {
   try {
@@ -130,7 +140,7 @@ function TokenLine({
           ) : null}
         </span>
       </span>
-      <span className={cn(amountInlineClass, "shrink-0 text-[12.5px]")}>
+      <span className={cn(amountInlineClass, "max-w-[45%] shrink-0 truncate text-[12.5px]")}>
         {hidden ? "••••" : formatUnits(token.amount, token.decimals)}
       </span>
     </div>
@@ -143,6 +153,7 @@ function NetworkRow({
   price,
   currency,
   hidden,
+  query,
   onOpen,
 }: {
   chain: ChainAccountView;
@@ -150,9 +161,12 @@ function NetworkRow({
   price?: SpotPrice;
   currency: string;
   hidden: boolean;
+  /** The list search, so a network found by one of its tokens shows it. */
+  query: string;
   onOpen: () => void;
 }) {
-  const [open, setOpen] = useState(false);
+  // Null until the user toggles, so a search can open the token list.
+  const [open, setOpen] = useState<boolean | null>(null);
   const nativeToken =
     balance?.tokens.find((t) => t.kind === "native") ??
     (balance
@@ -167,6 +181,15 @@ function NetworkRow({
         }
       : undefined);
   const extras = (balance?.tokens ?? []).filter((t) => t.kind !== "native");
+  const needle = query.trim().toLowerCase();
+  const tokenMatch =
+    needle.length > 0 &&
+    extras.some(
+      (token) =>
+        token.symbol.toLowerCase().includes(needle) ||
+        token.displayName.toLowerCase().includes(needle),
+    );
+  const expanded = open ?? tokenMatch;
   const amount = balance
     ? formatUnits(balance.available, balance.decimals)
     : NO_VALUE;
@@ -216,12 +239,12 @@ function NetworkRow({
               {chain.entry.chainName}
             </span>
           </span>
-          <span className="shrink-0 text-right">
-            <span className={cn(amountPrimaryClass, "block text-[14px]")}>
+          <span className="max-w-[48%] shrink-0 text-right">
+            <span className={cn(amountPrimaryClass, "block truncate text-[14px]")}>
               {primaryAmount}
             </span>
             {secondaryAmount ? (
-              <span className={cn(amountSecondaryClass, "mt-0.5 text-[10px]")}>
+              <span className={cn(amountSecondaryClass, "mt-0.5 block truncate text-[10px]")}>
                 {secondaryAmount}
               </span>
             ) : null}
@@ -231,14 +254,18 @@ function NetworkRow({
         {extras.length > 0 ? (
           <button
             type="button"
-            aria-label={open ? "Hide other tokens" : "Show other tokens"}
-            aria-expanded={open}
-            onClick={() => setOpen((v) => !v)}
+            aria-label={
+              expanded
+                ? `Hide other ${chain.entry.chainName} tokens`
+                : `Show ${extras.length} other ${chain.entry.chainName} tokens`
+            }
+            aria-expanded={expanded}
+            onClick={() => setOpen(!expanded)}
             className={cn(
               "flex size-8 shrink-0 items-center justify-center rounded-[8px] text-fg-dim",
               "transition-[background-color,color] duration-[var(--z-duration-fast)] ease-[var(--z-ease)]",
               "hover:bg-[var(--z-state-hover)] hover:text-fg",
-              open && "text-fg",
+              expanded && "text-fg",
               focusRing,
             )}
           >
@@ -248,14 +275,14 @@ function NetworkRow({
               aria-hidden
               className={cn(
                 "transition-transform duration-[var(--z-duration-fast)] ease-[var(--z-ease)]",
-                open && "rotate-180",
+                expanded && "rotate-180",
               )}
             />
           </button>
         ) : null}
       </div>
 
-      {open && extras.length > 0 ? (
+      {expanded && extras.length > 0 ? (
         <div className="pb-1">
           {extras.map((token) => (
             <TokenLine key={token.denom} token={token} hidden={hidden} />
@@ -275,7 +302,6 @@ function ActivityRow({
   hidden: boolean;
   onOpen: () => void;
 }) {
-  const presentation = activityPresentation(item.kind, item.success);
   const signed =
     item.amount && item.amount !== "0"
       ? `${item.amount.startsWith("-") ? "" : "+"}${formatUnits(
@@ -290,22 +316,12 @@ function ActivityRow({
       type="button"
       onClick={onOpen}
       className={cn(
-        "flex w-full items-center gap-2.5 py-2 text-left",
+        "-mx-1.5 flex w-[calc(100%+12px)] items-center gap-2.5 rounded-[10px] px-1.5 py-2 text-left",
         "transition-colors duration-[var(--z-duration-base)] hover:bg-[var(--z-state-hover)]",
         focusRing,
       )}
     >
-      <span
-        className="flex size-8 shrink-0 items-center justify-center rounded-full border text-[15px] font-semibold leading-none"
-        style={{
-          color: presentation.fg,
-          background: presentation.bg,
-          borderColor: presentation.border,
-        }}
-        aria-label={presentation.label}
-      >
-        {presentation.icon}
-      </span>
+      <ActivityBadge kind={item.kind} success={item.success} />
       <span className="min-w-0 flex-1">
         <span className="block truncate text-[11.5px] font-medium text-fg">
           {item.title}
@@ -318,13 +334,75 @@ function ActivityRow({
         <span
           className={cn(
             amountInlineClass,
-            "shrink-0",
+            "max-w-[46%] shrink-0 truncate",
             amountClass,
           )}
         >
           {hidden ? "••••" : signed}
         </span>
       ) : null}
+    </button>
+  );
+}
+
+/** A staking position: what is bonded on the network and what it has earned. */
+function StakedRow({
+  chain,
+  balance,
+  price,
+  currency,
+  hidden,
+  onOpen,
+}: {
+  chain: ChainAccountView;
+  balance: ChainBalance;
+  price?: SpotPrice;
+  currency: string;
+  hidden: boolean;
+  onOpen: () => void;
+}) {
+  const symbol = balance.symbol || chain.entry.coinDenom;
+  const staked = formatUnits(balance.staked, balance.decimals, 4);
+  const rewards =
+    balance.rewards && balance.rewards !== "0"
+      ? formatUnits(balance.rewards, balance.decimals, 4)
+      : null;
+  const fiat = price
+    ? formatFiat(toWholeCoins(balance.staked, balance.decimals) * price.price, currency)
+    : null;
+
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className={cn(
+        "flex w-full items-center gap-2.5 rounded-[12px] border border-[var(--z-line)] px-2.5 py-2.5 text-left",
+        "transition-[background-color,border-color] duration-[var(--z-duration-fast)] ease-[var(--z-ease)]",
+        "hover:border-[var(--z-line-strong)] hover:bg-[var(--z-state-hover)]",
+        focusRing,
+      )}
+    >
+      <TokenLogo
+        src={balance.iconUrl ?? chain.iconUrl}
+        symbol={symbol}
+        size={30}
+      />
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-[12.5px] font-medium text-fg">
+          {chain.entry.chainName}
+        </span>
+        <span className="mt-0.5 block truncate font-mono text-[9.5px] text-fg-dim">
+          {hidden ? "••••" : fiat ? `${fiat} staked` : "staked"}
+        </span>
+      </span>
+      <span className="max-w-[48%] shrink-0 text-right">
+        <span className={cn(amountInlineClass, "block truncate")}>
+          {hidden ? "••••" : `${staked} ${symbol}`}
+        </span>
+        <span className="mt-[3px] block truncate font-mono text-[9.5px] tabular-nums text-accent">
+          {hidden ? "••••" : rewards ? `+${rewards} to claim` : "no rewards yet"}
+        </span>
+      </span>
     </button>
   );
 }
@@ -342,6 +420,7 @@ export function HomeScreen({
   onReloadBalances,
   onNavigate,
   onOpenChain,
+  onOpenEarn,
   onOpenTx,
   onOpenMenu,
   onRefresh,
@@ -358,12 +437,15 @@ export function HomeScreen({
   onReloadBalances: () => void;
   onNavigate: (route: PopupRoute) => void;
   onOpenChain: (chainId: string) => void;
+  /** Earn on one network, or on its default network without an argument. */
+  onOpenEarn: (chainId?: string) => void;
   onOpenTx: (item: ActivityItem) => void;
   onOpenMenu: () => void;
   onRefresh: () => void;
 }) {
   const [enabling, setEnabling] = useState(false);
   const [query, setQuery] = useState("");
+  const [heldOnly, setHeldOnly] = useState(false);
   const toast = useToast();
   const { settings, update, hidden, toggleHidden } = usePrefs();
   const active =
@@ -375,21 +457,31 @@ export function HomeScreen({
   // The header names one chain, so show that chain's address rather than the
   // account's default derivation, which belongs to a different prefix.
   const headerAddress = primary?.address ?? active?.address;
+  const readsLive = settings.liveBalances && hostGranted;
+  const filterable = chains.length > FILTER_FROM;
+  // Held-only needs balances to judge by; without live reads it would hide all.
+  const filterHeld = filterable && heldOnly && readsLive;
   const visibleChains = useMemo(() => {
     const byId = new Map(chains.map((chain) => [chain.chainId, chain]));
+    const pool = filterHeld
+      ? chains.filter((chain) => holdsFunds(balances[chain.chainId]))
+      : chains;
     return searchItems(
-      chains.map((chain) => ({
+      pool.map((chain) => ({
         id: chain.chainId,
         label: chain.entry.chainName,
         sublabel: chain.entry.coinDenom,
         keywords: [
           chain.chainId,
-          ...(balances[chain.chainId]?.tokens ?? []).map((token) => token.symbol),
+          ...(balances[chain.chainId]?.tokens ?? []).flatMap((token) => [
+            token.symbol,
+            token.displayName,
+          ]),
         ],
       })),
-      query,
+      filterable ? query : "",
     ).flatMap((item) => byId.get(item.id) ?? []);
-  }, [chains, balances, query]);
+  }, [chains, balances, query, filterable, filterHeld]);
   const staked = chains.filter((c) => {
     const b = balances[c.chainId];
     return b && b.staked !== "0";
@@ -401,7 +493,6 @@ export function HomeScreen({
   );
   const currency = (settings.currency ?? "USD").toUpperCase();
   const hasTotal = totals.pricedChains > 0;
-  const readsLive = settings.liveBalances && hostGranted;
 
   const chainIds = useMemo(() => chains.map((c) => c.chainId), [chains]);
   const { rows: activity } = useActivity(chainIds, readsLive);
@@ -613,17 +704,38 @@ export function HomeScreen({
           </TabsList>
 
           <TabsContent value="tokens" className="pt-0.5">
-            {chains.length > SEARCH_FROM ? (
-              <SearchField
-                className="mb-1.5 mt-2"
-                value={query}
-                onValueChange={setQuery}
-                placeholder="Search networks and tokens"
-              />
+            {filterable ? (
+              <div className="mb-1.5 mt-2 flex items-center gap-2">
+                <SearchField
+                  className="min-w-0 flex-1"
+                  value={query}
+                  onValueChange={setQuery}
+                  placeholder="Search networks and tokens"
+                />
+                {readsLive ? (
+                  <button
+                    type="button"
+                    aria-pressed={heldOnly}
+                    onClick={() => setHeldOnly((v) => !v)}
+                    className={cn(
+                      "h-9 shrink-0 rounded-full border px-3 font-mono text-[9.5px] uppercase tracking-[0.08em]",
+                      "transition-colors duration-[var(--z-duration-base)]",
+                      heldOnly
+                        ? "border-accent bg-[var(--z-state-selected)] text-fg"
+                        : "border-[var(--z-line)] text-fg-muted hover:border-[var(--z-line-strong)] hover:text-fg",
+                      focusRing,
+                    )}
+                  >
+                    Held only
+                  </button>
+                ) : null}
+              </div>
             ) : null}
-            {query && visibleChains.length === 0 ? (
+            {visibleChains.length === 0 && chains.length > 0 ? (
               <p className="py-6 text-center text-[12px] text-fg-muted">
-                Nothing matches &ldquo;{query.trim()}&rdquo;.
+                {query.trim()
+                  ? <>Nothing matches &ldquo;{query.trim()}&rdquo;{filterHeld ? " among networks with funds" : ""}.</>
+                  : "No network holds funds yet."}
               </p>
             ) : null}
             <ul className="flex flex-col">
@@ -635,6 +747,7 @@ export function HomeScreen({
                     price={prices[chain.chainId]}
                     currency={currency}
                     hidden={hidden}
+                    query={filterable ? query : ""}
                     onOpen={() => onOpenChain(chain.chainId)}
                   />
                 </li>
@@ -660,27 +773,63 @@ export function HomeScreen({
             {staked.length === 0 ? (
               <EmptyState
                 icon={<IconStake width={18} height={18} />}
-                title="Nothing staked"
-                description="Delegate from a network page and your positions land here."
+                title={readsLive ? "Nothing staked" : "Staking is off"}
+                description={
+                  readsLive
+                    ? "Pick a validator in Earn and your positions land here."
+                    : "Enable live balances to read staking positions from each chain."
+                }
+                action={
+                  readsLive ? (
+                    <Button size="sm" variant="secondary" onClick={() => onOpenEarn()}>
+                      Open Earn
+                    </Button>
+                  ) : undefined
+                }
               />
             ) : (
-              <ul className="flex flex-col gap-2">
-                {staked.map((chain) => (
-                  <li key={chain.chainId}>
-                    <NetworkRow
-                      chain={chain}
-                      balance={{
-                        ...balances[chain.chainId]!,
-                        available: balances[chain.chainId]!.staked,
-                      }}
-                      price={prices[chain.chainId]}
-                      currency={currency}
-                      hidden={hidden}
-                      onOpen={() => onOpenChain(chain.chainId)}
-                    />
-                  </li>
-                ))}
-              </ul>
+              <>
+                <div className="mb-2 mt-1 grid grid-cols-2 gap-2">
+                  <div className="rounded-[12px] border border-[var(--z-line)] px-3 py-2">
+                    <p className="font-mono text-[8.5px] uppercase tracking-[0.14em] text-fg-dim">
+                      Staked value
+                    </p>
+                    <p className={cn(amountInlineClass, "mt-1 truncate text-[14px]")}>
+                      {hidden
+                        ? "••••"
+                        : totals.staked > 0
+                          ? formatFiat(totals.staked, currency)
+                          : NO_VALUE}
+                    </p>
+                  </div>
+                  <div className="rounded-[12px] border border-[var(--z-line)] px-3 py-2">
+                    <p className="font-mono text-[8.5px] uppercase tracking-[0.14em] text-fg-dim">
+                      To claim
+                    </p>
+                    <p className={cn(amountInlineClass, "mt-1 truncate text-[14px] text-accent")}>
+                      {hidden
+                        ? "••••"
+                        : totals.claimable > 0
+                          ? formatFiat(totals.claimable, currency)
+                          : NO_VALUE}
+                    </p>
+                  </div>
+                </div>
+                <ul className="flex flex-col gap-1.5">
+                  {staked.map((chain) => (
+                    <li key={chain.chainId}>
+                      <StakedRow
+                        chain={chain}
+                        balance={balances[chain.chainId]!}
+                        price={prices[chain.chainId]}
+                        currency={currency}
+                        hidden={hidden}
+                        onOpen={() => onOpenEarn(chain.chainId)}
+                      />
+                    </li>
+                  ))}
+                </ul>
+              </>
             )}
           </TabsContent>
 

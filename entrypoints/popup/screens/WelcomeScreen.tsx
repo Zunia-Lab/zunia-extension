@@ -5,7 +5,9 @@ import {
   SeedSafetyAcks,
   SeedSafetyCallout,
   allSeedAcksAccepted,
+  cn,
   emptySeedAcks,
+  focusRing,
 } from "@zunialab/ui";
 
 /**
@@ -55,7 +57,10 @@ export function WelcomeScreen({
                 });
                 window.close();
               }}
-              className="mt-0.5 text-center text-[11px] text-fg-dim underline-offset-2 hover:text-fg hover:underline"
+              className={cn(
+                "mt-0.5 rounded-[8px] text-center text-[11px] text-fg-dim underline-offset-2 hover:text-fg hover:underline",
+                focusRing,
+              )}
             >
               Set up in a full tab instead
             </button>

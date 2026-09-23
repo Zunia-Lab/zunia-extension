@@ -91,6 +91,23 @@ function canonical(next: PopupLocation): PopupLocation {
 }
 
 /**
+ * The history with Earn's network and validator pick written into its entry,
+ * so going back to Earn from a pushed view restores both. The same array comes
+ * back when Earn is not on top, so a stale callback changes nothing.
+ */
+export function withEarnPick(
+  stack: PopupLocation[],
+  chainId: string,
+  operatorAddress: string | null,
+): PopupLocation[] {
+  const top = stack[stack.length - 1];
+  if (top?.route !== "earn") return stack;
+  const kept: PopupLocation = { route: "earn", chainId };
+  if (operatorAddress) kept.operatorAddress = operatorAddress;
+  return [...stack.slice(0, -1), kept];
+}
+
+/**
  * The history after navigating to `next`. A tab root starts a fresh history,
  * as the bottom bar does; any other view is pushed, unless it is already the
  * current one.

@@ -6,6 +6,8 @@ import {
   DialogDescription,
   DialogTitle,
   SheetContent,
+  cn,
+  focusRing,
 } from "@zunialab/ui";
 import type { AccountInfo } from "../../../lib/session";
 
@@ -62,7 +64,11 @@ export function AccountSwitcherSheet({
         {onManage ? (
           <button
             type="button"
-            className="mt-3 w-full text-center font-mono text-[11px] text-fg-dim"
+            className={cn(
+              "mt-3 w-full rounded-[10px] py-1.5 text-center font-mono text-[11px] text-fg-dim",
+              "transition-colors duration-[var(--z-duration-base)] hover:text-fg",
+              focusRing,
+            )}
             onClick={() => {
               onManage();
               onOpenChange(false);

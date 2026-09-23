@@ -303,7 +303,7 @@ function parseBankTokens(
     if (!row.denom || !row.amount || row.amount === "0") continue;
     tokens.push(classifyToken(row.denom, row.amount, native));
   }
-  // Native first, then IBC, factory, other — alphabetical within each kind.
+  // Native first, then IBC, factory, other; alphabetical within each kind.
   const order: Record<TokenKind, number> = {
     native: 0,
     ibc: 1,
@@ -423,7 +423,7 @@ export async function getChainBalances(
     return [];
   }
 
-  // Placeholder / failed derives have no address — skip instead of spamming
+  // Placeholder / failed derives have no address; skip instead of spamming
   // LCD with `/balances/` and poisoning the cache.
   const usable = accounts.filter((a) => a.address.trim().length > 0);
   if (usable.length === 0) return [];

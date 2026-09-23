@@ -4,9 +4,9 @@
  * on the destination chain.
  *
  * There is no aggregator and no custodian. The wallet plans the route itself
- * with `@zunialab/interchain` — unwinding a wrapped denom, discovering and
+ * with `@zunialab/interchain` (unwinding a wrapped denom, discovering and
  * verifying channels, composing the ibc-hooks memo with a packet-forward hop
- * before or after when Osmosis is not adjacent — prices the pool against the
+ * before or after when Osmosis is not adjacent) prices the pool against the
  * Osmosis router, and hands one `MsgTransfer` to `@zunialab/core` to sign.
  *
  * Every control on this screen is enabled only when its whole path works, and
@@ -204,7 +204,7 @@ export function SwapScreen({
   const [slippage, setSlippage] = useState(INITIAL_SLIPPAGE_PERCENT);
   const [manual, setManual] = useState<ManualChannel[]>([]);
   // Bumped by the retry controls. Part of the plan key, because re-running the
-  // same inputs must actually re-run them — a new array identity would not.
+  // same inputs must actually re-run them; a new array identity would not.
   const [retryToken, setRetryToken] = useState(0);
   const [phase, setPhase] = useState<Phase>("form");
   const [pending, setPending] = useState<PendingTx | null>(null);
@@ -284,7 +284,7 @@ export function SwapScreen({
   const [requotingKey, setRequotingKey] = useState<string | null>(null);
 
   // The contract reads `slippage_percentage` on a 0-100 scale and divides by
-  // 100 itself, so an out-of-range value is not a wide tolerance — it is a memo
+  // 100 itself, so an out-of-range value is not a wide tolerance, it is a memo
   // the contract rejects. Caught before planning rather than as a build error.
   const slippageOk =
     Number.isFinite(slippage) && slippage > 0 && slippage <= MAX_SLIPPAGE_PERCENT;

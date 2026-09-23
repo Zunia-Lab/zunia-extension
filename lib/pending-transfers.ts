@@ -3,7 +3,7 @@
  *
  * A popup is destroyed the moment it loses focus, and a cross-chain route takes
  * a minute or several. Without this, closing the popup loses the only place the
- * wallet reports where the funds are — and, for a swap whose delivery failed,
+ * wallet reports where the funds are and, for a swap whose delivery failed,
  * the only place the `{"recover":{}}` action is reachable from. The record is
  * exactly what `trackRoute` needs and nothing else: no key material, no
  * balances, and it is dropped once the route settles without leaving anything

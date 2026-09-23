@@ -65,7 +65,7 @@ function feeForChain(chainId: string, gasLimit: number): StdFee {
 
 /**
  * Sign amino msgs with the unlocked kernel and broadcast via chain REST.
- * Wallet-originated only — never used for dApp `sendTx`.
+ * Wallet-originated only; never used for dApp `sendTx`.
  */
 export async function signAndBroadcast(
   input: SignAndBroadcastInput,

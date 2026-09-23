@@ -1,6 +1,6 @@
 # Reproducible extension builds
 
-**Status:** Instructions stub — do not claim store builds are reproducible until this checklist passes an external rebuild.
+**Status:** Instructions stub. Do not claim store builds are reproducible until this checklist passes an external rebuild.
 
 ## Goal
 

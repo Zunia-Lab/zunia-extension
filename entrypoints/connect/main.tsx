@@ -10,8 +10,8 @@ import "./style.css";
  *
  * The background treats the disconnect as "the user can no longer answer this
  * prompt" and rejects the pending approval. That covers every way this frame
- * can vanish — tab closed, page navigated, dApp ripped the overlay out of the
- * DOM — so the dApp's `enable()` promise always settles instead of hanging.
+ * can vanish (tab closed, page navigated, dApp ripped the overlay out of the
+ * DOM), so the dApp's `enable()` promise always settles instead of hanging.
  *
  * It lives outside React on purpose: a StrictMode remount would otherwise
  * disconnect the port and cancel a perfectly live request.

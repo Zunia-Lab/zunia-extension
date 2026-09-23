@@ -23,6 +23,7 @@ import { MoreDrawer } from "./components/MoreDrawer";
 import {
   isTabRoute,
   pushLocation,
+  withEarnPick,
   type PopupLocation,
   type PopupRoute,
 } from "./routes";
@@ -164,7 +165,7 @@ function AppBody({ state }: { state: ExtensionState }) {
   const markHostGranted = useCallback(() => setHostGranted(true), []);
   useEffect(() => {
     // A locked popup never reads balances (`liveReads` below gates on
-    // `unlocked`), so there is nothing to clear here — the old
+    // `unlocked`), so there is nothing to clear here. The old
     // `setHostGranted(false)` was a synchronous setState inside the effect that
     // re-rendered every screen a second time on each lock and unlock. The check
     // re-runs on unlock and writes the real answer, false included.
@@ -261,6 +262,26 @@ function AppBody({ state }: { state: ExtensionState }) {
         chainId: validator.chainId,
         operatorAddress: validator.operatorAddress,
         validator,
+      });
+    },
+    [navigate],
+  );
+
+  const rememberEarnPick = useCallback(
+    (chainId: string, operatorAddress: string | null) => {
+      setHistory((prev) => withEarnPick(prev, chainId, operatorAddress));
+    },
+    [],
+  );
+
+  // Earn is a tab root, so this starts a fresh history on it with the
+  // validator already picked for the Delegate button.
+  const stakeWith = useCallback(
+    (validator: ValidatorInfo) => {
+      navigate({
+        route: "earn",
+        chainId: validator.chainId,
+        operatorAddress: validator.operatorAddress,
       });
     },
     [navigate],
@@ -387,6 +408,7 @@ function AppBody({ state }: { state: ExtensionState }) {
               }}
               onNavigate={(next) => go(next)}
               onOpenChain={openChain}
+              onOpenEarn={(chainId) => go("earn", chainId)}
               onOpenTx={openTx}
               onOpenMenu={() => setMenuOpen(true)}
               onRefresh={() => void refresh()}
@@ -400,8 +422,10 @@ function AppBody({ state }: { state: ExtensionState }) {
               chains={chains}
               balances={balances}
               initialChainId={location.chainId}
+              initialValidator={location.operatorAddress}
               onOpenChain={(chainId) => go("chain", chainId)}
               onOpenValidator={openValidator}
+              onSelectionChange={rememberEarnPick}
             />,
           )
         : null}
@@ -449,7 +473,8 @@ function AppBody({ state }: { state: ExtensionState }) {
           <ValidatorDetailScreen
             validator={location.validator}
             onBack={back}
-            onNavigate={(next, chainId) => go(next, chainId)}
+            onStake={stakeWith}
+            onOpenChain={openChain}
           />
         ) : (
           <Unavailable

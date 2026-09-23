@@ -67,7 +67,7 @@ export function useNotifications({
   // inside the memo below makes the derivation impure: React can re-render the
   // same inputs twice (StrictMode, a concurrent retry) and produce two
   // different feeds, with row ids that no longer match what was marked read.
-  // Sample it once, then step it forward on an interval — which is also what
+  // Sample it once, then step it forward on an interval, which is also what
   // keeps the labels honest in a surface that stays open, like the side panel.
   const [now, setNow] = useState(() => Date.now());
 

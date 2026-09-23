@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { MAX_HISTORY, pushLocation, type PopupLocation } from "./routes";
+import {
+  MAX_HISTORY,
+  pushLocation,
+  withEarnPick,
+  type PopupLocation,
+} from "./routes";
 
 describe("popup history", () => {
   it("pushes views and pops back to where the user came from", () => {
@@ -55,5 +60,35 @@ describe("popup history", () => {
     }
     expect(stack).toHaveLength(MAX_HISTORY);
     expect(stack.at(-1)?.chainId).toBe(`c${MAX_HISTORY + 9}`);
+  });
+
+  it("keeps Earn's network and pick across a validator page", () => {
+    let stack: PopupLocation[] = pushLocation([], { route: "earn" });
+    stack = withEarnPick(stack, "cosmoshub-4", "cosmosvaloper1abc");
+    stack = pushLocation(stack, {
+      route: "validator",
+      chainId: "cosmoshub-4",
+      operatorAddress: "cosmosvaloper1xyz",
+    });
+    const back = stack.slice(0, -1);
+    expect(back).toEqual([
+      { route: "earn", chainId: "cosmoshub-4", operatorAddress: "cosmosvaloper1abc" },
+    ]);
+    expect(withEarnPick(back, "osmosis-1", null)).toEqual([
+      { route: "earn", chainId: "osmosis-1" },
+    ]);
+  });
+
+  it("leaves the history alone when Earn is not on top", () => {
+    const stack: PopupLocation[] = [{ route: "earn" }, { route: "chain", chainId: "a" }];
+    expect(withEarnPick(stack, "a", "valoper")).toBe(stack);
+  });
+
+  it("opens Earn from a validator page as a fresh tab with the pick", () => {
+    const stack = pushLocation(
+      [{ route: "chain", chainId: "a" }, { route: "validator", chainId: "a", operatorAddress: "v" }],
+      { route: "earn", chainId: "a", operatorAddress: "v" },
+    );
+    expect(stack).toEqual([{ route: "earn", chainId: "a", operatorAddress: "v" }]);
   });
 });

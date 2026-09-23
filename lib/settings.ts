@@ -9,9 +9,9 @@ export const CURRENCIES = ["USD", "EUR", "GBP", "JPY", "CHF"] as const;
 export type CurrencyCode = (typeof CURRENCIES)[number];
 
 export interface ExtensionSettings {
-  /** Keplr alias on window.keplr — OFF by default. */
+  /** Keplr alias on window.keplr, OFF by default. */
   exposeKeplrAlias: boolean;
-  /** Allow approving undecoded / unknown msgs — OFF by default. */
+  /** Allow approving undecoded / unknown msgs, OFF by default. */
   blindSigning: boolean;
   autoLockMs: number;
   /**

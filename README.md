@@ -4,7 +4,7 @@
 
 # zunia-extension
 
-> Zunia browser extension for the Cosmos ecosystem — **Chrome, Firefox, Edge, and Safari**.
+> Zunia browser extension for the Cosmos ecosystem: **Chrome, Firefox, Edge, and Safari**.
 
 [![License](https://img.shields.io/github/license/Zunia-Lab/zunia-extension)](LICENSE)
 [![Website](https://img.shields.io/badge/website-zunialab.com-FF1B0C)](https://zunialab.com)

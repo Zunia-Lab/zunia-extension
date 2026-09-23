@@ -5,9 +5,9 @@
  * script mounts inside a closed shadow root. Two channels are involved and it
  * matters which is which:
  *
- * - iframe ↔ background over `browser.runtime` — everything that decides
+ * - iframe ↔ background over `browser.runtime`: everything that decides
  *   whether a dApp gets access. The page cannot see or forge it.
- * - iframe → content script over `window.postMessage` — presentation only
+ * - iframe → content script over `window.postMessage`: presentation only
  *   ("I finished, take me down", "this is how tall I am"). The dApp is the
  *   parent frame, so anything sent here must be assumed public and must never
  *   be trusted as authorization.

@@ -178,7 +178,29 @@ export function TxDetailScreen({
         : "failed";
 
   return (
-    <ScreenScaffold title="Transaction" onBack={onBack}>
+    <ScreenScaffold
+      title="Transaction"
+      onBack={onBack}
+      footer={
+        <div className="flex gap-2">
+          <Button
+            variant="secondary"
+            className="flex-1"
+            onClick={() => void copyHash(item.hash)}
+          >
+            <IconCopy width={15} height={15} />
+            Copy hash
+          </Button>
+          {linkUrl ? (
+            <Button className="flex-1" asChild>
+              <a href={linkUrl} target="_blank" rel="noreferrer">
+                {explorerUrl ? "View on explorer" : "Raw transaction"}
+              </a>
+            </Button>
+          ) : null}
+        </div>
+      }
+    >
       <div className="flex flex-col gap-4 pt-1">
         <TxDetail
           hash={item.hash}
@@ -252,24 +274,6 @@ export function TxDetailScreen({
         ) : detail && detail.packets.length > 0 ? (
           <PacketSteps detail={detail} onCopyTxHash={(hash) => void copyHash(hash)} />
         ) : null}
-
-        <div className="flex gap-2">
-          <Button
-            variant="secondary"
-            className="flex-1"
-            onClick={() => void copyHash(item.hash)}
-          >
-            <IconCopy width={15} height={15} />
-            Copy hash
-          </Button>
-          {linkUrl ? (
-            <Button variant="secondary" className="flex-1" asChild>
-              <a href={linkUrl} target="_blank" rel="noreferrer">
-                {explorerUrl ? "View on explorer" : "Raw transaction"}
-              </a>
-            </Button>
-          ) : null}
-        </div>
       </div>
     </ScreenScaffold>
   );

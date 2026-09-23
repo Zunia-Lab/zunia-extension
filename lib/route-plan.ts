@@ -174,8 +174,8 @@ export async function channelDirectory(): Promise<ChannelDirectory> {
 /**
  * Discover open transfer channels between two chains and remember them.
  *
- * Returns an empty list for the ordinary reasons — same chain, no endpoint,
- * live reads off, nothing matched — which the caller must present as "none
+ * Returns an empty list for the ordinary reasons (same chain, no endpoint,
+ * live reads off, nothing matched), which the caller must present as "none
  * found, enter one" rather than as a failure.
  */
 export async function discoverChannels(
@@ -607,8 +607,8 @@ function venueLinkTo(
  *
  * `output_denom` in the crosschain-swap message is a denom **on the venue**, so
  * "ATOM delivered on the Hub" has to become the Hub's token as Osmosis holds
- * it. `recommendDenom` does exactly that walk — including deciding that a token
- * which originally came *from* the venue unwinds rather than double-wraps — so
+ * it. `recommendDenom` does exactly that walk, including deciding that a token
+ * which originally came *from* the venue unwinds rather than double-wraps, so
  * nothing here re-derives a trace.
  *
  * Returns `null` when it cannot be named, which disables the swap rather than

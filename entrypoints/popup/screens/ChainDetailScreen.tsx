@@ -7,7 +7,6 @@ import {
   Spinner,
   TokenLogo,
   activityAmountClass,
-  activityPresentation,
   amountInlineClass,
   amountPrimaryClass,
   cn,
@@ -37,6 +36,7 @@ import {
   IconSwap,
 } from "./icons";
 import { nftChainSupport } from "../../../lib/nft";
+import { ActivityBadge } from "../components/ActivityBadge";
 import { ListSkeleton } from "../components/ListSkeleton";
 
 function Action({
@@ -333,7 +333,7 @@ export function ChainDetailScreen({
 
         {balance?.error ? (
           <Callout tone="warning" title="Could not reach this chain">
-            {balance.error}. Your address is still derived locally — open Receive
+            {balance.error}. Your address is still derived locally. Open Receive
             to copy it or show the QR.
           </Callout>
         ) : null}
@@ -365,10 +365,6 @@ export function ChainDetailScreen({
           ) : (
             <ul className="flex flex-col">
               {recent.map((item) => {
-                const presentation = activityPresentation(
-                  item.kind,
-                  item.success,
-                );
                 const signed =
                   item.amount && item.amount !== "0"
                     ? `${item.amount.startsWith("-") ? "" : "+"}${formatUnits(
@@ -395,18 +391,7 @@ export function ChainDetailScreen({
                         focusRing,
                       )}
                     >
-                      <span
-                        className="flex size-8 shrink-0 items-center justify-center rounded-full border text-[15px] font-semibold leading-none"
-                        style={{
-                          color: presentation.fg,
-                          background: presentation.bg,
-                          borderColor: presentation.border,
-                        }}
-                        role="img"
-                        aria-label={presentation.label}
-                      >
-                        {presentation.icon}
-                      </span>
+                      <ActivityBadge kind={item.kind} success={item.success} />
                       <span className="min-w-0 flex-1">
                         <span className="block truncate text-[11.5px] font-medium text-fg">
                           {item.title}
@@ -419,7 +404,7 @@ export function ChainDetailScreen({
                         <span
                           className={cn(
                             amountInlineClass,
-                            "shrink-0",
+                            "max-w-[46%] shrink-0 truncate",
                             amountClass,
                           )}
                         >

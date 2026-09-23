@@ -1,8 +1,8 @@
 /**
  * The extension's single wiring of `@zunialab/interchain`.
  *
- * Every chain-facing read in this wallet — channel discovery, denom traces,
- * route planning, swap quoting, packet tracking — goes through the engine, and
+ * Every chain-facing read in this wallet (channel discovery, denom traces,
+ * route planning, swap quoting, packet tracking) goes through the engine, and
  * the engine only ever sees the ports declared here. There is deliberately no
  * second implementation: `lib/ibc-channels.ts` used to hold a hand-rolled copy
  * of channel discovery and was deleted when this file replaced it.
@@ -362,7 +362,7 @@ const VENUE_CACHE_MS = 5 * 60_000;
  * The addresses in `config/interchain.ts` are unverified candidates from
  * governance and documentation. A memo built against an address that is not a
  * contract does not fail loudly: the packet arrives, ibc-hooks finds no
- * contract, the transfer errors and the funds come back — or worse, the address
+ * contract, the transfer errors and the funds come back, or worse, the address
  * is a plain account and the funds simply land there. So the address is checked
  * against `/cosmwasm/wasm/v1/contract/{addr}` before any swap control is
  * enabled, and the whole feature fails closed with a named reason otherwise.

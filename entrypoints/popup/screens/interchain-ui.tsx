@@ -3,7 +3,7 @@
  * Send's other-chain mode.
  *
  * Everything chain-facing is `@zunialab/interchain` through `lib/route-plan.ts`
- * and `lib/interchain.ts`; everything visual is `@zunialab/ui`. What is left —
+ * and `lib/interchain.ts`; everything visual is `@zunialab/ui`. What is left,
  * the hooks that hold a plan while the user edits a form, and the channel
  * editor, lives here so the screens cannot drift apart.
  */
@@ -73,6 +73,7 @@ import { sendToBackground } from "../../../lib/popup-client";
 import type { KernelStatus } from "../../../lib/kernel";
 import type { ChainAccount } from "../../../lib/session";
 import type { ChainAccountView } from "../hooks/useChainAccounts";
+import { fieldFocusWithin } from "../components/field-focus";
 import { PickerSheet, type PickerItem } from "../components/PickerSheet";
 import { usePickerMemory } from "../hooks/usePickerMemory";
 import { IconChevronDown } from "./icons";
@@ -103,7 +104,7 @@ export interface AssetOption {
  *
  * Sourced from the balance reader rather than from the catalog, so the list is
  * what the wallet can actually spend. When live reads are off the balance map
- * is empty and so is this — the screens then say why instead of offering a
+ * is empty and so is this. The screens then say why instead of offering a
  * picker that cannot be satisfied.
  */
 export function spendableAssets(
@@ -1256,7 +1257,7 @@ export { shortDenom } from "../../../lib/format";
  * Routes signed earlier that are still in flight.
  *
  * A popup is destroyed when it loses focus, so without this a user who clicks
- * away loses the only view of where their funds are — and, after a failed
+ * away loses the only view of where their funds are and, after a failed
  * delivery, the only route to the recovery action.
  */
 export function usePendingTransfers(): {
@@ -1419,7 +1420,12 @@ export function AssetSide({
     [options],
   );
   return (
-    <section className="rounded-[13px] border border-[var(--z-line)] px-3 py-2.5">
+    <section
+      className={cn(
+        "rounded-[13px] border border-[var(--z-line)] px-3 py-2.5",
+        !readOnly && fieldFocusWithin,
+      )}
+    >
       <div className="flex items-baseline justify-between gap-2">
         <span className="font-mono text-[9px] uppercase tracking-[0.16em] text-fg-dim">
           {label}

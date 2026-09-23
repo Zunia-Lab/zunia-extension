@@ -7,7 +7,6 @@ import {
   ScreenScaffold,
   SearchField,
   activityAmountClass,
-  activityPresentation,
   amountInlineClass,
   cn,
   focusRing,
@@ -24,6 +23,7 @@ import {
 } from "../../../lib/pending-transfers";
 import { searchItems } from "../../../lib/picker";
 import { STORAGE_KEYS } from "../../../lib/storage-keys";
+import { ActivityBadge } from "../components/ActivityBadge";
 import { ListSkeleton } from "../components/ListSkeleton";
 import { PickerSheet, type PickerItem } from "../components/PickerSheet";
 import type { ChainAccountView } from "../hooks/useChainAccounts";
@@ -119,7 +119,6 @@ function Row({
   hidden: boolean;
   onOpen: (item: ActivityItem) => void;
 }) {
-  const presentation = activityPresentation(item.kind, item.success);
   const unsigned = item.amount?.replace(/^-/, "");
   // Staking moves value between the account's own balances, so it has no sign.
   const sign = isOutgoing(item)
@@ -144,17 +143,7 @@ function Row({
         focusRing,
       )}
     >
-      <span
-        className="flex size-8 shrink-0 items-center justify-center rounded-full border text-[15px] font-semibold leading-none"
-        style={{
-          color: presentation.fg,
-          background: presentation.bg,
-          borderColor: presentation.border,
-        }}
-        aria-label={presentation.label}
-      >
-        {presentation.icon}
-      </span>
+      <ActivityBadge kind={item.kind} success={item.success} />
       <span className="min-w-0 flex-1">
         <span className="block truncate text-[12.5px] font-medium text-fg">
           {item.title}
@@ -291,7 +280,6 @@ function InFlightRow({
   }, [finished, record.txHash]);
 
   const status = inFlightStatus(record, tracking.route, outcome, tracking.error);
-  const presentation = activityPresentation(record.kind === "swap" ? "swap" : "ibc", true);
 
   return (
     <button
@@ -303,17 +291,10 @@ function InFlightRow({
         focusRing,
       )}
     >
-      <span
-        className="flex size-8 shrink-0 items-center justify-center rounded-full border text-[15px] font-semibold leading-none"
-        style={{
-          color: presentation.fg,
-          background: presentation.bg,
-          borderColor: presentation.border,
-        }}
-        aria-hidden
-      >
-        {presentation.icon}
-      </span>
+      <ActivityBadge
+        kind={record.kind === "swap" ? "swap" : "ibc"}
+        decorative
+      />
       <span className="min-w-0 flex-1">
         <span className="block truncate text-[12.5px] font-medium text-fg">{record.label}</span>
         <span className="mt-0.5 block truncate font-mono text-[9.5px] text-fg-dim">

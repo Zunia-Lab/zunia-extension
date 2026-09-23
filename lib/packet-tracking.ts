@@ -8,7 +8,7 @@
  * turns the result into the props `PacketTracker` renders.
  *
  * Every read here is a public query. Tracking needs no key and no unlock, so it
- * keeps working after the wallet auto-locks mid-transfer — which is exactly
+ * keeps working after the wallet auto-locks mid-transfer, which is exactly
  * when a user most wants to see where their funds are.
  */
 

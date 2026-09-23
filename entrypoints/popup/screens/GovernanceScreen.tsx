@@ -3,7 +3,6 @@ import {
   Button,
   Callout,
   EmptyState,
-  FeeSummary,
   Pill,
   ScreenScaffold,
   cn,
@@ -16,6 +15,7 @@ import { formatUnits } from "../../../lib/format";
 import type { ChainAccountView } from "../hooks/useChainAccounts";
 import { useProposals } from "../hooks/useChainQuery";
 import { usePrefs } from "../state/Prefs";
+import { useToast } from "../state/Toasts";
 import { IconGovernance } from "./icons";
 import { signingError, useSignedSend } from "../state/SigningPassword";
 import { ListSkeleton } from "../components/ListSkeleton";
@@ -29,6 +29,8 @@ const VOTE_LABELS: Record<VoteOption, string> = {
   abstain: "Abstain",
 };
 
+const VOTE_GAS = 200_000;
+
 const STATUS_TONE: Record<
   ProposalStatus,
   { label: string; tone: "accent" | "success" | "danger" | "neutral" }
@@ -41,6 +43,16 @@ const STATUS_TONE: Record<
   unknown: { label: "Closed", tone: "neutral" },
 };
 
+/** The vote being prepared. One at a time: picking another replaces it. */
+interface Ballot {
+  key: string;
+  option: VoteOption;
+}
+
+function proposalKey(proposal: ProposalInfo): string {
+  return `${proposal.chainId}:${proposal.id}`;
+}
+
 function endsIn(iso?: string): string | null {
   if (!iso) return null;
   const ms = Date.parse(iso) - Date.now();
@@ -51,25 +63,25 @@ function endsIn(iso?: string): string | null {
   return `Ends ${hours}h`;
 }
 
+const TALLY_SEGMENTS = [
+  { key: "yes", className: "bg-accent" },
+  { key: "no", className: "bg-[var(--z-fg-dim)]" },
+  { key: "veto", className: "bg-[var(--z-danger)]" },
+  { key: "abstain", className: "bg-[var(--z-line-strong)]" },
+] as const;
+
 /** Four-segment tally bar: yes, no, veto, abstain. */
 function Tally({ tally }: { tally: NonNullable<ProposalInfo["tally"]> }) {
-  const segments = [
-    { key: "yes", value: tally.yes, color: "var(--z-accent)" },
-    { key: "no", value: tally.no, color: "var(--z-fg-dim)" },
-    { key: "veto", value: tally.veto, color: "var(--z-danger)" },
-    { key: "abstain", value: tally.abstain, color: "var(--z-line-strong)" },
-  ];
   return (
     <div className="mt-2.5">
       <div className="flex h-1.5 w-full overflow-hidden rounded-full bg-[var(--z-glass-2)]">
-        {segments.map((segment) =>
-          segment.value > 0 ? (
+        {TALLY_SEGMENTS.map((segment) =>
+          tally[segment.key] > 0 ? (
             <span
               key={segment.key}
-              style={{
-                width: `${segment.value * 100}%`,
-                background: segment.color,
-              }}
+              className={segment.className}
+              // The share is data, so the width is the one value set inline.
+              style={{ width: `${tally[segment.key] * 100}%` }}
             />
           ) : null,
         )}
@@ -85,13 +97,17 @@ function Tally({ tally }: { tally: NonNullable<ProposalInfo["tally"]> }) {
 function ProposalItem({
   proposal,
   chainName,
-  vote,
-  onVote,
+  choice,
+  voted,
+  onChoose,
 }: {
   proposal: ProposalInfo;
   chainName: string;
-  vote?: VoteOption;
-  onVote: (option: VoteOption) => void;
+  /** The option picked on this proposal, when the active ballot is this one. */
+  choice?: VoteOption;
+  /** What this wallet voted from this screen, once broadcast. */
+  voted?: VoteOption;
+  onChoose: (option: VoteOption) => void;
 }) {
   const status = STATUS_TONE[proposal.status];
   const open = proposal.status === "voting";
@@ -101,9 +117,11 @@ function ProposalItem({
     <article
       className={cn(
         "rounded-[14px] border px-3 py-2.5",
-        open
-          ? "border-[var(--z-line-strong)] bg-[var(--z-state-selected)]"
-          : "border-[var(--z-line)]",
+        choice
+          ? "border-accent bg-[var(--z-state-selected)]"
+          : open
+            ? "border-[var(--z-line-strong)]"
+            : "border-[var(--z-line)]",
       )}
     >
       <div className="flex items-center justify-between gap-2">
@@ -111,7 +129,9 @@ function ProposalItem({
           #{proposal.id} {chainName}
         </span>
         <span className="shrink-0">
-          {deadline && open ? (
+          {voted ? (
+            <Pill tone="success">Voted {VOTE_LABELS[voted]}</Pill>
+          ) : deadline && open ? (
             <span className="font-mono text-[9px] uppercase tracking-[0.12em] text-accent">
               {deadline}
             </span>
@@ -121,23 +141,28 @@ function ProposalItem({
         </span>
       </div>
 
-      <h3 className="mt-1.5 text-[13px] font-medium leading-snug text-fg">
+      <h3 className="mt-1.5 line-clamp-3 break-words text-[13px] font-medium leading-snug text-fg">
         {proposal.title}
       </h3>
 
       {proposal.tally ? <Tally tally={proposal.tally} /> : null}
 
       {open ? (
-        <div className="mt-2.5 grid grid-cols-4 gap-1.5">
+        <div
+          className="mt-2.5 grid grid-cols-4 gap-1.5"
+          role="group"
+          aria-label={`Vote on proposal ${proposal.id}`}
+        >
           {(Object.keys(VOTE_LABELS) as VoteOption[]).map((option) => (
             <button
               key={option}
               type="button"
-              onClick={() => onVote(option)}
+              aria-pressed={choice === option}
+              onClick={() => onChoose(option)}
               className={cn(
                 "h-[30px] rounded-[9px] border text-[11px] font-medium",
                 "transition-colors duration-[var(--z-duration-base)]",
-                vote === option
+                choice === option
                   ? "border-accent bg-accent text-[var(--z-accent-fg)]"
                   : "border-[var(--z-line)] text-fg-muted hover:bg-[var(--z-state-hover)]",
                 focusRing,
@@ -161,11 +186,13 @@ export function GovernanceScreen({
   onBack: () => void;
 }) {
   const signedSend = useSignedSend();
+  const toast = useToast();
   const { settings } = usePrefs();
   const live = settings.liveBalances;
   const chainIds = useMemo(() => chains.map((c) => c.chainId), [chains]);
   const { rows, loading } = useProposals(chainIds, live);
-  const [votes, setVotes] = useState<Record<string, VoteOption>>({});
+  const [ballot, setBallot] = useState<Ballot | null>(null);
+  const [voted, setVoted] = useState<Record<string, VoteOption>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [txHash, setTxHash] = useState<string | null>(null);
@@ -182,41 +209,57 @@ export function GovernanceScreen({
   );
 
   const open = sorted.filter((p) => p.status === "voting");
-  const selected = Object.entries(votes)[0];
-  const selectedProposal = selected
-    ? sorted.find((p) => `${p.chainId}:${p.id}` === selected[0])
+  const proposal = ballot
+    ? sorted.find((p) => proposalKey(p) === ballot.key)
     : undefined;
-  const voterChain = selectedProposal
-    ? chains.find((c) => c.chainId === selectedProposal.chainId)
+  const voterChain = proposal
+    ? chains.find((c) => c.chainId === proposal.chainId)
     : undefined;
   const fee = estimateFee({
-    gasLimit: 200_000,
+    gasLimit: VOTE_GAS,
     gasPrice: voterChain?.entry.gasPriceStep?.average ?? 0.025,
     denom: voterChain?.entry.feeMinimalDenom ?? "uatom",
   });
+  const feeText = voterChain
+    ? `${formatUnits(fee.amount[0]!.amount, voterChain.entry.feeDecimals)} ${voterChain.entry.feeDenom}`
+    : null;
+
+  function choose(key: string, option: VoteOption) {
+    setError(null);
+    setBallot((current) =>
+      current?.key === key && current.option === option
+        ? null
+        : { key, option },
+    );
+  }
 
   async function signVote() {
-    if (!selectedProposal || !selected || !voterChain?.address) return;
+    if (!ballot || !proposal || !voterChain?.address) return;
     setBusy(true);
     setError(null);
     try {
       const result = await signedSend<{ txhash: string }>(
         "SIGN_AND_BROADCAST",
         {
-          chainId: selectedProposal.chainId,
+          chainId: proposal.chainId,
           signerAddress: voterChain.address,
           msgs: [
             msgVote({
-              proposalId: selectedProposal.id,
+              proposalId: proposal.id,
               voter: voterChain.address,
-              option: selected[1],
+              option: ballot.option,
             }),
           ],
           fee,
-          gasLimit: 200_000,
+          gasLimit: VOTE_GAS,
         },
       );
+      setVoted((prev) => ({ ...prev, [ballot.key]: ballot.option }));
+      setBallot(null);
       setTxHash(result.txhash);
+      toast(`Voted ${VOTE_LABELS[ballot.option]} on #${proposal.id}`, {
+        meta: truncateAddress(result.txhash, 6, 4),
+      });
     } catch (err) {
       setError(signingError(err));
     } finally {
@@ -234,16 +277,48 @@ export function GovernanceScreen({
         </span>
       }
       footer={
-        selectedProposal && selected ? (
-          <Button
-            className="w-full"
-            disabled={busy || !voterChain?.address}
-            onClick={() => void signVote()}
-          >
-            {busy
-              ? "Signing…"
-              : `Sign vote · ${VOTE_LABELS[selected[1]]}`}
-          </Button>
+        ballot && proposal ? (
+          <div className="flex flex-col gap-2">
+            {error ? (
+              <p role="alert" className="text-[11px] leading-snug text-[var(--z-danger)]">
+                {error}
+              </p>
+            ) : null}
+            <div className="flex items-center justify-between gap-3 font-mono text-[9.5px] text-fg-dim">
+              <span className="min-w-0 truncate">
+                #{proposal.id} {names.get(proposal.chainId) ?? proposal.chainId}
+              </span>
+              <span className="shrink-0">
+                Fee <span className="text-fg-muted">{feeText ?? "unknown"}</span>
+              </span>
+            </div>
+            <div className="flex gap-2">
+              <Button
+                variant="secondary"
+                className="flex-1"
+                disabled={busy}
+                onClick={() => {
+                  setBallot(null);
+                  setError(null);
+                }}
+              >
+                Clear
+              </Button>
+              <Button
+                className="min-w-0 flex-[2]"
+                disabled={busy || !voterChain?.address}
+                onClick={() => void signVote()}
+              >
+                <span className="min-w-0 truncate">
+                  {busy
+                    ? "Signing…"
+                    : voterChain?.address
+                      ? `Sign vote · ${VOTE_LABELS[ballot.option]}`
+                      : "No account on this network"}
+                </span>
+              </Button>
+            </div>
+          </div>
         ) : undefined
       }
     >
@@ -252,6 +327,13 @@ export function GovernanceScreen({
           <Callout tone="info" title="On-chain reads are off">
             Proposals come from the same public endpoints as balances, so
             governance follows that opt-in in Preferences.
+          </Callout>
+        ) : null}
+
+        {txHash ? (
+          <Callout tone="info" title="Vote broadcast">
+            Tx {truncateAddress(txHash, 10, 8)}. Inclusion still depends on the
+            network.
           </Callout>
         ) : null}
 
@@ -269,44 +351,22 @@ export function GovernanceScreen({
           />
         ) : (
           <ul className="flex flex-col gap-2">
-            {sorted.map((proposal) => {
-              const key = `${proposal.chainId}:${proposal.id}`;
+            {sorted.map((item) => {
+              const key = proposalKey(item);
               return (
                 <li key={key}>
                   <ProposalItem
-                    proposal={proposal}
-                    chainName={names.get(proposal.chainId) ?? proposal.chainId}
-                    vote={votes[key]}
-                    onVote={(option) => setVotes({ [key]: option })}
+                    proposal={item}
+                    chainName={names.get(item.chainId) ?? item.chainId}
+                    choice={ballot?.key === key ? ballot.option : undefined}
+                    voted={voted[key]}
+                    onChoose={(option) => choose(key, option)}
                   />
                 </li>
               );
             })}
           </ul>
         )}
-
-        {selectedProposal && voterChain ? (
-          <FeeSummary
-            rows={[
-              {
-                label: "Est. fee",
-                value: `${formatUnits(fee.amount[0]!.amount, voterChain.entry.coinDecimals)} ${voterChain.entry.coinDenom}`,
-              },
-            ]}
-          />
-        ) : null}
-
-        {error ? (
-          <Callout tone="danger" title="Could not broadcast">
-            {error}
-          </Callout>
-        ) : null}
-
-        {txHash ? (
-          <Callout tone="info" title="Vote broadcast">
-            Tx {truncateAddress(txHash, 10, 8)}
-          </Callout>
-        ) : null}
 
         {sorted.length > 0 ? (
           <Callout tone="neutral" title="Signed on this device">

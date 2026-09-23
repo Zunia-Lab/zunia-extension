@@ -49,7 +49,7 @@ export function ForgotPasswordScreen({
         </Button>
       }
     >
-      <div className="flex flex-col gap-4 pt-2">
+      <div className="flex flex-col gap-4 pt-1">
         <Callout tone="danger" title="There is no password recovery">
           The password never leaves this device, so it cannot be reset. To get
           back in, remove the wallet here and restore it with your 12 or 24 word

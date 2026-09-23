@@ -26,7 +26,7 @@ const LOCK_OPTIONS = [
 
 const CONFIRM_WORD = "REMOVE";
 
-function RemoveWallet({
+function RemoveWalletScreen({
   onCancel,
   onRemoved,
 }: {
@@ -52,45 +52,54 @@ function RemoveWallet({
   }
 
   return (
-    <div className="flex flex-col gap-3 pt-1">
-      <Callout tone="danger" title="This erases the wallet from this browser">
-        Only your recovery phrase can bring it back. Make sure it is written
-        down before continuing.
-      </Callout>
-      {/* No autofocus: this screen erases the wallet, and the danger callout
-          above says so. Landing focus below it hides the one sentence the user
-          needs before typing anything here. */}
-      <PasswordInput
-        label="Password"
-        placeholder="Password"
-        value={password}
-        onChange={(e) => setPassword(e.target.value)}
-      />
-      <Input
-        label={`Type ${CONFIRM_WORD} to confirm`}
-        placeholder={CONFIRM_WORD}
-        value={confirm}
-        autoCapitalize="characters"
-        onChange={(e) => setConfirm(e.target.value.toUpperCase())}
-      />
-      {error ? (
-        <p className="text-[11.5px] text-[var(--z-danger-fg)]">{error}</p>
-      ) : null}
-      <div className="flex gap-2">
-        <Button variant="secondary" className="flex-1" onClick={onCancel}>
-          Cancel
-        </Button>
-        <Button
-          variant="danger"
-          className="flex-1"
-          loading={busy}
-          disabled={!password || confirm !== CONFIRM_WORD}
-          onClick={() => void remove()}
-        >
-          Remove
-        </Button>
+    <ScreenScaffold
+      title="Remove wallet"
+      onBack={onCancel}
+      footer={
+        <div className="flex gap-2">
+          <Button variant="secondary" className="flex-1" onClick={onCancel}>
+            Cancel
+          </Button>
+          <Button
+            variant="danger"
+            className="flex-1"
+            loading={busy}
+            disabled={!password || confirm !== CONFIRM_WORD}
+            onClick={() => void remove()}
+          >
+            Remove
+          </Button>
+        </div>
+      }
+    >
+      <div className="flex flex-col gap-3 pt-1">
+        <Callout tone="danger" title="This erases the wallet from this browser">
+          Only your recovery phrase can bring it back. Make sure it is written
+          down before continuing.
+        </Callout>
+        {/* No autofocus: this screen erases the wallet, and the danger callout
+            above says so. Landing focus below it hides the one sentence the user
+            needs before typing anything here. */}
+        <PasswordInput
+          label="Password"
+          placeholder="Password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+        />
+        <Input
+          label={`Type ${CONFIRM_WORD} to confirm`}
+          placeholder={CONFIRM_WORD}
+          value={confirm}
+          autoCapitalize="characters"
+          onChange={(e) => setConfirm(e.target.value.toUpperCase())}
+        />
+        {error ? (
+          <p role="alert" className="text-[11.5px] text-[var(--z-danger-fg)]">
+            {error}
+          </p>
+        ) : null}
       </div>
-    </div>
+    </ScreenScaffold>
   );
 }
 
@@ -112,12 +121,10 @@ export function SecurityScreen({
 
   if (removing) {
     return (
-      <ScreenScaffold title="Remove wallet" onBack={() => setRemoving(false)}>
-        <RemoveWallet
-          onCancel={() => setRemoving(false)}
-          onRemoved={onRemoved}
-        />
-      </ScreenScaffold>
+      <RemoveWalletScreen
+        onCancel={() => setRemoving(false)}
+        onRemoved={onRemoved}
+      />
     );
   }
 

@@ -300,7 +300,7 @@ function fromBase64(value: string): Uint8Array {
 /**
  * CosmJS `serializeSignDoc`: recursively sort object keys, then
  * `JSON.stringify` (compact, insertion order = sorted). Sign bytes are the
- * UTF-8 encoding of that string — `signCosmos` hashes them with sha256.
+ * UTF-8 encoding of that string; `signCosmos` hashes them with sha256.
  */
 export function serializeAminoSignDoc(value: unknown): Uint8Array {
   return utf8Bytes(JSON.stringify(sortKeysDeep(value)));
@@ -443,7 +443,7 @@ function derivePrivateKey(
 /**
  * Address payload for bech32. Cosmos uses tendermint(sha256→ripemd160) of the
  * compressed pubkey. Ethermint (coin type 60) uses the keccak of the
- * uncompressed pubkey's XY, which must be derived from the *private* key —
+ * uncompressed pubkey's XY, which must be derived from the *private* key,
  * `getPublicKey` rejects a 33-byte compressed pubkey as if it were a scalar.
  */
 function addressBytes(
@@ -745,8 +745,8 @@ const REQUIRED_WASM_EXPORTS = [
  *
  * The fallback is never silent: whichever kernel wins, {@link getKernelStatus} says which it
  * is and whether transactions can be signed, and the JS kernel throws
- * {@link KernelUnavailableError} from every transaction method. A half-loaded WASM module —
- * present but missing an export, or failing to instantiate — is treated as absent rather
+ * {@link KernelUnavailableError} from every transaction method. A half-loaded WASM module
+ * (present but missing an export, or failing to instantiate) is treated as absent rather
  * than adopted, so there is no state in which some calls sign and others quietly do not.
  */
 export function loadKernel(): Promise<ZuniaKernel> {

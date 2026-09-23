@@ -28,7 +28,7 @@ export function useChainAccounts(unlocked: boolean, activeAccountIndex: number) 
   const [refreshToken, setRefreshToken] = useState(0);
   // Identity of the request the hook should currently be showing. `loading` is
   // derived from it, so unlocking or switching account reads as loading on the
-  // very render that changes it — no effect flipping a flag, and no second
+  // very render that changes it: no effect flipping a flag, and no second
   // render pass per load.
   const requestKey = `${unlocked ? "unlocked" : "locked"}:${activeAccountIndex}:${refreshToken}`;
   const [settled, setSettled] = useState<{

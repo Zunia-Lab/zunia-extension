@@ -18,6 +18,7 @@
 
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import {
+  AddressChip,
   Avatar,
   Button,
   Callout,
@@ -26,12 +27,12 @@ import {
   KeyValueRow,
   PacketTracker,
   Pill,
+  ProgressTracker,
   RoutePreview,
   ScreenScaffold,
   Segmented,
   SectionLabel,
   Spinner,
-  TransferSent,
   cn,
   focusRing,
   truncateAddress,
@@ -43,6 +44,7 @@ import type { AddressBookEntry } from "../../../lib/address-book";
 import { explorerTxUrl } from "../../../config/interchain";
 import { estimateFee, msgSend } from "../../../lib/amino-tx";
 import {
+  NO_VALUE,
   formatUnits,
   formatUnitsExact,
   isBech32,
@@ -92,6 +94,7 @@ import {
   type ChainReach,
 } from "./interchain-ui";
 import { SaveContactPrompt } from "../components/SaveContactPrompt";
+import { fieldFocusWithin } from "../components/field-focus";
 import { IconSend } from "./icons";
 import { signingError, useSignedSend } from "../state/SigningPassword";
 
@@ -800,11 +803,29 @@ export function SendScreen({
         </ScreenScaffold>
       );
     }
+    const sentUrl = explorerTxUrl(chain.chainId, txHash);
     return (
-      <ScreenScaffold title="Transfer sent" onBack={onBack}>
-        <div className="flex flex-col gap-3">
-          <TransferSent
-            hash={txHash}
+      <ScreenScaffold
+        title="Transfer sent"
+        onBack={onBack}
+        footer={
+          <div className="flex gap-2">
+            {sentUrl ? (
+              <Button variant="secondary" className="flex-1" asChild>
+                <a href={sentUrl} target="_blank" rel="noreferrer">
+                  View on explorer
+                </a>
+              </Button>
+            ) : null}
+            <Button className="flex-1" onClick={onBack}>
+              Done
+            </Button>
+          </div>
+        }
+      >
+        <div className="flex flex-col gap-3 pt-1">
+          <ProgressTracker
+            title="Waiting for a block"
             steps={[
               { label: "Signed", state: "done" },
               { label: "Broadcast", state: "done" },
@@ -812,7 +833,10 @@ export function SendScreen({
             ]}
             step={2}
             total={3}
-            onDone={onBack}
+          />
+          <KeyValueRow
+            label="Hash"
+            value={<AddressChip address={txHash} />}
           />
           <SaveContactPrompt
             address={sentTo}
@@ -943,9 +967,9 @@ export function SendScreen({
                 label: "Network fee",
                 value: feeCoin
                   ? `${formatUnits(feeCoin.amount, chain.entry.feeDecimals)} ${chain.entry.feeDenom}`
-                  : "—",
+                  : NO_VALUE,
               },
-              { label: "Gas", value: gas ?? "—" },
+              { label: "Gas", value: gas ?? NO_VALUE },
               ...(cross && preview
                 ? [
                     {
@@ -1006,7 +1030,7 @@ export function SendScreen({
         </div>
       }
     >
-      <div className="flex flex-col gap-3.5 pt-1">
+      <div className="flex flex-col gap-3 pt-1">
         <ResumeTrackingBanner
           rows={pendingRoutes.rows.filter((row) => row.kind === "transfer")}
           onResume={(row) => {
@@ -1112,7 +1136,12 @@ export function SendScreen({
           ) : null}
         </section>
 
-        <section className="rounded-[13px] border border-[var(--z-line)] px-3 py-3">
+        <section
+          className={cn(
+            "rounded-[13px] border border-[var(--z-line)] px-3 py-3",
+            fieldFocusWithin,
+          )}
+        >
           <div className="flex items-baseline justify-between">
             <p className="font-mono text-[9px] uppercase tracking-[0.16em] text-fg-dim">
               Amount

@@ -3,8 +3,8 @@
  *
  * `lib/wallet-tx.ts` signs the five amino message types this extension has
  * always sent, using its own hand-written proto encoder. That encoder cannot
- * express what the interchain engine produces — an ICS20 transfer carrying a
- * multi-kilobyte ibc-hooks memo, a `MsgExecuteContract` recovery call — so this
+ * express what the interchain engine produces (an ICS20 transfer carrying a
+ * multi-kilobyte ibc-hooks memo, a `MsgExecuteContract` recovery call), so this
  * module takes the other road: it hands the engine's `BuiltMsg` list straight to
  * `@zunialab/core`, which owns the encoding, and keeps zero message knowledge
  * of its own.
@@ -122,7 +122,7 @@ export interface TxPreview {
  * A cross-chain transfer with an ibc-hooks memo is the largest thing this
  * wallet sends and 400k covers it on every chain we have measured; the fallback
  * exists because several public LCDs disable the simulate route entirely. It is
- * always accompanied by a visible note — an invisible guess is how a wallet
+ * always accompanied by a visible note; an invisible guess is how a wallet
  * ships transactions that fail for reasons the user cannot see.
  */
 const FALLBACK_GAS_LIMIT = "400000";
@@ -144,7 +144,7 @@ function packetMemoOf(msgs: readonly BuiltMsg[]): MemoInspection | null {
  * Build the preview the user approves, and the fee it is priced at.
  *
  * Order matters: read the account, simulate with a zero-signature transaction,
- * turn simulated gas into a fee, and only then render the preview — so the
+ * turn simulated gas into a fee, and only then render the preview, so the
  * gas and fee shown are the ones inside the signed bytes rather than a number
  * computed afterwards.
  */

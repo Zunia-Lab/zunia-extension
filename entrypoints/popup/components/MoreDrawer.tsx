@@ -1,4 +1,5 @@
 import { Avatar, Drawer, Segmented, cn, focusRing, interactiveSurface, truncateAddress } from "@zunialab/ui";
+import { NO_VALUE } from "../../../lib/format";
 import type { AccountInfo } from "../../../lib/session";
 import { usePrefs } from "../state/Prefs";
 import type { PopupRoute } from "../routes";
@@ -141,7 +142,7 @@ export function MoreDrawer({
             {account?.name ?? "Wallet"}
           </span>
           <span className="block truncate font-mono text-[9.5px] text-fg-dim">
-            {account ? truncateAddress(account.address, 8, 6) : "—"}
+            {account ? truncateAddress(account.address, 8, 6) : NO_VALUE}
           </span>
         </span>
         <button

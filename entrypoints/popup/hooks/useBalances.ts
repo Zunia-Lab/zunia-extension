@@ -40,7 +40,7 @@ export function useBalances(chainIds: string[], enabled: boolean) {
       })
       .catch(() => {
         if (cancelled) return;
-        // Keep the last good map — a timed-out multi-chain refresh must not
+        // Keep the last good map: a timed-out multi-chain refresh must not
         // blank the home list to em dashes. Settle the attempt anyway so the
         // spinner stops instead of running forever.
         setSettled((prev) => ({

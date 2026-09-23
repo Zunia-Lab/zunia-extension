@@ -79,7 +79,7 @@ function useVerifiedVisibility(
 }
 
 /**
- * The only thing this frame tells the dApp's page. Presentation signals only —
+ * The only thing this frame tells the dApp's page. Presentation signals only:
  * approve/reject go to the background over runtime messaging, where the page
  * cannot observe or forge them.
  */
@@ -280,7 +280,7 @@ function ConnectApproval({
   // Derived, never synced from an effect. The list can change under the prompt
   // (the chain-scoped addresses resolve after the stored ones), and an effect
   // that reconciles a stale pick leaves one committed render where `selected`
-  // still names an account the user is no longer being offered — which is the
+  // still names an account the user is no longer being offered, which is the
   // index the Connect button would have sent.
   const selected =
     picked !== null && accounts.some((a) => a.index === picked)
@@ -555,7 +555,7 @@ function ConnectBody() {
    * wallet holds: the list has its own scroller, so the number stays under the
    * frame ceiling for any account count. The parent still clamps it against the
    * viewport, and a frame clamped shorter than the card is handled here by the
-   * document scrolling with the action row pinned — never by clipping it.
+   * document scrolling with the action row pinned, never by clipping it.
    */
   useEffect(() => {
     const node = rootRef.current;
@@ -605,7 +605,7 @@ function ConnectBody() {
   /**
    * One outcome per prompt. `busy` disables Cancel and Connect while a decision
    * is in flight, but the header's close control is not disabled by it and
-   * Escape still reaches the frame — so a second reject could post "rejected"
+   * Escape still reaches the frame, so a second reject could post "rejected"
    * to the page on top of an "approved" that had already gone out. A ref rather
    * than state, so both callbacks keep the identities their dependency arrays
    * claim.
@@ -674,7 +674,7 @@ function ConnectBody() {
    * `aria-modal` only silences the rest of *this* document, and this document
    * is an iframe: the dApp page behind the scrim keeps every one of its own tab
    * stops. Tabbing past the last control here would hand focus to the page,
-   * leaving a modal prompt open with the keyboard somewhere else entirely — and
+   * leaving a modal prompt open with the keyboard somewhere else entirely, and
    * Escape would then reach the content script rather than this frame. The
    * container takes the initial focus rather than a button, so nothing is one
    * Enter away from being approved or rejected.

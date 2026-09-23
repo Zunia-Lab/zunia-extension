@@ -149,7 +149,7 @@ export function NotificationsScreen({
         ) : undefined
       }
     >
-      <div className="flex flex-col gap-3.5 pt-1">
+      <div className="flex flex-col gap-3 pt-1">
         {notices.length === 0 ? (
           <EmptyState
             icon={<IconBell width={16} height={16} />}

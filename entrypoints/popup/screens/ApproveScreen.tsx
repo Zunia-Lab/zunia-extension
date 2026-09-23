@@ -373,7 +373,7 @@ export function ApproveScreen({
         )
       }
     >
-      <div className="flex flex-col gap-3.5 pt-3.5">
+      <div className="flex flex-col gap-3 pt-3">
         {suspicious ? (
           <Callout tone="danger" title="This site's address looks suspicious">
             <p className="break-all font-mono text-[10.5px]">{current.origin}</p>
