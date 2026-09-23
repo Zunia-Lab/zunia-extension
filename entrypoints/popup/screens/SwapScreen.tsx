@@ -30,13 +30,14 @@ import {
   truncateAddress,
   type SwapQuoteView,
 } from "@zunialab/ui";
-import type { BuiltMsg } from "@zunialab/interchain";
+import type { BuiltMsg, OsmosisSwapQuote } from "@zunialab/interchain";
 
 import type { ChainBalance } from "../../../lib/balances";
 import {
   explorerTxUrl,
   HIGH_SLIPPAGE_PERCENT,
   MAX_SLIPPAGE_PERCENT,
+  QUOTE_TTL_MS,
   SLIPPAGE_PRESETS,
 } from "../../../config/interchain";
 import { NO_VALUE, formatUnits, formatUnitsExact } from "../../../lib/format";
@@ -51,6 +52,7 @@ import {
   VENUE_CHAIN_ID,
   buildTransferMsgFromPlan,
   planSwap,
+  requoteSwap,
   type ManualChannel,
   type RoutePlanView,
   type SwapPlanResult,
@@ -74,10 +76,13 @@ import {
   useRouteTracking,
   shortDenom,
   TruncatedValue,
+  useClock,
+  useOsmosisAssets,
   usePendingTransfers,
   useSwapVenue,
+  withOsmosisAssets,
 } from "./interchain-ui";
-import { IconSwap } from "./icons";
+import { IconFlip } from "./icons";
 import { signingError, useSignedSend } from "../state/SigningPassword";
 
 const PERCENTS = [25, 50, 75, 100] as const;
@@ -116,6 +121,57 @@ function rateLine(
   return `1 ${inputSymbol} ≈ ${rate.toFixed(digits)} ${outputSymbol}`;
 }
 
+/** How long the shown price stays current, and a way to fetch a new one now. */
+function QuoteClock({
+  secondsLeft,
+  refreshing,
+  onRefresh,
+  confirm = false,
+}: {
+  secondsLeft: number;
+  refreshing: boolean;
+  onRefresh: () => void;
+  confirm?: boolean;
+}) {
+  const expired = secondsLeft === 0;
+  const text = refreshing
+    ? "Updating the price…"
+    : expired
+      ? confirm
+        ? "Price expired. Refresh it to sign."
+        : "Price expired"
+      : confirm
+        ? `Price valid for ${secondsLeft}s`
+        : `Price updates in ${secondsLeft}s`;
+  return (
+    <div className="mt-2 flex items-center justify-between gap-2">
+      <span
+        role="timer"
+        className={cn(
+          "flex min-w-0 items-center gap-1.5 font-mono text-[9.5px]",
+          expired && !refreshing ? "text-[var(--z-warning)]" : "text-fg-dim",
+        )}
+      >
+        {refreshing ? <Spinner className="size-3 shrink-0" /> : null}
+        {text}
+      </span>
+      <button
+        type="button"
+        onClick={onRefresh}
+        disabled={refreshing}
+        className={cn(
+          "shrink-0 rounded-full px-1.5 py-0.5 font-mono text-[9.5px] text-accent",
+          "transition-colors duration-[var(--z-duration-base)] hover:bg-[var(--z-state-hover)]",
+          "disabled:cursor-not-allowed disabled:opacity-40",
+          focusRing,
+        )}
+      >
+        Refresh
+      </button>
+    </div>
+  );
+}
+
 export function SwapScreen({
   chains,
   balances,
@@ -133,9 +189,10 @@ export function SwapScreen({
   // An empty balance map is "not read yet", not "holds nothing": the reader
   // writes a row per chain even when every denom is zero.
   const balancesLoaded = Object.keys(balances).length > 0;
+  const osmosis = useOsmosisAssets(liveReads);
   const destinations = useMemo(
-    () => receivableAssets(chains, balances),
-    [chains, balances],
+    () => withOsmosisAssets(receivableAssets(chains, balances), osmosis.assets, VENUE_CHAIN_ID),
+    [chains, balances, osmosis.assets],
   );
 
   // Stored as "what the user picked", null until they pick. The effective
@@ -203,6 +260,10 @@ export function SwapScreen({
   }, [resolveAddresses]);
   const recoveryAddress = recovery?.address ?? null;
   const recoveryFailed = recovery !== null && recovery.address === null;
+  // A token listed on Osmosis is delivered there, to this wallet's own Osmosis
+  // address, whether or not Osmosis is one of the enabled chains.
+  const destAddress =
+    destAccount?.address ?? (to?.chainId === VENUE_CHAIN_ID ? recoveryAddress : null);
 
   /* ---------------------------------------------------------------- *
    * Planning
@@ -211,7 +272,16 @@ export function SwapScreen({
   const [settledPlan, setSettledPlan] = useState<{
     key: string;
     result: SwapPlanResult;
+    quotedAt: number;
   } | null>(null);
+  /** A price fetched after the plan, for the same plan key. */
+  const [requoted, setRequoted] = useState<{
+    key: string;
+    quote: OsmosisSwapQuote | null;
+    error: string | null;
+    at: number;
+  } | null>(null);
+  const [requotingKey, setRequotingKey] = useState<string | null>(null);
 
   // The contract reads `slippage_percentage` on a 0-100 scale and divides by
   // 100 itself, so an out-of-range value is not a wide tolerance — it is a memo
@@ -221,7 +291,7 @@ export function SwapScreen({
 
   const canPlan =
     liveReads &&
-    Boolean(from && to && sourceAccount?.address && destAccount?.address) &&
+    Boolean(from && to && sourceAccount?.address && destAddress) &&
     amountUnits !== null &&
     amountUnits > 0n &&
     !overBalance &&
@@ -257,7 +327,7 @@ export function SwapScreen({
         destDenom: to!.denom,
         amountBaseUnits: amountUnits!.toString(),
         sender: sourceAccount!.address,
-        recipient: destAccount!.address,
+        recipient: destAddress!,
         recoveryAddress: recoveryAddress!,
         slippagePercent: slippage,
         venue: venue.check!.venue!,
@@ -265,7 +335,9 @@ export function SwapScreen({
         resolveAddresses,
         signal: controller.signal,
       }).then((next) => {
-        if (!controller.signal.aborted) setSettledPlan({ key: planKey, result: next });
+        if (!controller.signal.aborted) {
+          setSettledPlan({ key: planKey, result: next, quotedAt: Date.now() });
+        }
       });
     }, 450);
     return () => {
@@ -282,7 +354,84 @@ export function SwapScreen({
   const result = settledPlan?.key === planKey ? settledPlan.result : null;
   const planning = Boolean(planKey) && settledPlan?.key !== planKey;
   const plan = result?.best ?? null;
-  const quote = result?.quote ?? null;
+
+  /* ---------------------------------------------------------------- *
+   * The price, and how old it is
+   * ---------------------------------------------------------------- */
+
+  // A later price for the same plan replaces the one planning returned. The
+  // `at` check keeps a price fetched for an earlier run of the same inputs
+  // from overriding a newer plan.
+  const fresh =
+    result && requoted?.key === planKey && requoted.at >= (settledPlan?.quotedAt ?? 0)
+      ? requoted
+      : null;
+  const quote = fresh ? fresh.quote : (result?.quote ?? null);
+  const quoteError = fresh ? fresh.error : (result?.quoteBlockedReason ?? null);
+  const quotedAt = fresh ? fresh.at : result ? (settledPlan?.quotedAt ?? null) : null;
+  const refreshing = Boolean(planKey) && requotingKey === planKey;
+
+  const now = useClock(quotedAt !== null && phase !== "sent");
+  const quoteSecondsLeft =
+    quotedAt === null
+      ? null
+      : Math.max(0, Math.ceil((QUOTE_TTL_MS - Math.max(0, now - quotedAt)) / 1000));
+  const quoteExpired = quote !== null && quoteSecondsLeft === 0;
+
+  const venueChainId = result?.venue?.chainId ?? null;
+  const venueInputDenom = result?.venueInputDenom ?? null;
+  const venueOutputDenom = result?.venueOutputDenom ?? null;
+  const amountBase = amountUnits?.toString() ?? null;
+  const canRequote = Boolean(
+    planKey && venueChainId && venueInputDenom && venueOutputDenom && amountBase,
+  );
+
+  const refreshQuote = useCallback(async () => {
+    if (!planKey || !venueChainId || !venueInputDenom || !venueOutputDenom || !amountBase) {
+      return { quote: null, error: "There is no route to price yet." };
+    }
+    const key = planKey;
+    setRequotingKey(key);
+    const next = await requoteSwap({
+      venueChainId,
+      venueInputDenom,
+      venueOutputDenom,
+      amountBaseUnits: amountBase,
+      slippagePercent: slippage,
+    }).catch((caught: unknown) => ({
+      quote: null,
+      error: caught instanceof Error ? caught.message : String(caught),
+    }));
+    setRequoted({ key, quote: next.quote, error: next.error, at: Date.now() });
+    setRequotingKey((current) => (current === key ? null : current));
+    return next;
+  }, [
+    planKey,
+    venueChainId,
+    venueInputDenom,
+    venueOutputDenom,
+    amountBase,
+    slippage,
+    setRequoted,
+    setRequotingKey,
+  ]);
+
+  // The form keeps the price current on its own. The confirm screen does not:
+  // a number changing under the user's cursor right before they sign is worse
+  // than asking them to refresh it.
+  useEffect(() => {
+    if (phase !== "form" || !canRequote || quotedAt === null) return;
+    const due = quotedAt + QUOTE_TTL_MS;
+    const refreshIfDue = () => {
+      if (document.visibilityState === "visible" && Date.now() >= due) void refreshQuote();
+    };
+    const timer = window.setTimeout(refreshIfDue, Math.max(0, due - Date.now()));
+    document.addEventListener("visibilitychange", refreshIfDue);
+    return () => {
+      window.clearTimeout(timer);
+      document.removeEventListener("visibilitychange", refreshIfDue);
+    };
+  }, [phase, canRequote, quotedAt, refreshQuote]);
 
   /* ---------------------------------------------------------------- *
    * Why the button is off
@@ -307,14 +456,17 @@ export function SwapScreen({
     if (!sourceAccount?.address) {
       return `Zunia has no address on ${from.chainName}, so it cannot sign there.`;
     }
-    if (!destAccount?.address) {
+    if (!destAddress) {
+      if (to.chainId === VENUE_CHAIN_ID && recovery === null) return null;
       return `Zunia has no address on ${to.chainName}, so it has nowhere to deliver.`;
     }
     if (from.chainId === to.chainId && from.denom === to.denom) {
       return "Both sides are the same asset on the same chain.";
     }
     if (from.chainId === VENUE_CHAIN_ID) {
-      return "Swapping on Osmosis and then transferring takes two signatures, which this screen does not do. Send the token to another chain first, or swap on Osmosis directly.";
+      return to.chainId === VENUE_CHAIN_ID
+        ? "Both tokens are already on Osmosis, and this screen swaps tokens arriving from another chain."
+        : "Swapping on Osmosis and then transferring takes two signatures, which this screen does not do. Send the token to another chain first, or swap on Osmosis directly.";
     }
     if (!amount) return "Enter an amount to swap.";
     if (amountUnits === null) return "That amount is not a number this chain can hold.";
@@ -333,7 +485,7 @@ export function SwapScreen({
       return result?.warnings[0] ?? "No route exists from here to there for this asset.";
     }
     if (plan.blockedReason) return plan.blockedReason;
-    if (result?.quoteBlockedReason) return result.quoteBlockedReason;
+    if (quoteError) return quoteError;
     if (!quote) return "Waiting for a price from the Osmosis router.";
     return null;
   }, [
@@ -347,7 +499,8 @@ export function SwapScreen({
     from,
     to,
     sourceAccount,
-    destAccount,
+    destAddress,
+    recovery,
     amount,
     amountUnits,
     overBalance,
@@ -357,6 +510,7 @@ export function SwapScreen({
     planning,
     result,
     plan,
+    quoteError,
     quote,
   ]);
 
@@ -390,6 +544,15 @@ export function SwapScreen({
 
   async function signPending() {
     if (!pending || !preview) return;
+    if (
+      pending.kind === "swap" &&
+      (!quote || quotedAt === null || Date.now() - quotedAt >= QUOTE_TTL_MS)
+    ) {
+      setError(
+        `This price is more than ${QUOTE_TTL_MS / 1000} seconds old. Refresh it, check it, then sign.`,
+      );
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -436,6 +599,47 @@ export function SwapScreen({
     } finally {
       setBusy(false);
     }
+  }
+
+  /** Price the swap again, then build what gets signed against that price. */
+  async function reviewSwap() {
+    if (!plan || !from || !sourceAccount || amountUnits === null) return;
+    setBusy(true);
+    setError(null);
+    const priced = await refreshQuote();
+    if (!priced.quote) {
+      setBusy(false);
+      setError(priced.error ?? "The price could not be refreshed, so the swap was not prepared.");
+      return;
+    }
+    await openConfirm({
+      kind: "swap",
+      chainId: from.chainId,
+      signerAddress: sourceAccount.address,
+      msgs: [
+        buildTransferMsgFromPlan({
+          view: plan,
+          sender: sourceAccount.address,
+          amountBaseUnits: amountUnits.toString(),
+        }),
+      ],
+      title: "Confirm swap",
+      plan,
+      amountBaseUnits: amountUnits.toString(),
+    });
+  }
+
+  // Only a token the wallet holds can become the side it sells.
+  const flipTarget = to ? sources.find((asset) => asset.key === to.key) : undefined;
+  const flipLabel = flipTarget
+    ? "Swap the two sides"
+    : `Cannot swap sides: this wallet holds no ${to?.symbol ?? "token"} on ${to?.chainName ?? "that network"}`;
+  function flipSides() {
+    if (!from || !to || !flipTarget) return;
+    setFromKey(to.key);
+    setToKey(from.key);
+    setAmount("");
+    setManual([]);
   }
 
   function applyPercent(pct: number) {
@@ -493,12 +697,37 @@ export function SwapScreen({
     });
   }, [tracking.route, openConfirm]);
 
+  const quoteView: SwapQuoteView | null =
+    quote && from && to
+      ? {
+          inputAmount: formatUnits(quote.inputAmount, from.decimals),
+          inputSymbol: from.symbol,
+          outputAmount: formatUnits(quote.outputAmount, to.decimals),
+          outputSymbol: to.symbol,
+          rate: rateLine(
+            quote.inputAmount,
+            from.decimals,
+            from.symbol,
+            quote.outputAmount,
+            to.decimals,
+            to.symbol,
+          ),
+          minReceived: formatAsset(quote.minReceived, to.decimals, to.symbol),
+          // `null`, not 0: the router reports no spot price for some pairs and
+          // the panel renders "not reported" rather than a confident zero.
+          priceImpact: quote.spotPrice === null ? null : quote.priceImpact,
+          poolFee: quote.effectiveFeeFraction === null ? null : quote.poolFee,
+          route: quote.route.map((hop) => ({ poolId: hop.poolId })),
+        }
+      : null;
+
   /* ---------------------------------------------------------------- *
    * Confirm
    * ---------------------------------------------------------------- */
 
   if (phase === "confirm" && pending && preview) {
     const memo = preview.packetMemo;
+    const swapPriceStale = pending.kind === "swap" && (!quote || quoteExpired || refreshing);
     const feeCoin = preview.fee.amount[0];
     const feeChain = chains.find((chain) => chain.chainId === pending.chainId);
     return (
@@ -521,13 +750,49 @@ export function SwapScreen({
             >
               Back
             </Button>
-            <Button className="flex-1" disabled={busy} onClick={() => void signPending()}>
-              {busy ? "Signing…" : "Sign and send"}
+            <Button
+              className="flex-1"
+              disabled={busy || swapPriceStale}
+              onClick={() => void signPending()}
+            >
+              {busy
+                ? "Signing…"
+                : pending.kind === "swap" && quoteExpired
+                  ? "Price expired"
+                  : "Sign and send"}
             </Button>
           </div>
         }
       >
         <div className="flex flex-col gap-3 pt-1">
+          {pending.kind === "swap" && from && to ? (
+            <section className="flex flex-col gap-1.5 rounded-[13px] border border-[var(--z-line)] px-3 py-3">
+              <KeyValueRow
+                label="You pay"
+                value={formatAsset(pending.amountBaseUnits, from.decimals, from.symbol) ?? NO_VALUE}
+              />
+              <KeyValueRow
+                label="You get about"
+                value={quoteView ? `${quoteView.outputAmount} ${quoteView.outputSymbol}` : NO_VALUE}
+              />
+              <KeyValueRow label="At least" value={quoteView?.minReceived ?? NO_VALUE} />
+              {quoteSecondsLeft !== null ? (
+                <QuoteClock
+                  confirm
+                  secondsLeft={quote ? quoteSecondsLeft : 0}
+                  refreshing={refreshing}
+                  onRefresh={() => {
+                    setError(null);
+                    void refreshQuote();
+                  }}
+                />
+              ) : null}
+              {quoteError && !refreshing ? (
+                <p className="text-[10.5px] leading-snug text-[var(--z-warning)]">{quoteError}</p>
+              ) : null}
+            </section>
+          ) : null}
+
           <section className="rounded-[13px] border border-[var(--z-line)] px-3 py-3">
             {preview.preview.summaries.map((line, index) => (
               <p key={index} className="text-[11.5px] leading-snug text-fg">
@@ -695,30 +960,6 @@ export function SwapScreen({
    * Form
    * ---------------------------------------------------------------- */
 
-  const quoteView: SwapQuoteView | null =
-    quote && from && to
-      ? {
-          inputAmount: formatUnits(quote.inputAmount, from.decimals),
-          inputSymbol: from.symbol,
-          outputAmount: formatUnits(quote.outputAmount, to.decimals),
-          outputSymbol: to.symbol,
-          rate: rateLine(
-            quote.inputAmount,
-            from.decimals,
-            from.symbol,
-            quote.outputAmount,
-            to.decimals,
-            to.symbol,
-          ),
-          minReceived: formatAsset(quote.minReceived, to.decimals, to.symbol),
-          // `null`, not 0: the router reports no spot price for some pairs and
-          // the panel renders "not reported" rather than a confident zero.
-          priceImpact: quote.spotPrice === null ? null : quote.priceImpact,
-          poolFee: quote.effectiveFeeFraction === null ? null : quote.poolFee,
-          route: quote.route.map((hop) => ({ poolId: hop.poolId })),
-        }
-      : null;
-
   // When no route exists yet there is no hop list to hang the channel editors
   // off, and the legs a swap always needs are known regardless: into the venue,
   // and back out to the destination. Offering them here is what lets a user
@@ -767,29 +1008,8 @@ export function SwapScreen({
       }
       footer={
         <div>
-          <Button
-            className="w-full"
-            disabled={!ready || busy}
-            onClick={() => {
-              if (!plan || !from || !sourceAccount || amountUnits === null) return;
-              void openConfirm({
-                kind: "swap",
-                chainId: from.chainId,
-                signerAddress: sourceAccount.address,
-                msgs: [
-                  buildTransferMsgFromPlan({
-                    view: plan,
-                    sender: sourceAccount.address,
-                    amountBaseUnits: amountUnits.toString(),
-                  }),
-                ],
-                title: "Confirm swap",
-                plan,
-                amountBaseUnits: amountUnits.toString(),
-              });
-            }}
-          >
-            {busy ? "Preparing…" : "Review swap"}
+          <Button className="w-full" disabled={!ready || busy} onClick={() => void reviewSwap()}>
+            {busy ? "Checking the price…" : "Review swap"}
           </Button>
           <DisabledReason reason={ready ? null : blockedReason} />
         </div>
@@ -848,12 +1068,21 @@ export function SwapScreen({
         </div>
 
         <div className="flex justify-center">
-          <span
-            aria-hidden
-            className="-my-1 flex size-[26px] items-center justify-center rounded-full border border-[var(--z-line)] text-fg-dim"
+          <button
+            type="button"
+            onClick={flipSides}
+            disabled={!flipTarget || !from}
+            aria-label={flipLabel}
+            title={flipLabel}
+            className={cn(
+              "-my-1 flex size-[26px] items-center justify-center rounded-full border border-[var(--z-line)] bg-[var(--z-surface-raised)] text-fg-dim",
+              "transition-colors duration-[var(--z-duration-base)] hover:border-[var(--z-line-strong)] hover:text-fg",
+              "disabled:cursor-not-allowed disabled:opacity-40",
+              focusRing,
+            )}
           >
-            <IconSwap width={14} height={14} />
-          </span>
+            <IconFlip width={14} height={14} />
+          </button>
         </div>
 
         <AssetSide
@@ -861,6 +1090,7 @@ export function SwapScreen({
           meta={to ? to.chainName : NO_VALUE}
           asset={to}
           options={destinations}
+          renderLimit={150}
           onSelect={(key) => {
             setToKey(key);
             setManual([]);
@@ -869,9 +1099,15 @@ export function SwapScreen({
             quoteView ? quoteView.outputAmount : amountUnits !== null ? NO_VALUE : ""
           }
           readOnly
-          placeholder="—"
+          placeholder={NO_VALUE}
           emptyLabel="No network"
         />
+        {osmosis.error ? (
+          <p className="text-[10.5px] leading-snug text-fg-muted">
+            The Osmosis token list did not load ({osmosis.error}), so only your own tokens are
+            offered to receive.
+          </p>
+        ) : null}
 
         <SwapQuotePanel
           compact
@@ -883,8 +1119,17 @@ export function SwapScreen({
           onSlippageChange={setSlippage}
           slippagePresets={SLIPPAGE_PRESETS}
           loading={planning && !quote}
-          error={result?.quoteBlockedReason ?? result?.error ?? null}
+          error={quoteError ?? result?.error ?? null}
           onRetry={() => setRetryToken((n) => n + 1)}
+          footer={
+            quote && quoteSecondsLeft !== null ? (
+              <QuoteClock
+                secondsLeft={quoteSecondsLeft}
+                refreshing={refreshing}
+                onRefresh={() => void refreshQuote()}
+              />
+            ) : null
+          }
         />
 
         {slippage > HIGH_SLIPPAGE_PERCENT ? (

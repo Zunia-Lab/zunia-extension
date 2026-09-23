@@ -29,6 +29,10 @@ export const STORAGE_KEYS = {
   swapContract: "zunia.swapContract",
   /** Signed routes still in flight, so tracking survives a popup close. */
   pendingTransfers: "zunia.pendingTransfers",
+  /** Routes the background already announced, so each ends in one notification. */
+  notifiedTransfers: "zunia.notifiedTransfers",
+  /** Osmosis's listed token list, cached in chrome.storage.session. */
+  osmosisAssets: "zunia.osmosisAssets",
   /**
    * CW721 contract addresses the user added, keyed by chain id.
    *

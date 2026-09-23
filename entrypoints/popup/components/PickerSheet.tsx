@@ -53,6 +53,7 @@ export function PickerSheet({
   onToggleFavorite,
   loading = false,
   emptyLabel = "Nothing to choose from yet.",
+  renderLimit,
 }: {
   open: boolean;
   onClose: () => void;
@@ -68,6 +69,11 @@ export function PickerSheet({
   onToggleFavorite?: (id: string) => void;
   loading?: boolean;
   emptyLabel?: string;
+  /**
+   * Rows rendered per section. A long list (Osmosis lists over a thousand
+   * tokens) shows its head and says how many more a search would reach.
+   */
+  renderLimit?: number;
 }) {
   const baseId = useId();
   const listId = `${baseId}-list`;
@@ -85,10 +91,17 @@ export function PickerSheet({
     }
   }
 
-  const sections = useMemo(
-    () => pickerSections(items, { query, favorites, recents, allTitle }),
-    [items, query, favorites, recents, allTitle],
-  );
+  const { sections, hiddenCount } = useMemo(() => {
+    const full = pickerSections(items, { query, favorites, recents, allTitle });
+    if (!renderLimit) return { sections: full, hiddenCount: 0 };
+    let hidden = 0;
+    const capped = full.map((section) => {
+      if (section.items.length <= renderLimit) return section;
+      hidden += section.items.length - renderLimit;
+      return { ...section, items: section.items.slice(0, renderLimit) };
+    });
+    return { sections: capped, hiddenCount: hidden };
+  }, [items, query, favorites, recents, allTitle, renderLimit]);
 
   const entries = useMemo(() => {
     const out: Entry[] = [];
@@ -304,6 +317,11 @@ export function PickerSheet({
           )}
         </div>
 
+        {hiddenCount > 0 ? (
+          <p className="border-t border-[var(--z-line)] px-4 py-1.5 text-[10.5px] text-fg-muted">
+            {hiddenCount.toLocaleString()} more not shown. Search to find them.
+          </p>
+        ) : null}
         <p
           id={hintId}
           className="border-t border-[var(--z-line)] px-4 py-2 font-mono text-[9px] text-fg-dim"

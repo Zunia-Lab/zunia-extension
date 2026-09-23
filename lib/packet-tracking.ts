@@ -115,8 +115,10 @@ function toView(trace: RouteTrace): TrackedRoute {
     estimatedDurationSeconds: trace.estimatedDurationSeconds,
     elapsedSeconds: trace.elapsedSeconds,
     updatedAt: trace.updatedAt,
+    // A stalled hop is still deliverable once a relayer picks it up, so it is
+    // not settled: polling continues and the route stays in the pending list.
     settled:
-      trace.failure !== null ||
+      (trace.failure !== null && trace.failure !== "stalled") ||
       (isTerminalPacketStatus(trace.status) && trace.status !== "unknown"),
     recovery: trace.recovery
       ? {

@@ -76,6 +76,12 @@ export const PACKET_TIMEOUT_MINUTES = 10;
 export const MAX_ROUTE_HOPS = 3;
 
 /**
+ * How long a swap price counts as current. Past it the form fetches a new one
+ * on its own, and the confirm screen will not sign until the user refreshes.
+ */
+export const QUOTE_TTL_MS = 20_000;
+
+/**
  * Verified per-chain middleware support, consulted before any probe.
  *
  * Deliberately empty. The engine's probes ask the chain and answer
@@ -92,13 +98,36 @@ export const MODULE_SUPPORT_PINS: Readonly<
 /**
  * Block explorers, keyed by chain id, for linking a transaction hash.
  *
- * Empty: the chain registry fork this extension ships carries no explorer URLs,
- * and a guessed explorer domain is worse than none — it either 404s or shows
- * somebody else's chain. The packet tracker renders hashes as selectable text
- * while this is empty. Add `{"<chainId>": "https://…/tx/{hash}"}` entries as
- * they are confirmed.
+ * Each template is the chain's `explorers[].tx_page` in cosmos/chain-registry
+ * (read September 2026): Mintscan where the registry lists it, otherwise the
+ * explorer the registry names for that chain. The chain registry fork this
+ * extension ships carries no explorer URLs, and a guessed domain is worse than
+ * none (it 404s or shows somebody else's chain), so a chain missing here keeps
+ * its hashes as selectable text. Add entries only from the same source.
  */
-export const EXPLORER_TX_URLS: Readonly<Record<string, string>> = {};
+export const EXPLORER_TX_URLS: Readonly<Record<string, string>> = {
+  "safrochain-1": "https://explorer.safrochain.com/tx/{hash}",
+  "safro-testnet-1": "https://explorer.testnet.safrochain.com/transactions/{hash}",
+  "cosmoshub-4": "https://www.mintscan.io/cosmos/transactions/{hash}",
+  "osmosis-1": "https://www.mintscan.io/osmosis/transactions/{hash}",
+  "akashnet-2": "https://www.mintscan.io/akash/transactions/{hash}",
+  "archway-1": "https://archway.explorers.guru/transaction/{hash}",
+  "axelar-dojo-1": "https://www.mintscan.io/axelar/transactions/{hash}",
+  celestia: "https://celestia.explorers.guru/transaction/{hash}",
+  "dydx-mainnet-1": "https://www.mintscan.io/dydx/txs/{hash}",
+  "dymension_1100-1": "https://www.mintscan.io/dymension/tx/{hash}",
+  "evmos_9001-2": "https://www.mintscan.io/evmos/transactions/{hash}",
+  "injective-1": "https://www.mintscan.io/injective/transactions/{hash}",
+  "juno-1": "https://ezstaking.app/juno/txs/{hash}",
+  "kaiyo-1": "https://finder.kujira.app/kaiyo-1/tx/{hash}",
+  "mantra-1": "https://mintscan.io/mantra/txs/{hash}",
+  "neutron-1": "https://www.mintscan.io/neutron/transactions/{hash}",
+  "noble-1": "https://www.mintscan.io/noble/txs/{hash}",
+  "phoenix-1": "https://www.mintscan.io/terra/transactions/{hash}",
+  "secret-4": "https://www.mintscan.io/secret/transactions/{hash}",
+  "sentinelhub-2": "https://explorer.sentinel.co/transactions/{hash}",
+  "stride-1": "https://www.mintscan.io/stride/transactions/{hash}",
+};
 
 /** Explorer URL for a hash, or `null` when this host has no explorer for the chain. */
 export function explorerTxUrl(chainId: string, txHash: string): string | null {

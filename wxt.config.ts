@@ -108,6 +108,8 @@ export default defineConfig({
       },
     },
     permissions: ["storage", "alarms", "idle"],
+    /** Asked for when the user turns on browser alerts, never at install. */
+    optional_permissions: ["notifications"],
     /**
      * Narrow host_permissions: extension-owned API hosts only.
      * dApp RPC / CosmJS traffic runs in the page context (or via

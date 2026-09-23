@@ -9,7 +9,6 @@ import {
 import type { ApprovalRequest } from "../../../lib/approvals";
 import type { ChainBalance } from "../../../lib/balances";
 import { relativeTime } from "../../../lib/format";
-import { INERT_SETTINGS } from "../../../lib/settings";
 import { SettingsGroup, SettingsToggle } from "../components/SettingsList";
 import type { ChainAccountView } from "../hooks/useChainAccounts";
 import {
@@ -22,6 +21,7 @@ import {
   type Notice,
   type NoticeKind,
 } from "../hooks/useNotifications";
+import { BROWSER_ALERTS_NOTE, useBrowserAlerts } from "../hooks/useBrowserAlerts";
 import { usePrefs } from "../state/Prefs";
 import type { PopupRoute } from "../routes";
 import {
@@ -107,7 +107,8 @@ export function NotificationsScreen({
   onBack: () => void;
   onNavigate: (route: PopupRoute, chainId?: string) => void;
 }) {
-  const { settings, update } = usePrefs();
+  const { settings } = usePrefs();
+  const alerts = useBrowserAlerts();
   const live = settings.liveBalances;
   const chainIds = useMemo(() => chains.map((c) => c.chainId), [chains]);
   const chainNames = useMemo(
@@ -178,12 +179,9 @@ export function NotificationsScreen({
         <SettingsGroup label="Alerts">
           <SettingsToggle
             title="Browser alerts"
-            description={
-              INERT_SETTINGS.browserAlerts ?? "Transfers and governance deadlines."
-            }
-            checked={INERT_SETTINGS.browserAlerts ? false : settings.browserAlerts}
-            disabled={Boolean(INERT_SETTINGS.browserAlerts)}
-            onCheckedChange={(browserAlerts) => void update({ browserAlerts })}
+            description={alerts.error ?? BROWSER_ALERTS_NOTE}
+            checked={alerts.checked}
+            onCheckedChange={(next) => void alerts.toggle(next)}
           />
         </SettingsGroup>
 

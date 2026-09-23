@@ -20,10 +20,12 @@ import {
   SettingsToggle,
   SettingsValue,
 } from "../components/SettingsList";
+import { BROWSER_ALERTS_NOTE, useBrowserAlerts } from "../hooks/useBrowserAlerts";
 import { usePrefs } from "../state/Prefs";
 
 export function PreferencesScreen({ onBack }: { onBack: () => void }) {
   const { settings, update, hidden, toggleHidden } = usePrefs();
+  const alerts = useBrowserAlerts();
   const [granted, setGranted] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -122,13 +124,9 @@ export function PreferencesScreen({ onBack }: { onBack: () => void }) {
           />
           <SettingsToggle
             title="Browser alerts"
-            description={
-              INERT_SETTINGS.browserAlerts ??
-              "Notify on transfers and governance deadlines."
-            }
-            checked={INERT_SETTINGS.browserAlerts ? false : settings.browserAlerts}
-            disabled={Boolean(INERT_SETTINGS.browserAlerts)}
-            onCheckedChange={(browserAlerts) => void update({ browserAlerts })}
+            description={alerts.error ?? BROWSER_ALERTS_NOTE}
+            checked={alerts.checked}
+            onCheckedChange={(next) => void alerts.toggle(next)}
           />
         </SettingsGroup>
 

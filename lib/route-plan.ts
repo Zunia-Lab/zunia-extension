@@ -14,6 +14,7 @@
  */
 
 import {
+  buildPlanTransferMsg,
   createChannelDirectory,
   planRoute,
   quoteOsmosisSwap,
@@ -829,31 +830,31 @@ async function priceSwap(args: {
   blockedReason: string | null;
   venueInputDenom: string | null;
 }> {
-  const { inboundLinks, lastInbound, input, venueChainId, venueOutputDenom } = args;
+  const { candidate, inboundLinks, lastInbound, input, venueChainId, venueOutputDenom } = args;
 
-  if (inboundLinks.length !== 1 || !lastInbound) {
-    // ENGINE GAP: `planRoute` computes the denom arriving on the venue for a
-    // forwarded inbound leg but does not expose it on the candidate, and
-    // `recommendDenom` only models a single hop's wrap. Rather than re-deriving
-    // the trace here — which is exactly the duplication this refactor removed —
-    // the swap is refused with the reason shown to the user.
+  if (!lastInbound) {
     return {
       quote: null,
       venueInputDenom: null,
-      blockedReason:
-        inboundLinks.length === 0
-          ? "This route has no transfer into the swap venue, so there is nothing to price."
-          : `Zunia cannot name the token that arrives on ${chainName(venueChainId)} after ${inboundLinks.length} hops, so it will not price this swap. Pick a source chain with a direct channel to ${chainName(venueChainId)}.`,
+      blockedReason: "This route has no transfer into the swap venue, so there is nothing to price.",
     };
   }
 
-  const venueInput = await venueDenomFor(
-    input.sourceChainId,
-    input.inputDenom,
-    venueChainId,
-    lastInbound.counterpartyChannelId,
-    input.signal,
-  );
+  // The planner walks the token through every inbound hop, wraps and unwinds
+  // included. A one-hop route can still ask `recommendDenom` when the planner
+  // had no trace to work from.
+  const venueInput =
+    candidate.venueInputDenom !== null
+      ? { denom: candidate.venueInputDenom }
+      : inboundLinks.length === 1
+        ? await venueDenomFor(
+            input.sourceChainId,
+            input.inputDenom,
+            venueChainId,
+            lastInbound.counterpartyChannelId,
+            input.signal,
+          )
+        : { denom: null };
   if (!venueInput.denom) {
     return {
       quote: null,
@@ -874,38 +875,70 @@ async function priceSwap(args: {
     };
   }
 
-  const venueChain = chainRegistry().get(venueChainId);
-  if (!venueChain) {
-    return {
-      quote: null,
-      venueInputDenom: venueInput.denom,
-      blockedReason: `${venueChainId} is not in this wallet's chain list.`,
-    };
-  }
+  const priced = await quoteOnVenue({
+    venueChainId,
+    venueInputDenom: venueInput.denom,
+    venueOutputDenom,
+    amountBaseUnits: input.amountBaseUnits,
+    slippagePercent: input.slippagePercent,
+    ...(input.signal ? { signal: input.signal } : {}),
+  });
+  return { quote: priced.quote, venueInputDenom: venueInput.denom, blockedReason: priced.error };
+}
 
+/** What to price on the venue, once the route has named both sides there. */
+export interface VenueQuoteInput {
+  readonly venueChainId: string;
+  readonly venueInputDenom: string;
+  readonly venueOutputDenom: string;
+  readonly amountBaseUnits: string;
+  readonly slippagePercent: number;
+  readonly signal?: AbortSignal;
+}
+
+async function quoteOnVenue(
+  args: VenueQuoteInput,
+): Promise<{ quote: OsmosisSwapQuote | null; error: string | null }> {
+  const venueChain = chainRegistry().get(args.venueChainId);
+  if (!venueChain) {
+    return { quote: null, error: `${args.venueChainId} is not in this wallet's chain list.` };
+  }
   try {
     const quote = await quoteOsmosisSwap(
       {
-        tokenInDenom: venueInput.denom,
-        tokenInAmount: input.amountBaseUnits,
-        tokenOutDenom: venueOutputDenom,
-        slippagePercent: input.slippagePercent,
+        tokenInDenom: args.venueInputDenom,
+        tokenInAmount: args.amountBaseUnits,
+        tokenOutDenom: args.venueOutputDenom,
+        slippagePercent: args.slippagePercent,
         router: swapRouterClient(),
         // One path rather than a split order: the crosschain-swap contract
         // executes a single route, so a split quote would price something the
         // memo cannot ask for.
         singleRoute: true,
-        ...(input.signal ? { request: { signal: input.signal } } : {}),
+        ...(args.signal ? { request: { signal: args.signal } } : {}),
       },
       lcdFor(venueChain),
     );
-    return { quote, venueInputDenom: venueInput.denom, blockedReason: null };
+    return { quote, error: null };
   } catch (error) {
     const reason = isInterchainError(error) && error.code === "no-route"
-      ? `${chainName(venueChainId)} has no pool for this pair, so the swap cannot be priced or executed.`
+      ? `${chainName(args.venueChainId)} has no pool for this pair, so the swap cannot be priced or executed.`
       : describeInterchainError(error);
-    return { quote: null, venueInputDenom: venueInput.denom, blockedReason: reason };
+    return { quote: null, error: reason };
   }
+}
+
+/**
+ * Price a planned swap again without planning it again.
+ *
+ * The memo carries a TWAP tolerance rather than a minimum output, so neither
+ * the route nor the message the user signs depends on the price: a fresh quote
+ * only changes what the user is shown before they sign.
+ */
+export function requoteSwap(
+  args: VenueQuoteInput,
+): Promise<{ quote: OsmosisSwapQuote | null; error: string | null }> {
+  return quoteOnVenue(args);
 }
 
 /** The tolerance the UI starts with, so screens do not each pick their own. */
@@ -919,18 +952,10 @@ export const VENUE_CHAIN_ID = SWAP_VENUE_CHAIN_ID;
  * -------------------------------------------------------------------------- */
 
 /**
- * `/ibc.applications.transfer.v1.MsgTransfer` for a plan.
- *
- * ENGINE GAP: `@zunialab/interchain` builds the plan and the memo but has no
- * ICS20 message builder — it exports `buildNftTransferMsg` and
- * `buildIcs721TransferMsg` for CosmWasm messages and nothing for a transfer.
- * The proto-JSON below is the shape `zunia-core`'s `msg_from_proto_json`
- * parses, and it is written once, here, so no screen assembles it by hand.
- *
- * Every field comes off the plan: the channel from `hops[0]`, the receiver from
- * the candidate (which is the crosschain-swaps contract for a swap, because
- * ibc-hooks only runs when the ICS20 receiver is `""` or the contract), and the
- * memo verbatim.
+ * `/ibc.applications.transfer.v1.MsgTransfer` for a plan: the channel from
+ * `hops[0]`, the receiver from the candidate (the crosschain-swaps contract for
+ * a swap, because ibc-hooks only runs when the ICS20 receiver is `""` or the
+ * contract), and the memo verbatim.
  */
 export function buildTransferMsgFromPlan(args: {
   readonly view: RoutePlanView;
@@ -938,30 +963,11 @@ export function buildTransferMsgFromPlan(args: {
   readonly amountBaseUnits: string;
   readonly timeoutMinutes?: number;
 }): BuiltMsg {
-  const hop = args.view.plan.hops[0];
-  if (!hop || hop.kind === "swap") {
-    throw new Error("This plan has no transfer for the user to sign");
-  }
-  const minutes = args.timeoutMinutes ?? PACKET_TIMEOUT_MINUTES;
-  // Nanoseconds since the epoch. A packet with neither a height nor a timestamp
-  // never expires, and its escrow is never refunded, so the kernel refuses one.
-  const timeoutTimestamp = (
-    BigInt(Date.now()) * 1_000_000n +
-    BigInt(minutes) * 60n * 1_000_000_000n
-  ).toString();
-
-  return {
-    typeUrl: "/ibc.applications.transfer.v1.MsgTransfer",
-    value: {
-      source_port: hop.port || TRANSFER_PORT,
-      source_channel: hop.channelId,
-      token: { denom: args.view.plan.inputDenom, amount: args.amountBaseUnits },
-      sender: args.sender,
-      receiver: args.view.receiver,
-      // Explicit zero height: the timeout is the timestamp above.
-      timeout_height: { revision_number: "0", revision_height: "0" },
-      timeout_timestamp: timeoutTimestamp,
-      memo: args.view.plan.memo,
-    },
-  };
+  return buildPlanTransferMsg({
+    plan: args.view.plan,
+    receiver: args.view.receiver,
+    sender: args.sender,
+    amount: args.amountBaseUnits,
+    timeoutMinutes: args.timeoutMinutes ?? PACKET_TIMEOUT_MINUTES,
+  });
 }

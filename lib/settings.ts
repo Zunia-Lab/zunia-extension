@@ -41,14 +41,16 @@ export interface ExtensionSettings {
   nftMedia: boolean;
   /** Anonymous diagnostics - OFF by default. Persisted but not enforced yet. */
   diagnostics: boolean;
-  /** Browser notifications for transfers and governance. Not enforced yet. */
+  /**
+   * A browser notification when a cross-chain transfer or swap settles. Only
+   * counts while the browser grants the optional `notifications` permission.
+   */
   browserAlerts: boolean;
 }
 
 /**
  * Settings that are stored but that no code path reads: nothing reports
- * diagnostics, and there is no browser.notifications call anywhere in the
- * extension.
+ * diagnostics.
  *
  * The fields stay so a preference set today survives until the behaviour ships,
  * but a screen rendering one of these MUST disable the control and show the
@@ -57,7 +59,6 @@ export interface ExtensionSettings {
  */
 export const INERT_SETTINGS: Partial<Record<keyof ExtensionSettings, string>> = {
   diagnostics: "Not active yet. Nothing is collected or sent.",
-  browserAlerts: "Not active yet. The extension sends no notifications.",
 };
 
 export const DEFAULT_SETTINGS: ExtensionSettings = {

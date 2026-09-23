@@ -97,6 +97,11 @@ import {
 } from "../lib/address-book";
 import { getSettings, setSettings } from "../lib/settings";
 import { STORAGE_KEYS } from "../lib/storage-keys";
+import {
+  TRANSFER_WATCH_ALARM,
+  runTransferWatch,
+  syncTransferWatch,
+} from "../lib/transfer-watch";
 
 interface Sender {
   id?: string;
@@ -760,6 +765,16 @@ export default defineBackground(() => {
   browser.tabs.onRemoved.addListener((tabId) => {
     rejectApprovalsWhere((item) => item.tabId === tabId, "The requesting tab was closed");
   });
+
+  // Routes signed in the popup keep being followed after it closes.
+  browser.alarms.onAlarm.addListener((alarm) => {
+    if (alarm.name === TRANSFER_WATCH_ALARM) void runTransferWatch().catch(() => undefined);
+  });
+  browser.storage.onChanged.addListener((changes, area) => {
+    if (area !== "local" || !changes[STORAGE_KEYS.pendingTransfers]) return;
+    void syncTransferWatch().catch(() => undefined);
+  });
+  void syncTransferWatch().catch(() => undefined);
 
   // A fresh install lands on the full-tab flow: a 24 word phrase does not fit
   // in a 360px popup without scrolling, which is where people mistranscribe.

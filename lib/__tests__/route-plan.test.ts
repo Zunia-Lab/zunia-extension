@@ -1,16 +1,16 @@
 import { describe, expect, it } from "vitest";
 
-import { explorerTxUrl } from "../../config/interchain";
+import { EXPLORER_TX_URLS, explorerTxUrl } from "../../config/interchain";
+import { findCatalogEntry } from "../chain-catalog";
 import { buildTransferMsgFromPlan, pathHopViews, type RoutePlanView } from "../route-plan";
 
 /**
- * The one piece of wire shape this client writes by hand.
+ * The wire shape of the one message a route signs.
  *
- * `@zunialab/interchain` builds the plan and the memo but has no ICS20 message
- * builder, so `buildTransferMsgFromPlan` produces the proto-JSON that
- * zunia-core's `msg_from_proto_json` parses. A field renamed here fails on
- * chain as an opaque decode error after the user has approved, which is exactly
- * the failure these assertions exist to catch.
+ * `buildTransferMsgFromPlan` hands the plan to the engine's ICS20 builder, which
+ * writes the proto-JSON zunia-core's `msg_from_proto_json` parses. A field
+ * renamed there fails on chain as an opaque decode error after the user has
+ * approved, which is exactly the failure these assertions exist to catch.
  */
 function view(overrides: {
   kind?: "transfer" | "forward" | "swap";
@@ -130,10 +130,27 @@ describe("buildTransferMsgFromPlan", () => {
 });
 
 describe("explorerTxUrl", () => {
+  it("fills the chain's registry template and encodes the hash", () => {
+    expect(explorerTxUrl("osmosis-1", "ABC123")).toBe(
+      "https://www.mintscan.io/osmosis/transactions/ABC123",
+    );
+    expect(explorerTxUrl("safrochain-1", "a/b")).toBe(
+      "https://explorer.safrochain.com/tx/a%2Fb",
+    );
+  });
+
   it("returns null rather than a guessed explorer domain", () => {
-    // The shipped registry fork carries no explorer URLs. A link that 404s or
-    // points at somebody else's chain is worse than plain selectable text.
-    expect(explorerTxUrl("osmosis-1", "ABC")).toBeNull();
+    // A link that 404s or points at somebody else's chain is worse than plain
+    // selectable text.
+    expect(explorerTxUrl("unknown-1", "ABC")).toBeNull();
+  });
+
+  it("lists only chains the catalog knows, each with one https template", () => {
+    for (const [chainId, template] of Object.entries(EXPLORER_TX_URLS)) {
+      expect(findCatalogEntry(chainId), chainId).toBeDefined();
+      expect(template.startsWith("https://"), chainId).toBe(true);
+      expect(template.split("{hash}").length, chainId).toBe(2);
+    }
   });
 });
 

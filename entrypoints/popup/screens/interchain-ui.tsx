@@ -55,6 +55,7 @@ import {
   type ManualChannel,
   type RouteHopView,
 } from "../../../lib/route-plan";
+import { listOsmosisAssets, type OsmosisAsset } from "../../../lib/osmosis-assets";
 import { trackTransfer, type TrackedRoute, type TrackInput } from "../../../lib/packet-tracking";
 import {
   listPendingTransfers,
@@ -86,6 +87,8 @@ export interface AssetOption {
   /** Base units. `"0"` for a destination asset the wallet does not hold. */
   readonly amount: string;
   readonly iconUrl?: string;
+  /** Extra line in the picker, e.g. the full token name. */
+  readonly note?: string;
 }
 
 /**
@@ -172,6 +175,99 @@ export function receivableAssets(
     }
   }
   return out;
+}
+
+/** A balance row the reader could not name shows its raw denom as the ticker. */
+function isRawDenom(symbol: string): boolean {
+  return symbol.startsWith("ibc/") || symbol.startsWith("factory/");
+}
+
+/**
+ * The receivable list plus every token Osmosis lists, delivered on Osmosis.
+ *
+ * Rows the wallet already has keep their place and balance, and take the
+ * listed ticker when the reader only knew the raw denom. Listed tokens the
+ * wallet does not hold follow, by symbol.
+ */
+export function withOsmosisAssets(
+  receivable: readonly AssetOption[],
+  listed: readonly OsmosisAsset[],
+  venueChainId: string,
+): AssetOption[] {
+  if (listed.length === 0) return [...receivable];
+  const chainName = findCatalogEntry(venueChainId)?.chainName ?? venueChainId;
+  const byKey = new Map(listed.map((asset) => [`${venueChainId}:${asset.denom}`, asset]));
+  const out = receivable.map((row) => {
+    const match = byKey.get(row.key);
+    if (!match || !isRawDenom(row.symbol)) return row;
+    return {
+      ...row,
+      symbol: match.symbol,
+      label: match.symbol,
+      decimals: match.decimals,
+      note: match.name,
+    };
+  });
+  const seen = new Set(out.map((row) => row.key));
+  for (const [key, asset] of byKey) {
+    if (seen.has(key)) continue;
+    // No chain icon: every listed token would wear the Osmosis logo. The
+    // ticker's initials are the honest fallback.
+    out.push({
+      key,
+      chainId: venueChainId,
+      chainName,
+      denom: asset.denom,
+      symbol: asset.symbol,
+      label: asset.symbol,
+      decimals: asset.decimals,
+      amount: "0",
+      note: asset.name,
+    });
+  }
+  return out;
+}
+
+const NO_OSMOSIS_ASSETS: readonly OsmosisAsset[] = [];
+
+/** Osmosis's listed tokens, loaded once live reads are allowed. */
+export function useOsmosisAssets(enabled: boolean): {
+  assets: readonly OsmosisAsset[];
+  error: string | null;
+} {
+  const [settled, setSettled] = useState<{
+    assets: readonly OsmosisAsset[];
+    error: string | null;
+  } | null>(null);
+  useEffect(() => {
+    if (!enabled) return;
+    const controller = new AbortController();
+    listOsmosisAssets({ signal: controller.signal })
+      .then((assets) => {
+        if (!controller.signal.aborted) setSettled({ assets, error: null });
+      })
+      .catch((error: unknown) => {
+        if (!controller.signal.aborted) {
+          setSettled({ assets: NO_OSMOSIS_ASSETS, error: describeInterchainError(error) });
+        }
+      });
+    return () => controller.abort();
+  }, [enabled]);
+  return {
+    assets: enabled ? (settled?.assets ?? NO_OSMOSIS_ASSETS) : NO_OSMOSIS_ASSETS,
+    error: enabled ? (settled?.error ?? null) : null,
+  };
+}
+
+/** `Date.now()`, refreshed every second while `active`. */
+export function useClock(active: boolean): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [active]);
+  return now;
 }
 
 /** Parse a typed decimal amount into base units. `null` when unusable. */
@@ -1210,6 +1306,7 @@ export function AssetSide({
   readOnly,
   placeholder,
   emptyLabel,
+  renderLimit,
 }: {
   label: string;
   meta: string;
@@ -1221,6 +1318,7 @@ export function AssetSide({
   readOnly?: boolean;
   placeholder?: string;
   emptyLabel: string;
+  renderLimit?: number;
 }) {
   const [open, setOpen] = useState(false);
   const amountId = useId();
@@ -1230,8 +1328,13 @@ export function AssetSide({
       options.map((option) => ({
         id: option.key,
         label: option.label,
-        sublabel: option.chainName,
-        keywords: [option.symbol, option.denom, option.chainId],
+        sublabel: option.note ? `${option.chainName} · ${option.note}` : option.chainName,
+        keywords: [
+          option.symbol,
+          option.denom,
+          option.chainId,
+          ...(option.note ? [option.note] : []),
+        ],
         icon: (
           <Avatar
             src={option.iconUrl ?? option.chainIconUrl}
@@ -1297,6 +1400,7 @@ export function AssetSide({
           recents={memory.recents}
           onToggleFavorite={memory.toggleFavorite}
           emptyLabel={emptyLabel}
+          renderLimit={renderLimit}
           onSelect={(key) => {
             memory.remember(key);
             onSelect(key);
