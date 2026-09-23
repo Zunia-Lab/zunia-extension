@@ -42,7 +42,6 @@ import { SendScreen } from "./screens/SendScreen";
 import { ReceiveScreen } from "./screens/ReceiveScreen";
 import { NetworksScreen } from "./screens/NetworksScreen";
 import { AddChainScreen } from "./screens/AddChainScreen";
-import { BridgeScreen } from "./screens/BridgeScreen";
 import { NftScreen } from "./screens/NftScreen";
 import { NftDetailScreen } from "./screens/NftDetailScreen";
 import { GovernanceScreen } from "./screens/GovernanceScreen";
@@ -70,7 +69,6 @@ const UNLOCKED_ROUTES: PopupRoute[] = [
   "receive",
   "networks",
   "add-chain",
-  "bridge",
   "nft",
   "nft-token",
   "governance",
@@ -485,10 +483,13 @@ function AppBody({ state }: { state: ExtensionState }) {
 
       {route === "send" ? (
         <SendScreen
+          key={`${location.chainId ?? ""}:${location.sendMode ?? "send"}`}
           chains={chains}
           balances={balances}
           initialChainId={location.chainId}
+          initialMode={location.sendMode === "cross" ? "cross" : "send"}
           contacts={contacts}
+          onContactsChanged={loadContacts}
           onBack={back}
         />
       ) : null}
@@ -562,15 +563,6 @@ function AppBody({ state }: { state: ExtensionState }) {
             onBack={back}
           />
         )
-      ) : null}
-
-      {route === "bridge" ? (
-        <BridgeScreen
-          chains={chains}
-          balances={balances}
-          onBack={back}
-          onNavigate={(next, chainId) => go(next, chainId)}
-        />
       ) : null}
 
       {route === "governance" ? (

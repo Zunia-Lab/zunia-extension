@@ -29,6 +29,25 @@ describe("popup history", () => {
     expect(pushLocation(stack, { route: "chain", chainId: "b" })).toHaveLength(2);
   });
 
+  it("sends the old Bridge view to Send on another chain", () => {
+    expect(pushLocation([], { route: "bridge", chainId: "osmosis-1" })).toEqual([
+      { route: "send", chainId: "osmosis-1", sendMode: "cross" },
+    ]);
+    expect(pushLocation([], { route: "bridge" })).toEqual([
+      { route: "send", sendMode: "cross" },
+    ]);
+  });
+
+  it("treats the two Send modes as different views", () => {
+    const stack = pushLocation([{ route: "send", chainId: "a" }], {
+      route: "send",
+      chainId: "a",
+      sendMode: "cross",
+    });
+    expect(stack).toHaveLength(2);
+    expect(pushLocation(stack, { route: "bridge", chainId: "a" })).toHaveLength(2);
+  });
+
   it("keeps a bounded history", () => {
     let stack: PopupLocation[] = [];
     for (let i = 0; i < MAX_HISTORY + 10; i++) {

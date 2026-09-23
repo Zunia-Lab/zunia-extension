@@ -1,11 +1,11 @@
 /**
- * Pieces shared by the three screens that move value across chains: Swap,
- * Bridge and Send's cross-send mode.
+ * Pieces shared by the screens that move value across chains: Swap and
+ * Send's other-chain mode.
  *
  * Everything chain-facing is `@zunialab/interchain` through `lib/route-plan.ts`
  * and `lib/interchain.ts`; everything visual is `@zunialab/ui`. What is left —
  * the hooks that hold a plan while the user edits a form, and the channel
- * editor — lives here so the three screens cannot drift apart.
+ * editor, lives here so the screens cannot drift apart.
  */
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
@@ -13,16 +13,32 @@ import {
   Avatar,
   Button,
   Callout,
+  Dialog,
+  DialogDescription,
+  DialogTitle,
   Input,
+  SectionLabel,
+  SheetContent,
   Spinner,
   cn,
   focusRing,
 } from "@zunialab/ui";
-import type { IbcChannelOption, IbcChannelValidation } from "@zunialab/interchain";
-import { normalizeChannelId } from "@zunialab/interchain";
+import type {
+  ChannelDirectory,
+  IbcChannelOption,
+  IbcChannelValidation,
+} from "@zunialab/interchain";
+import { TRANSFER_PORT, findRoutePaths, normalizeChannelId } from "@zunialab/interchain";
 
 import type { ChainBalance } from "../../../lib/balances";
 import { findCatalogEntry } from "../../../lib/chain-catalog";
+import { MAX_ROUTE_HOPS } from "../../../config/interchain";
+import {
+  classifyChannelCheck,
+  verdictAllowsUse,
+  type ChannelVerdict,
+  type ChannelVerdictKind,
+} from "../../../lib/channel-verdict";
 import { formatUnits } from "../../../lib/format";
 import {
   describeInterchainError,
@@ -31,7 +47,9 @@ import {
   type SwapVenueCheck,
 } from "../../../lib/interchain";
 import {
+  channelDirectory,
   discoverChannels,
+  pathHopViews,
   rememberManualChannel,
   validateChannel,
   type ManualChannel,
@@ -294,6 +312,127 @@ export function useResolveAddresses(): (
 }
 
 /* -------------------------------------------------------------------------- *
+ * The channel graph, as Send sees it
+ * -------------------------------------------------------------------------- */
+
+/** The best path the wallet already knows to one destination. */
+export interface ChainReach {
+  readonly hops: readonly RouteHopView[];
+  /** True only when every channel on the path was confirmed open. */
+  readonly verified: boolean;
+}
+
+/**
+ * Which destinations the channel cache can already reach from `sourceChainId`.
+ *
+ * Local only: it reads the cache and searches it, and never calls a chain.
+ * `version` changes whenever the cache is reloaded, so a plan that depends on
+ * the cache can fold it into its key and replan after a discovery.
+ */
+export function useChannelReach(sourceChainId: string, destChainIds: readonly string[]) {
+  const [directory, setDirectory] = useState<ChannelDirectory | null>(null);
+  const [version, setVersion] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    void channelDirectory().then((next) => {
+      if (!cancelled) setDirectory(next);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [version]);
+
+  const reach = useMemo(() => {
+    const out = new Map<string, ChainReach>();
+    if (!directory || !sourceChainId) return out;
+    for (const destChainId of destChainIds) {
+      if (destChainId === sourceChainId) continue;
+      const best = findRoutePaths(sourceChainId, destChainId, directory, {
+        maxHops: MAX_ROUTE_HOPS,
+        maxPaths: 1,
+      })[0];
+      if (!best) continue;
+      out.set(destChainId, {
+        hops: pathHopViews(best.links),
+        verified: best.links.every((link) => link.state === "open"),
+      });
+    }
+    return out;
+  }, [directory, sourceChainId, destChainIds]);
+
+  return {
+    reach,
+    ready: directory !== null,
+    version,
+    reload: useCallback(() => setVersion((n) => n + 1), []),
+  };
+}
+
+/** One discovery per pair per popup session; a failed one may run again. */
+const discoveryRuns = new Map<string, Promise<{ found: number; error: string | null }>>();
+
+function discoverOnce(sourceChainId: string, destChainId: string) {
+  const key = `${sourceChainId}>${destChainId}`;
+  let run = discoveryRuns.get(key);
+  if (!run) {
+    run = discoverChannels(sourceChainId, destChainId).then(
+      (rows) => ({ found: rows.length, error: null }),
+      (error: unknown) => ({ found: 0, error: describeInterchainError(error) }),
+    );
+    discoveryRuns.set(key, run);
+    void run.then((result) => {
+      if (result.error) discoveryRuns.delete(key);
+    });
+  }
+  return run;
+}
+
+/**
+ * Look for open transfer channels between two chains, once, when `run` is set.
+ *
+ * This is the automatic half of channel selection: Send turns it on when the
+ * cache has no confirmed direct channel to the destination. Whatever it finds
+ * lands in the cache, and `onFound` tells the caller to reload and replan.
+ */
+export function useAutoDiscovery(
+  sourceChainId: string,
+  destChainId: string,
+  run: boolean,
+  onFound: () => void,
+) {
+  const key =
+    run && sourceChainId && destChainId && sourceChainId !== destChainId
+      ? `${sourceChainId}>${destChainId}`
+      : "";
+  const [settled, setSettled] = useState<{
+    key: string;
+    found: number;
+    error: string | null;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!key) return;
+    let cancelled = false;
+    void discoverOnce(sourceChainId, destChainId).then((result) => {
+      if (cancelled) return;
+      setSettled({ key, ...result });
+      if (result.found > 0) onFound();
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [key, sourceChainId, destChainId, onFound]);
+
+  const current = settled?.key === key ? settled : null;
+  return {
+    searching: Boolean(key) && current === null,
+    found: current?.found ?? null,
+    error: current?.error ?? null,
+  };
+}
+
+/* -------------------------------------------------------------------------- *
  * The channel editor
  * -------------------------------------------------------------------------- */
 
@@ -301,37 +440,84 @@ function chainLabel(chainId: string): string {
   return findCatalogEntry(chainId)?.chainName ?? chainId;
 }
 
+/** ICS-024 port identifier characters and length. */
+const PORT_ID = /^[a-zA-Z0-9._+\-#[\]<>]{2,128}$/;
+
+const VERDICT_TONE: Record<ChannelVerdictKind, string> = {
+  verified: "text-[var(--z-success)]",
+  "open-unconfirmed": "text-[var(--z-warning)]",
+  inconclusive: "text-[var(--z-warning)]",
+  rejected: "text-[var(--z-danger-fg)]",
+};
+
+/** How a hop's channel reads on its row: who chose it, and what checked it. */
+function hopStatus(
+  hop: RouteHopView,
+  pinned: ManualChannel | undefined,
+): { text: string; tone: string } {
+  if (pinned) {
+    if (pinned.verdict === "verified") {
+      return { text: "Chosen by you, confirmed on both chains", tone: VERDICT_TONE.verified };
+    }
+    if (pinned.verdict === "open-unconfirmed") {
+      return {
+        text: "Chosen by you, open here but the far side is not confirmed",
+        tone: VERDICT_TONE["open-unconfirmed"],
+      };
+    }
+    return { text: "Chosen by you, not confirmed on chain", tone: VERDICT_TONE.inconclusive };
+  }
+  if (!hop.channelId) return { text: "No channel found yet", tone: VERDICT_TONE.inconclusive };
+  if (hop.channelVerified) return { text: "Found on chain, open", tone: VERDICT_TONE.verified };
+  if (hop.channelSource === "seed") {
+    return { text: "Known channel, not checked yet", tone: "text-fg-dim" };
+  }
+  return { text: "Not checked", tone: "text-fg-dim" };
+}
+
 /**
- * Pick or type the channel for one leg.
+ * Pick or type the channel for one leg, in a sheet over the form.
  *
  * Discovery walks every channel on the source chain and resolves each
- * connection's client, which slow or paginating LCDs regularly fail at. That is
- * not an error state: the user knows the channel, so the manual field is always
- * present and always usable, and what they type is checked on both sides before
- * it is offered as valid.
+ * connection's client, which slow or paginating LCDs regularly fail at. That
+ * is not an error state: the user may know the channel, so the manual fields
+ * are always there. What they type is checked on both chains, a definite "no"
+ * blocks it, and a chain that could not be asked is said out loud.
  */
-function HopChannelEditor({
+function ChannelSheet({
+  open,
+  onClose,
   fromChainId,
   toChainId,
-  current,
+  pinned,
   onPick,
   onClear,
 }: {
+  open: boolean;
+  onClose: () => void;
   fromChainId: string;
   toChainId: string;
-  current: string;
+  pinned: ManualChannel | undefined;
   onPick: (channel: ManualChannel) => void;
   onClear: () => void;
 }) {
-  const [open, setOpen] = useState(false);
+  const descriptionId = useId();
+  const [port, setPort] = useState(pinned?.port ?? TRANSFER_PORT);
   const [typed, setTyped] = useState("");
-  const fieldId = useId();
 
-  // Discovery runs only while the picker is open: it walks every transfer
-  // channel on the source chain and resolves each connection's client, which is
-  // several LCD pages and must never fire because a form re-rendered. The
-  // request key carries the state, so nothing is written synchronously inside
-  // an effect and the panel never renders one pass behind.
+  // Every opening starts from the channel in use, not from the last draft.
+  const [openedFor, setOpenedFor] = useState(open);
+  if (openedFor !== open) {
+    setOpenedFor(open);
+    if (open) {
+      setPort(pinned?.port ?? TRANSFER_PORT);
+      setTyped("");
+    }
+  }
+
+  // Discovery runs only while the sheet is open: it walks every transfer
+  // channel on the source chain, which is several LCD pages and must never
+  // fire because a form re-rendered.
   const discoveryKey = open ? `${fromChainId}>${toChainId}` : "";
   const [discovered, setDiscovered] = useState<{
     key: string;
@@ -348,11 +534,7 @@ function HopChannelEditor({
       })
       .catch((error: unknown) => {
         if (!cancelled) {
-          setDiscovered({
-            key: discoveryKey,
-            rows: null,
-            error: describeInterchainError(error),
-          });
+          setDiscovered({ key: discoveryKey, rows: null, error: describeInterchainError(error) });
         }
       });
     return () => {
@@ -363,10 +545,12 @@ function HopChannelEditor({
   const fresh = discovered?.key === discoveryKey ? discovered : null;
   const options = fresh?.rows ?? null;
   const discovering = Boolean(discoveryKey) && fresh === null;
-  const discoverError = fresh?.error ?? null;
 
+  const portId = port.trim() || TRANSFER_PORT;
+  const portValid = PORT_ID.test(portId);
   const normalized = normalizeChannelId(typed);
-  const checkKey = normalized ? `${fromChainId}>${toChainId}:${normalized}` : "";
+  const checkKey =
+    open && normalized && portValid ? `${fromChainId}>${toChainId}:${portId}/${normalized}` : "";
   const [checked, setChecked] = useState<{
     key: string;
     check: IbcChannelValidation | null;
@@ -375,10 +559,11 @@ function HopChannelEditor({
   useEffect(() => {
     if (!checkKey) return;
     const controller = new AbortController();
-    // Debounced: the field is typed into character by character and the deep
-    // check costs the destination chain a round trip as well.
+    // Debounced: the field is typed into character by character, and the
+    // deep check costs the destination chain a round trip as well.
     const handle = window.setTimeout(() => {
       void validateChannel(fromChainId, normalized, toChainId, {
+        portId,
         signal: controller.signal,
       })
         .then((result) => {
@@ -392,147 +577,303 @@ function HopChannelEditor({
       controller.abort();
       window.clearTimeout(handle);
     };
-  }, [checkKey, normalized, fromChainId, toChainId]);
+  }, [checkKey, normalized, portId, fromChainId, toChainId]);
 
-  const check = checked?.key === checkKey ? checked.check : null;
-  const checking = Boolean(checkKey) && checked?.key !== checkKey;
+  const settledCheck = checked?.key === checkKey ? checked : null;
+  const checking = Boolean(checkKey) && settledCheck === null;
+  const verdict: ChannelVerdict | null = settledCheck
+    ? settledCheck.check
+      ? classifyChannelCheck(settledCheck.check, toChainId)
+      : {
+          kind: "inconclusive",
+          note: "The check did not finish. Nothing confirmed this channel.",
+        }
+    : null;
 
-  function choose(channelId: string, counterpartyChannelId?: string) {
+  function choose(channel: {
+    channelId: string;
+    counterpartyChannelId?: string;
+    port: string;
+    verdict: ChannelVerdictKind;
+  }) {
     const picked: ManualChannel = {
       fromChainId,
       toChainId,
-      channelId,
-      ...(counterpartyChannelId ? { counterpartyChannelId } : {}),
+      channelId: channel.channelId,
+      ...(channel.counterpartyChannelId
+        ? { counterpartyChannelId: channel.counterpartyChannelId }
+        : {}),
+      ...(channel.port !== TRANSFER_PORT ? { port: channel.port } : {}),
+      verdict: channel.verdict,
     };
-    void rememberManualChannel(picked);
-    onPick(picked);
-    setOpen(false);
+    onClose();
+    // Written to the cache first, so a caller that reloads the cache on the
+    // pick finds the channel there.
+    void rememberManualChannel(picked)
+      .catch(() => undefined)
+      .then(() => onPick(picked));
   }
 
   return (
-    <div className="mt-1.5">
-      <button
-        type="button"
-        aria-expanded={open}
-        onClick={() => setOpen((v) => !v)}
-        className={cn(
-          "rounded-full border border-[var(--z-line)] px-2 py-[3px] font-mono text-[9px] uppercase tracking-[0.1em] text-fg-muted",
-          "transition-colors duration-[var(--z-duration-base)] hover:border-[var(--z-line-strong)] hover:text-fg",
-          focusRing,
-        )}
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        if (!next) onClose();
+      }}
+    >
+      <SheetContent
+        aria-describedby={descriptionId}
+        className="flex max-h-[88vh] flex-col overflow-hidden px-0 pb-0 pt-3"
       >
-        {open ? "Close channel picker" : "Change channel"}
-      </button>
-
-      {open ? (
-        <section className="mt-2 rounded-[11px] border border-[var(--z-line)] px-2.5 py-2.5">
-          <p className="font-mono text-[9px] uppercase tracking-[0.14em] text-fg-dim">
-            {chainLabel(fromChainId)} → {chainLabel(toChainId)}
-          </p>
+        <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-3">
+          <DialogTitle className="text-[15px]">
+            Channel to {chainLabel(toChainId)}
+          </DialogTitle>
+          <DialogDescription id={descriptionId} className="mt-1 text-[11px]">
+            Zunia picks the channel from {chainLabel(fromChainId)} on its own. Enter one
+            only if you know it: it is checked on both chains before you can use it.
+          </DialogDescription>
 
           {discovering ? (
-            <p className="mt-2 flex items-center gap-1.5 font-mono text-[10px] text-fg-dim">
+            <p className="mt-3 flex items-center gap-1.5 font-mono text-[10px] text-fg-dim">
               <Spinner className="size-3" /> Reading channels on {chainLabel(fromChainId)}…
             </p>
           ) : null}
 
-          {discoverError ? (
-            <Callout tone="warning" className="mt-2" title="Discovery failed">
-              {discoverError} You can still enter the channel below.
+          {fresh?.error ? (
+            <Callout tone="warning" className="mt-3" title="Could not list channels">
+              {fresh.error} You can still enter the channel below.
             </Callout>
           ) : null}
 
           {options && options.length > 0 ? (
-            <ul className="mt-2 flex flex-col gap-1">
-              {options.map((option) => (
-                <li key={option.channelId}>
-                  <button
-                    type="button"
-                    onClick={() => choose(option.channelId, option.counterpartyChannelId)}
-                    aria-current={option.channelId === current}
-                    className={cn(
-                      "flex w-full items-center justify-between gap-2 rounded-[9px] border px-2 py-1.5 text-left",
-                      option.channelId === current
-                        ? "border-[var(--z-line-strong)] bg-[var(--z-state-hover)]"
-                        : "border-[var(--z-line)] hover:bg-[var(--z-state-hover)]",
-                      focusRing,
-                    )}
-                  >
-                    <span className="min-w-0">
-                      <span className="block font-mono text-[11px] text-fg">
-                        {option.channelId}
-                      </span>
-                      <span className="block font-mono text-[9px] text-fg-dim">
-                        far side {option.counterpartyChannelId || "unknown"}
-                      </span>
-                    </span>
-                    <span className="shrink-0 font-mono text-[9px] uppercase text-[var(--z-success)]">
-                      open
-                    </span>
-                  </button>
-                </li>
-              ))}
-            </ul>
+            <section className="mt-3">
+              <SectionLabel>Open channels found</SectionLabel>
+              <ul className="mt-1.5 flex flex-col gap-1">
+                {options.map((option) => {
+                  const inUse =
+                    pinned?.channelId === option.channelId &&
+                    (pinned.port ?? TRANSFER_PORT) === option.portId;
+                  return (
+                    <li key={`${option.portId}/${option.channelId}`}>
+                      <button
+                        type="button"
+                        aria-current={inUse || undefined}
+                        onClick={() =>
+                          choose({
+                            channelId: option.channelId,
+                            counterpartyChannelId: option.counterpartyChannelId,
+                            port: option.portId || TRANSFER_PORT,
+                            // Discovery keeps only open channels whose client
+                            // targets the destination, which is what "verified"
+                            // means here.
+                            verdict: "verified",
+                          })
+                        }
+                        className={cn(
+                          "flex w-full items-center justify-between gap-2 rounded-[9px] border px-2.5 py-2 text-left",
+                          inUse
+                            ? "border-[var(--z-line-strong)] bg-[var(--z-state-selected)]"
+                            : "border-[var(--z-line)] hover:bg-[var(--z-state-hover)]",
+                          focusRing,
+                        )}
+                      >
+                        <span className="min-w-0">
+                          <span className="block font-mono text-[11px] text-fg">
+                            {option.channelId}
+                          </span>
+                          <span className="block font-mono text-[9px] text-fg-dim">
+                            far side {option.counterpartyChannelId || "unknown"}
+                          </span>
+                        </span>
+                        <span className="shrink-0 font-mono text-[9px] uppercase text-[var(--z-success)]">
+                          open
+                        </span>
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            </section>
           ) : null}
 
           {options && options.length === 0 && !discovering ? (
-            <p className="mt-2 text-[10.5px] text-fg-muted">
+            <p className="mt-3 text-[10.5px] leading-snug text-fg-muted">
               {chainLabel(fromChainId)} reported no open transfer channel to{" "}
               {chainLabel(toChainId)}. Its endpoint may be slow or may not list every
-              channel — enter the channel below if you know it.
+              channel, so enter the channel below if you know it.
             </p>
           ) : null}
 
-          <Input
-            id={fieldId}
-            className="mt-2"
-            label="Channel id"
-            placeholder="channel-141"
-            value={typed}
-            spellCheck={false}
-            autoComplete="off"
-            state={!typed ? "default" : check?.ok ? "valid" : check ? "error" : "default"}
-            hint={checking ? "Checking both sides…" : (check?.message ?? undefined)}
-            onChange={(event) => setTyped(event.target.value)}
-          />
+          <section className="mt-3">
+            <SectionLabel>Enter by hand</SectionLabel>
+            <div className="mt-1.5 grid grid-cols-[92px_minmax(0,1fr)] gap-2">
+              <Input
+                label="Port"
+                placeholder={TRANSFER_PORT}
+                value={port}
+                spellCheck={false}
+                autoComplete="off"
+                state={portValid ? "default" : "error"}
+                hint={portValid ? undefined : "Not a port id"}
+                onChange={(event) => setPort(event.target.value)}
+              />
+              <Input
+                label="Channel"
+                placeholder="channel-141"
+                value={typed}
+                spellCheck={false}
+                autoComplete="off"
+                state={
+                  !verdict
+                    ? "default"
+                    : verdict.kind === "verified"
+                      ? "valid"
+                      : verdict.kind === "rejected"
+                        ? "error"
+                        : "default"
+                }
+                onChange={(event) => setTyped(event.target.value)}
+              />
+            </div>
+            <p
+              aria-live="polite"
+              className={cn(
+                "mt-1.5 min-h-[14px] text-[10.5px] leading-snug",
+                verdict ? VERDICT_TONE[verdict.kind] : "text-fg-dim",
+              )}
+            >
+              {checking
+                ? "Checking both chains…"
+                : verdict
+                  ? verdict.note
+                  : normalized
+                    ? ""
+                    : "For example channel-141, or just 141."}
+            </p>
+            {verdict && verdict.kind !== "verified" && verdict.kind !== "rejected" ? (
+              <p className="mt-1 text-[10px] leading-snug text-[var(--z-warning)]">
+                A channel that leads to another chain does not fail: the tokens land
+                there instead of on {chainLabel(toChainId)}. Only continue if you are sure.
+              </p>
+            ) : null}
+          </section>
+        </div>
 
-          <div className="mt-2 flex gap-1.5">
+        <div className="flex gap-2 border-t border-[var(--z-line)] px-4 py-3">
+          {pinned ? (
             <Button
               size="sm"
-              className="flex-1"
-              disabled={!normalized}
-              onClick={() =>
-                choose(normalized, check?.counterpartyChannelId ?? undefined)
-              }
+              variant="secondary"
+              onClick={() => {
+                onClear();
+                onClose();
+              }}
             >
-              {check?.ok ? "Use this channel" : "Use anyway"}
+              Back to automatic
             </Button>
-            {current ? (
-              <Button
-                size="sm"
-                variant="secondary"
-                onClick={() => {
-                  onClear();
-                  setOpen(false);
-                }}
-              >
-                Reset
-              </Button>
-            ) : null}
-          </div>
-          {normalized && check && !check.ok ? (
-            <p className="mt-1.5 text-[10px] text-[var(--z-warning)]">
-              Nothing confirmed this channel. Sending over the wrong channel does not
-              fail — it mints a token the destination chain has no record of.
-            </p>
-          ) : null}
-        </section>
-      ) : null}
-    </div>
+          ) : (
+            <Button size="sm" variant="secondary" onClick={onClose}>
+              Cancel
+            </Button>
+          )}
+          <Button
+            size="sm"
+            className="flex-1"
+            disabled={!normalized || !portValid || checking || !verdict || !verdictAllowsUse(verdict)}
+            onClick={() => {
+              if (!verdict) return;
+              choose({
+                channelId: normalized,
+                counterpartyChannelId: verdict.counterpartyChannelId,
+                port: portId,
+                verdict: verdict.kind,
+              });
+            }}
+          >
+            {verdict?.kind === "inconclusive" || verdict?.kind === "open-unconfirmed"
+              ? "Use without confirmation"
+              : "Use this channel"}
+          </Button>
+        </div>
+      </SheetContent>
+    </Dialog>
   );
 }
 
-/** The per-hop channel controls that sit under a `RoutePreview`. */
+function HopChannelRow({
+  hop,
+  pinned,
+  numbered,
+  onPick,
+  onClear,
+}: {
+  hop: RouteHopView;
+  pinned: ManualChannel | undefined;
+  numbered: boolean;
+  onPick: (channel: ManualChannel) => void;
+  onClear: (fromChainId: string, toChainId: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const to = hop.counterpartyChainId ?? "";
+  const channelId = pinned?.channelId ?? hop.channelId;
+  const status = hopStatus(hop, pinned);
+  return (
+    <li className="rounded-[11px] border border-[var(--z-line)] px-2.5 py-2">
+      <div className="flex items-start gap-2">
+        <span className="min-w-0 flex-1">
+          <span className="block truncate font-mono text-[10.5px] text-fg">
+            {numbered ? `Hop ${hop.index + 1}: ` : ""}
+            {channelId || "no channel"} to {to}{" "}
+            <span className="text-fg-dim">({pinned ? "manual" : "auto"})</span>
+          </span>
+          <span className={cn("mt-0.5 block text-[9.5px] leading-snug", status.tone)}>
+            {status.text}
+          </span>
+        </span>
+        <button
+          type="button"
+          aria-haspopup="dialog"
+          aria-label={`Modify the channel from ${chainLabel(hop.chainId)} to ${chainLabel(to)}`}
+          onClick={() => setEditing(true)}
+          className={cn(
+            "shrink-0 rounded-full border border-[var(--z-line)] px-2 py-[3px] font-mono text-[9px] uppercase tracking-[0.1em] text-fg-muted",
+            "transition-colors duration-[var(--z-duration-base)] hover:border-[var(--z-line-strong)] hover:text-fg",
+            focusRing,
+          )}
+        >
+          Modify
+        </button>
+      </div>
+      {pinned ? (
+        <button
+          type="button"
+          onClick={() => onClear(hop.chainId, to)}
+          className={cn(
+            "mt-1.5 text-[10px] text-fg-muted underline underline-offset-2 hover:text-fg",
+            focusRing,
+          )}
+        >
+          Back to automatic
+        </button>
+      ) : null}
+      <ChannelSheet
+        open={editing}
+        onClose={() => setEditing(false)}
+        fromChainId={hop.chainId}
+        toChainId={to}
+        pinned={pinned}
+        onPick={onPick}
+        onClear={() => onClear(hop.chainId, to)}
+      />
+    </li>
+  );
+}
+
+/**
+ * One row per leg of the route: the channel, whether Zunia picked it or the
+ * user did, what checked it, and the Modify control that opens the editor.
+ */
 export function HopChannelList({
   hops,
   manual,
@@ -549,29 +890,24 @@ export function HopChannelList({
   );
   if (editable.length === 0) return null;
   return (
-    <div className="flex flex-col gap-2">
+    <ul className="flex flex-col gap-1.5">
       {editable.map((hop) => {
         const to = hop.counterpartyChainId ?? "";
         const pinned = manual.find(
           (entry) => entry.fromChainId === hop.chainId && entry.toChainId === to,
         );
         return (
-          <div key={`${hop.chainId}>${to}>${hop.index}`}>
-            <p className="font-mono text-[9px] uppercase tracking-[0.14em] text-fg-dim">
-              Hop {hop.index + 1} · {hop.channelId || "no channel"}
-              {pinned ? " · you chose this" : ""}
-            </p>
-            <HopChannelEditor
-              fromChainId={hop.chainId}
-              toChainId={to}
-              current={hop.channelId}
-              onPick={onPick}
-              onClear={() => onClear(hop.chainId, to)}
-            />
-          </div>
+          <HopChannelRow
+            key={`${hop.chainId}>${to}>${hop.index}`}
+            hop={hop}
+            pinned={pinned}
+            numbered={editable.length > 1}
+            onPick={onPick}
+            onClear={onClear}
+          />
         );
       })}
-    </div>
+    </ul>
   );
 }
 

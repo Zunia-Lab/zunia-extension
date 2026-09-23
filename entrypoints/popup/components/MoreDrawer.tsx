@@ -5,7 +5,6 @@ import type { PopupRoute } from "../routes";
 import {
   IconBell,
   IconBook,
-  IconBridge,
   IconClose,
   IconEye,
   IconEyeOff,
@@ -91,11 +90,6 @@ export function MoreDrawer({
       label: "Manage networks",
       icon: <IconGlobe width={16} height={16} />,
       meta: String(networkCount),
-    },
-    {
-      route: "bridge",
-      label: "Bridge",
-      icon: <IconBridge width={16} height={16} />,
     },
     {
       route: "nft",

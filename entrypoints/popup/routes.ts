@@ -21,6 +21,7 @@ export type PopupRoute =
   | "receive"
   | "networks"
   | "add-chain"
+  // Old name for sending to another chain; never stored, see `pushLocation`.
   | "bridge"
   | "nft"
   | "nft-token"
@@ -59,6 +60,8 @@ export interface PopupLocation {
   collectionAddress?: string;
   /** CW721 token id for the NFT token detail route. */
   tokenId?: string;
+  /** Opens Send on its other-chain mode. */
+  sendMode?: "cross";
 }
 
 /** Deep enough for any real path through the popup; older entries drop off. */
@@ -71,8 +74,17 @@ export function sameLocation(a: PopupLocation, b: PopupLocation): boolean {
     a.hash === b.hash &&
     a.operatorAddress === b.operatorAddress &&
     a.collectionAddress === b.collectionAddress &&
-    a.tokenId === b.tokenId
+    a.tokenId === b.tokenId &&
+    a.sendMode === b.sendMode
   );
+}
+
+/** Retired views resolve to the screen that replaced them. */
+function canonical(next: PopupLocation): PopupLocation {
+  if (next.route !== "bridge") return next;
+  return next.chainId
+    ? { route: "send", chainId: next.chainId, sendMode: "cross" }
+    : { route: "send", sendMode: "cross" };
 }
 
 /**
@@ -82,8 +94,9 @@ export function sameLocation(a: PopupLocation, b: PopupLocation): boolean {
  */
 export function pushLocation(
   stack: readonly PopupLocation[],
-  next: PopupLocation,
+  target: PopupLocation,
 ): PopupLocation[] {
+  const next = canonical(target);
   if (isTabRoute(next.route)) return next.route === "home" && !next.chainId ? [] : [next];
   const top = stack[stack.length - 1];
   if (top && sameLocation(top, next)) return [...stack];

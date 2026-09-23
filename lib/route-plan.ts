@@ -46,6 +46,7 @@ import {
   SWAP_VENUE_CHAIN_ID,
 } from "../config/interchain";
 import { catalogIconFor, findCatalogEntry } from "./chain-catalog";
+import type { ChannelVerdictKind } from "./channel-verdict";
 import {
   channelService,
   chainRegistry,
@@ -67,6 +68,10 @@ export interface ManualChannel {
   readonly toChainId: string;
   readonly channelId: string;
   readonly counterpartyChannelId?: string;
+  /** Port on the leaving chain. `transfer` when absent. */
+  readonly port?: string;
+  /** What the on-chain check concluded when the user picked it. */
+  readonly verdict?: ChannelVerdictKind;
 }
 
 /**
@@ -209,25 +214,34 @@ export async function validateChannel(
   sourceChainId: string,
   channelId: string,
   destChainId: string | undefined,
-  options: { signal?: AbortSignal } = {},
+  options: { signal?: AbortSignal; portId?: string } = {},
 ): Promise<IbcChannelValidation> {
   return channelService().validateIbcChannel(sourceChainId, channelId, destChainId, {
     checkCounterparty: true,
+    ...(options.portId ? { portId: options.portId } : {}),
     ...(options.signal ? { signal: options.signal } : {}),
   });
 }
 
-/** Remember a channel the user entered, so the next plan can use it. */
+/**
+ * Remember a channel the user entered, so the next plan can use it.
+ *
+ * Only a channel the chain confirmed end to end is stored as verified; one the
+ * user merely typed stays a manual row that never renders as checked. The
+ * cache models the transfer port only, so a channel on another port is used
+ * for this transfer and not remembered.
+ */
 export async function rememberManualChannel(input: ManualChannel): Promise<void> {
+  if ((input.port ?? TRANSFER_PORT) !== TRANSFER_PORT) return;
+  const verified = input.verdict === "verified";
   const registry = await loadRouteRegistry();
   registry.put({
     sourceChainId: input.fromChainId,
     destChainId: input.toChainId,
     channelId: input.channelId,
     counterpartyChannelId: input.counterpartyChannelId ?? "",
-    // Never claim the user's channel was verified: they told us, nobody checked.
-    verifiedAt: 0,
-    source: "manual",
+    verifiedAt: verified ? Date.now() : 0,
+    source: verified ? "discovered" : "manual",
   });
   await saveRouteRegistry(registry);
 }
@@ -291,6 +305,31 @@ function hopViews(candidate: RoutePlanCandidate): RouteHopView[] {
     });
   });
   return views;
+}
+
+/**
+ * Hop views for a path read straight off the channel directory, before any
+ * plan exists: what Send shows as the automatic route while the recipient or
+ * the amount is still missing.
+ */
+export function pathHopViews(links: readonly ChannelLink[]): RouteHopView[] {
+  return links.map((link, index) => ({
+    index,
+    chainId: link.sourceChainId,
+    chainName: chainName(link.sourceChainId),
+    ...(chainIcon(link.sourceChainId) ? { chainIconUrl: chainIcon(link.sourceChainId) } : {}),
+    counterpartyChainId: link.destChainId,
+    counterpartyChainName: chainName(link.destChainId),
+    ...(chainIcon(link.destChainId)
+      ? { counterpartyChainIconUrl: chainIcon(link.destChainId) }
+      : {}),
+    channelId: link.channelId,
+    port: link.port ?? TRANSFER_PORT,
+    kind: index === 0 ? ("transfer" as const) : ("forward" as const),
+    ...(link.source ? { channelSource: uiSource(link.source) } : {}),
+    channelVerified: link.state === "open",
+    ...(link.state ? { channelState: link.state } : {}),
+  }));
 }
 
 /**
@@ -371,6 +410,7 @@ function overridesFrom(manual: readonly ManualChannel[] | undefined): RouteHopOv
     fromChainId: entry.fromChainId,
     toChainId: entry.toChainId,
     channelId: entry.channelId,
+    ...(entry.port ? { port: entry.port } : {}),
     ...(entry.counterpartyChannelId
       ? { counterpartyChannelId: entry.counterpartyChannelId }
       : {}),

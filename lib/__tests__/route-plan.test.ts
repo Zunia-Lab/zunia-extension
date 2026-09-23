@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { explorerTxUrl } from "../../config/interchain";
-import { buildTransferMsgFromPlan, type RoutePlanView } from "../route-plan";
+import { buildTransferMsgFromPlan, pathHopViews, type RoutePlanView } from "../route-plan";
 
 /**
  * The one piece of wire shape this client writes by hand.
@@ -134,5 +134,42 @@ describe("explorerTxUrl", () => {
     // The shipped registry fork carries no explorer URLs. A link that 404s or
     // points at somebody else's chain is worse than plain selectable text.
     expect(explorerTxUrl("osmosis-1", "ABC")).toBeNull();
+  });
+});
+
+describe("pathHopViews", () => {
+  it("names each leg and calls only a checked channel open", () => {
+    const hops = pathHopViews([
+      {
+        sourceChainId: "cosmoshub-4",
+        destChainId: "osmosis-1",
+        channelId: "channel-141",
+        port: "transfer",
+        source: "verified",
+        state: "open",
+      },
+      {
+        sourceChainId: "osmosis-1",
+        destChainId: "juno-1",
+        channelId: "channel-42",
+        port: "transfer",
+        source: "seed",
+        state: "unknown",
+      },
+    ]);
+    expect(
+      hops.map((hop) => [
+        hop.index,
+        hop.kind,
+        hop.chainId,
+        hop.counterpartyChainId,
+        hop.channelId,
+        hop.channelVerified,
+      ]),
+    ).toEqual([
+      [0, "transfer", "cosmoshub-4", "osmosis-1", "channel-141", true],
+      [1, "forward", "osmosis-1", "juno-1", "channel-42", false],
+    ]);
+    expect(hops.map((hop) => hop.channelSource)).toEqual(["discovered", "seed"]);
   });
 });

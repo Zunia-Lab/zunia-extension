@@ -1,20 +1,22 @@
 /**
- * Send, and cross-send.
+ * Send, on the same chain or to another one. The old Bridge screen routes here.
  *
  * Same-chain send is a `MsgSend` on the wallet's long-standing amino path.
- * Cross-send is IBC, and it is planned by `@zunialab/interchain`: the engine
+ * Other-chain send is IBC, and it is planned by `@zunialab/interchain`: the engine
  * decides whether a wrapped token unwinds along its own trace or wraps again,
  * finds a path when no direct channel exists and composes the
  * packet-forward-middleware memo for it, and reports which channels anyone has
  * actually verified. The hand-rolled channel discovery this screen used to call
  * (`lib/ibc-channels.ts`) is gone.
  *
- * The user can override the channel on any hop. Discovery fails on chains with
- * slow or incomplete LCDs, and a user who knows the channel must still be able
- * to proceed — with the fact that nobody checked it stated, not hidden.
+ * The channel is picked automatically: the cache is searched first, and when
+ * it has no confirmed direct channel to the destination, discovery runs on its
+ * own. The user can still override any hop with a port and channel of their
+ * own, which is checked on both chains; a definite "no" blocks it, and a chain
+ * that could not be asked is stated on the review screen, not hidden.
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   Avatar,
   Button,
@@ -28,6 +30,7 @@ import {
   ScreenScaffold,
   Segmented,
   SectionLabel,
+  Spinner,
   TransferSent,
   cn,
   focusRing,
@@ -50,9 +53,11 @@ import {
   buildTransferMsgFromPlan,
   planTransfer,
   type ManualChannel,
+  type RouteHopView,
   type RoutePlanView,
   type TransferPlanResult,
 } from "../../../lib/route-plan";
+import { PACKET_TIMEOUT_MINUTES } from "../../../config/interchain";
 import {
   removePendingTransfer,
   savePendingTransfer,
@@ -76,16 +81,20 @@ import {
   ResumeTrackingBanner,
   TruncatedValue,
   toBaseUnits,
+  useAutoDiscovery,
+  useChannelReach,
   useKernelSigning,
   usePendingTransfers,
   useResolveAddresses,
   useRouteTracking,
+  type ChainReach,
 } from "./interchain-ui";
+import { SaveContactPrompt } from "../components/SaveContactPrompt";
 import { IconSend } from "./icons";
 import { signingError, useSignedSend } from "../state/SigningPassword";
 
 const PERCENTS = [25, 50, 75, 100] as const;
-type SendMode = "send" | "cross";
+export type SendMode = "send" | "cross";
 type SendPhase = "form" | "confirm" | "sent";
 
 /** The chain's own token, so cross-send has something to select before balances load. */
@@ -115,6 +124,7 @@ function ChainOverlayPicker({
   balance,
   balances,
   hidden,
+  trailing,
   onSelect,
 }: {
   label: string;
@@ -123,6 +133,8 @@ function ChainOverlayPicker({
   balance?: ChainBalance;
   balances?: Record<string, ChainBalance>;
   hidden: boolean;
+  /** Replaces the balance shown next to each option. */
+  trailing?: (option: ChainAccountView) => ReactNode;
   onSelect: (chainId: string) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -163,6 +175,7 @@ function ChainOverlayPicker({
         selectedId={chain?.chainId}
         onSelect={onSelect}
         trailing={(option) => {
+          if (trailing) return trailing(option);
           const held = balances?.[option.chainId];
           if (!held) return null;
           return (
@@ -238,6 +251,42 @@ function TokenPicker({
   );
 }
 
+/** How far a destination is, as the channel cache knows it. */
+function ReachLabel({ reach }: { reach: ChainReach | undefined }) {
+  if (!reach) {
+    return <span className="font-mono text-[9px] text-fg-dim">no known channel</span>;
+  }
+  return (
+    <span
+      className={cn(
+        "font-mono text-[9px]",
+        reach.verified ? "text-[var(--z-success)]" : "text-fg-dim",
+      )}
+    >
+      {reach.hops.length === 1 ? "direct" : `${reach.hops.length} hops`}
+      {reach.verified ? ", open" : ""}
+    </span>
+  );
+}
+
+/** "channel-141 to osmosis-1, then channel-0 to cosmoshub-4". */
+function routeSentence(hops: readonly RouteHopView[]): string {
+  return hops
+    .filter((hop) => hop.kind !== "swap" && hop.counterpartyChainId)
+    .map((hop) => `${hop.channelId || "?"} to ${hop.counterpartyChainId}`)
+    .join(", then ");
+}
+
+/** When an unrelayed packet stops being deliverable and its escrow refunds. */
+function timeoutLabel(msg: BuiltMsg | undefined): string {
+  const value = (msg?.value ?? {}) as { timeout_timestamp?: unknown };
+  const nanos = typeof value.timeout_timestamp === "string" ? value.timeout_timestamp : "";
+  if (!/^\d+$/.test(nanos)) return `${PACKET_TIMEOUT_MINUTES} min`;
+  const at = new Date(Number(BigInt(nanos) / 1_000_000n));
+  const clock = at.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  return `${PACKET_TIMEOUT_MINUTES} min, refunded if not received by ${clock}`;
+}
+
 /** IBC denoms are long hashes; the start is enough to tell two apart. */
 function shortDenom(denom: string): string {
   return denom.startsWith("ibc/") ? `${denom.slice(0, 14)}…` : denom;
@@ -247,20 +296,25 @@ export function SendScreen({
   chains,
   balances,
   initialChainId,
+  initialMode,
   contacts,
+  onContactsChanged,
   onBack,
 }: {
   chains: ChainAccountView[];
   balances: Record<string, ChainBalance>;
   initialChainId?: string;
+  /** "cross" when opened from the old Bridge entry point. */
+  initialMode?: SendMode;
   contacts: AddressBookEntry[];
+  onContactsChanged?: () => void;
   onBack: () => void;
 }) {
   const signedSend = useSignedSend();
   const toast = useToast();
   const { hidden, settings } = usePrefs();
   const liveReads = settings.liveBalances;
-  const [mode, setMode] = useState<SendMode>("send");
+  const [mode, setMode] = useState<SendMode>(initialMode ?? "send");
   const [chainId, setChainId] = useState(initialChainId ?? chains[0]?.chainId ?? "");
   const [destChainId, setDestChainId] = useState(
     () =>
@@ -286,6 +340,8 @@ export function SendScreen({
   const [reviewedPlan, setReviewedPlan] = useState<RoutePlanView | null>(null);
   /** The route being followed. Survives a popup close through storage. */
   const [tracked, setTracked] = useState<PendingTransfer | null>(null);
+  /** Who the transfer just signed went to, for the save-contact offer. */
+  const [sentTo, setSentTo] = useState("");
 
   const kernel = useKernelSigning();
   const resolveAddresses = useResolveAddresses();
@@ -295,6 +351,30 @@ export function SendScreen({
   const destChain = chains.find((c) => c.chainId === destChainId);
   const balance = chain ? balances[chain.chainId] : undefined;
   const cross = mode === "cross";
+
+  const chainIdList = useMemo(() => chains.map((c) => c.chainId), [chains]);
+  const channelReach = useChannelReach(cross ? (chain?.chainId ?? "") : "", chainIdList);
+  const knownReach = destChain ? channelReach.reach.get(destChain.chainId) : undefined;
+  const discovery = useAutoDiscovery(
+    chain?.chainId ?? "",
+    destChain?.chainId ?? "",
+    cross &&
+      liveReads &&
+      channelReach.ready &&
+      Boolean(destChain) &&
+      !(knownReach && knownReach.hops.length === 1 && knownReach.verified),
+    channelReach.reload,
+  );
+
+  // Reachable networks first, fewest hops first; the rest keep their order.
+  const destOptions = useMemo(() => {
+    const hopsTo = (id: string) => channelReach.reach.get(id)?.hops.length ?? Infinity;
+    return chains
+      .filter((c) => c.chainId !== chain?.chainId)
+      .map((c, index) => ({ c, index }))
+      .sort((a, b) => hopsTo(a.c.chainId) - hopsTo(b.c.chainId) || a.index - b.index)
+      .map(({ c }) => c);
+  }, [chains, chain?.chainId, channelReach.reach]);
 
   const tokens = chain ? tokensOn(chain, balance) : [];
   const token = tokens.find((row) => row.denom === denom) ?? tokens[0];
@@ -332,8 +412,11 @@ export function SendScreen({
           token.denom,
           amountUnits.toString(),
           recipient.trim(),
-          manual.map((m) => `${m.fromChainId}>${m.toChainId}:${m.channelId}`).join("|"),
+          manual
+            .map((m) => `${m.fromChainId}>${m.toChainId}:${m.port ?? ""}/${m.channelId}`)
+            .join("|"),
           retryToken,
+          channelReach.version,
         ].join("~")
       : "";
 
@@ -368,6 +451,62 @@ export function SendScreen({
   const result = settledPlan?.key === planKey ? settledPlan.result : null;
   const planning = Boolean(planKey) && settledPlan?.key !== planKey;
   const plan = result?.best ?? null;
+
+  function pinChannel(channel: ManualChannel) {
+    setManual((rows) => [
+      ...rows.filter(
+        (row) => row.fromChainId !== channel.fromChainId || row.toChainId !== channel.toChainId,
+      ),
+      channel,
+    ]);
+    channelReach.reload();
+  }
+
+  function unpinChannel(fromChainId: string, toChainId: string) {
+    setManual((rows) =>
+      rows.filter((row) => row.fromChainId !== fromChainId || row.toChainId !== toChainId),
+    );
+  }
+
+  // The route before there is a plan to show: the cached path when there is
+  // one, otherwise the single leg a direct transfer needs, so the channel can
+  // still be entered by hand when nothing was found.
+  const previewHops = useMemo((): RouteHopView[] => {
+    if (!cross || !chain || !destChain) return [];
+    const pinnedDirect = manual.some(
+      (row) => row.fromChainId === chain.chainId && row.toChainId === destChain.chainId,
+    );
+    if (knownReach && !pinnedDirect) return [...knownReach.hops];
+    return [
+      {
+        index: 0,
+        chainId: chain.chainId,
+        chainName: chain.entry.chainName,
+        counterpartyChainId: destChain.chainId,
+        counterpartyChainName: destChain.entry.chainName,
+        channelId: "",
+        port: "transfer",
+        kind: "transfer",
+      },
+    ];
+  }, [cross, chain, destChain, manual, knownReach]);
+
+  const routeHint = ((): string => {
+    if (!chain || !destChain) return "";
+    if (!liveReads) {
+      return "Channels are read from public endpoints. Turn on live balances in Settings → Preferences.";
+    }
+    if (!channelReach.ready) return "Reading the channel cache…";
+    if (discovery.searching) {
+      return `Looking for a channel from ${chain.entry.chainName} to ${destChain.entry.chainName}…`;
+    }
+    if (!knownReach) {
+      return discovery.error
+        ? `${discovery.error} Use Modify to enter a channel you know.`
+        : `No open channel found from ${chain.entry.chainName} to ${destChain.entry.chainName}. Use Modify to enter one you know.`;
+    }
+    return "Enter the recipient and an amount, and Zunia plans the transfer on this route.";
+  })();
 
   /* ---------------------------------------------------------------- *
    * Same-chain fee (amino path, unchanged)
@@ -412,7 +551,7 @@ export function SendScreen({
   const blockedReason = useMemo((): string | null => {
     if (!chain) return "Enable at least one network first.";
     if (cross && !liveReads) {
-      return "Cross-send plans the route from public endpoints. Turn on live balances in Settings → Preferences.";
+      return "Sending to another chain plans the route from public endpoints. Turn on live balances in Settings → Preferences.";
     }
     if (cross && kernel.reason) return kernel.reason;
     if (cross && !destChain) return "Pick a destination network.";
@@ -427,7 +566,7 @@ export function SendScreen({
     if (!plan) {
       return (
         result?.warnings[0] ??
-        `No channel path from ${chain.entry.chainName} to ${destChain?.entry.chainName ?? "there"}. Add a channel by hand below.`
+        `No channel path from ${chain.entry.chainName} to ${destChain?.entry.chainName ?? "there"}. Use Modify on the route to enter one.`
       );
     }
     return plan.blockedReason;
@@ -536,6 +675,7 @@ export function SendScreen({
           setTracked(record);
         }
         setTxHash(broadcastResult.txhash);
+        setSentTo(recipient.trim());
         toast("Transfer sent", { meta: truncateAddress(broadcastResult.txhash, 6, 4) });
       } else {
         const broadcastResult = await signedSend<{ txhash: string }>(
@@ -556,6 +696,7 @@ export function SendScreen({
           },
         );
         setTxHash(broadcastResult.txhash);
+        setSentTo(recipient.trim());
         toast("Transaction sent", { meta: truncateAddress(broadcastResult.txhash, 6, 4) });
       }
       setPhase("sent");
@@ -632,23 +773,39 @@ export function SendScreen({
               The transfer proceeds on chain whether or not Zunia is open. Zunia
               remembers this route for a day, so you can reopen this view from Send.
             </Callout>
+            <div className="mt-3">
+              <SaveContactPrompt
+                address={sentTo}
+                chainId={tracked.plan.destChainId}
+                contacts={contacts}
+                onSaved={() => onContactsChanged?.()}
+              />
+            </div>
           </div>
         </ScreenScaffold>
       );
     }
     return (
       <ScreenScaffold title="Transfer sent" onBack={onBack}>
-        <TransferSent
-          hash={txHash}
-          steps={[
-            { label: "Signed", state: "done" },
-            { label: "Broadcast", state: "done" },
-            { label: "Included", state: "current" },
-          ]}
-          step={2}
-          total={3}
-          onDone={onBack}
-        />
+        <div className="flex flex-col gap-3">
+          <TransferSent
+            hash={txHash}
+            steps={[
+              { label: "Signed", state: "done" },
+              { label: "Broadcast", state: "done" },
+              { label: "Included", state: "current" },
+            ]}
+            step={2}
+            total={3}
+            onDone={onBack}
+          />
+          <SaveContactPrompt
+            address={sentTo}
+            chainId={chain.chainId}
+            contacts={contacts}
+            onSaved={() => onContactsChanged?.()}
+          />
+        </div>
       </ScreenScaffold>
     );
   }
@@ -657,6 +814,23 @@ export function SendScreen({
     const memoInfo = preview?.packetMemo ?? null;
     const feeCoin = cross ? preview?.fee.amount[0] : localFee?.amount[0];
     const gas = cross ? preview?.fee.gas_limit : localFee?.gas;
+    const signedPlan = reviewedPlan ?? plan;
+    const forwarders = signedPlan?.plan.requiresPfm
+      ? signedPlan.hops.filter((hop) => hop.kind === "forward").map((hop) => hop.chainName)
+      : [];
+    const eta = signedPlan?.plan.estimatedDurationSeconds ?? null;
+    const unconfirmedPins = cross
+      ? manual.filter(
+          (pin) =>
+            pin.verdict !== "verified" &&
+            signedPlan?.hops.some(
+              (hop) =>
+                hop.chainId === pin.fromChainId &&
+                hop.counterpartyChainId === pin.toChainId &&
+                hop.channelId === pin.channelId,
+            ),
+        )
+      : [];
     return (
       <ScreenScaffold
         title="Confirm transfer"
@@ -699,13 +873,40 @@ export function SendScreen({
               value={
                 <TruncatedValue>
                   {cross
-                    ? `IBC · ${plan?.hops.map((hop) => hop.channelId).filter(Boolean).join(" → ") || "?"}`
+                    ? routeSentence(signedPlan?.hops ?? []) || "?"
                     : "Direct · MsgSend"}
                 </TruncatedValue>
               }
             />
+            {forwarders.length > 0 ? (
+              <KeyValueRow
+                label="Forwarded by"
+                value={<TruncatedValue>{forwarders.join(", ")}</TruncatedValue>}
+              />
+            ) : null}
+            {cross ? (
+              <KeyValueRow
+                label="Timeout"
+                value={<TruncatedValue>{timeoutLabel(pendingMsgs?.[0])}</TruncatedValue>}
+              />
+            ) : null}
+            {cross && eta ? (
+              <KeyValueRow label="Arrives in" value={`about ${Math.max(1, Math.round(eta / 60))} min`} />
+            ) : null}
             {!cross && memo ? <KeyValueRow label="Memo" value={memo} /> : null}
           </section>
+
+          {unconfirmedPins.map((pin) => (
+            <Callout
+              key={`${pin.fromChainId}>${pin.toChainId}`}
+              tone="warning"
+              title={`${pin.channelId} was entered by hand`}
+            >
+              Nothing confirmed that it leads from {pin.fromChainId} to {pin.toChainId}. If it
+              goes somewhere else, the funds can land on another chain or come back as a
+              refund after the timeout.
+            </Callout>
+          ))}
 
           {cross && memoInfo ? (
             <section className="rounded-[13px] border border-[var(--z-line)] px-3 py-3">
@@ -796,6 +997,7 @@ export function SendScreen({
           onResume={(row) => {
             setMode("cross");
             setTracked(row);
+            setSentTo("");
             setTxHash(row.txHash);
             setError(null);
             setPhase("sent");
@@ -814,8 +1016,8 @@ export function SendScreen({
             setManual([]);
           }}
           options={[
-            { value: "send", label: "Send" },
-            { value: "cross", label: "Cross-send" },
+            { value: "send", label: "Same chain" },
+            { value: "cross", label: "Other chain" },
           ]}
         />
 
@@ -856,8 +1058,9 @@ export function SendScreen({
           <ChainOverlayPicker
             label="To network"
             chain={destChain}
-            chains={chains.filter((c) => c.chainId !== chain.chainId)}
+            chains={destOptions}
             hidden={hidden}
+            trailing={(option) => <ReachLabel reach={channelReach.reach.get(option.chainId)} />}
             onSelect={(id) => {
               setDestChainId(id);
               setRecipient("");
@@ -963,98 +1166,49 @@ export function SendScreen({
         </section>
 
         {cross && destChain ? (
-          <RoutePreview
-            compact
-            title="Route"
-            hops={plan?.hops ?? []}
-            estimatedDurationSeconds={plan?.plan.estimatedDurationSeconds ?? null}
-            warnings={plan?.warnings ?? result?.warnings ?? []}
-            requiresPfm={plan?.plan.requiresPfm ?? false}
-            gasChainName={chain.entry.chainName}
-            loading={planning && !plan}
-            error={result?.error ?? null}
-            onRetry={() => setRetryToken((n) => n + 1)}
-            emptyTitle={liveReads ? "No route yet" : "Route planning is off"}
-            emptyDescription={
-              liveReads
-                ? "Enter a valid recipient and an amount, and Zunia will plan the hops."
-                : "Turn on live balances in Settings → Preferences so Zunia can read channels."
-            }
-            footer={
-              plan ? (
-                <HopChannelList
-                  hops={plan.hops}
-                  manual={manual}
-                  onPick={(channel) =>
-                    setManual((rows) => [
-                      ...rows.filter(
-                        (row) =>
-                          row.fromChainId !== channel.fromChainId ||
-                          row.toChainId !== channel.toChainId,
-                      ),
-                      channel,
-                    ])
-                  }
-                  onClear={(fromChainId, toChainId) =>
-                    setManual((rows) =>
-                      rows.filter(
-                        (row) =>
-                          row.fromChainId !== fromChainId || row.toChainId !== toChainId,
-                      ),
-                    )
-                  }
-                />
-              ) : null
-            }
-          />
-        ) : null}
-
-        {/*
-          RoutePreview drops its footer in the empty state, and that is exactly
-          when the channel editor is needed: discovery failed and there is no
-          route to hang it off. The one leg a cross-send needs is known anyway.
-        */}
-        {cross && destChain && !plan ? (
-          <section>
-            <SectionLabel>Channel</SectionLabel>
-            <p className="mb-1.5 mt-1 text-[10.5px] leading-snug text-fg-muted">
-              Nothing has confirmed a path yet. Pick or type the channel and Zunia will
-              plan again.
-            </p>
-            <HopChannelList
-              hops={[
-                {
-                  index: 0,
-                  chainId: chain.chainId,
-                  chainName: chain.entry.chainName,
-                  counterpartyChainId: destChain.chainId,
-                  counterpartyChainName: destChain.entry.chainName,
-                  channelId: "",
-                  port: "transfer",
-                  kind: "transfer" as const,
-                },
-              ]}
-              manual={manual}
-              onPick={(channel) =>
-                setManual((rows) => [
-                  ...rows.filter(
-                    (row) =>
-                      row.fromChainId !== channel.fromChainId ||
-                      row.toChainId !== channel.toChainId,
-                  ),
-                  channel,
-                ])
-              }
-              onClear={(fromChainId, toChainId) =>
-                setManual((rows) =>
-                  rows.filter(
-                    (row) =>
-                      row.fromChainId !== fromChainId || row.toChainId !== toChainId,
-                  ),
-                )
+          plan || planning || result?.error ? (
+            <RoutePreview
+              compact
+              title="Route"
+              hops={plan?.hops ?? []}
+              estimatedDurationSeconds={plan?.plan.estimatedDurationSeconds ?? null}
+              warnings={plan?.warnings ?? result?.warnings ?? []}
+              requiresPfm={plan?.plan.requiresPfm ?? false}
+              gasChainName={chain.entry.chainName}
+              loading={planning && !plan}
+              error={result?.error ?? null}
+              onRetry={() => setRetryToken((n) => n + 1)}
+              footer={
+                plan ? (
+                  <HopChannelList
+                    hops={plan.hops}
+                    manual={manual}
+                    onPick={pinChannel}
+                    onClear={unpinChannel}
+                  />
+                ) : null
               }
             />
-          </section>
+          ) : (
+            <section className="flex flex-col gap-1.5">
+              <SectionLabel>Route</SectionLabel>
+              {previewHops.length > 0 ? (
+                <HopChannelList
+                  hops={previewHops}
+                  manual={manual}
+                  onPick={pinChannel}
+                  onClear={unpinChannel}
+                />
+              ) : null}
+              <p
+                className="flex items-center gap-1.5 text-[10.5px] leading-snug text-fg-muted"
+                aria-live="polite"
+              >
+                {discovery.searching ? <Spinner className="size-3 shrink-0" /> : null}
+                {routeHint}
+              </p>
+            </section>
+          )
         ) : null}
 
         {!cross ? (
