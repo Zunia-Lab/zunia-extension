@@ -30,7 +30,7 @@ export interface ChainInfo {
   rest?: string;
 }
 
-function toChainInfo(entry: CatalogEntry): ChainInfo {
+export function toChainInfo(entry: CatalogEntry): ChainInfo {
   return {
     chainId: entry.chainId,
     chainName: entry.chainName,

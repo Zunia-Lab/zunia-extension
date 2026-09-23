@@ -1,7 +1,39 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Button, PasswordInput, ScreenScaffold, cn, focusRing } from "@zunialab/ui";
 import { sendToBackground } from "../../../lib/popup-client";
+import type { ThrottleState } from "../../../lib/password-throttle";
 import { IconLock } from "./icons";
+
+/** Seconds until another attempt is allowed, ticking down while the screen is open. */
+function useRetryCountdown(): [number, () => void] {
+  const [retryAt, setRetryAt] = useState(0);
+  const [now, setNow] = useState(() => Date.now());
+
+  const reload = useCallback(() => {
+    void sendToBackground<ThrottleState>("GET_PASSWORD_THROTTLE")
+      .then((state) => {
+        setRetryAt(state.retryAt);
+        setNow(Date.now());
+      })
+      .catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    reload();
+  }, [reload]);
+
+  useEffect(() => {
+    if (retryAt <= Date.now()) return;
+    const timer = window.setInterval(() => {
+      const t = Date.now();
+      setNow(t);
+      if (t >= retryAt) window.clearInterval(timer);
+    }, 500);
+    return () => window.clearInterval(timer);
+  }, [retryAt]);
+
+  return [Math.max(0, Math.ceil((retryAt - now) / 1000)), reload];
+}
 
 export function UnlockScreen({
   autoLockMs,
@@ -15,6 +47,7 @@ export function UnlockScreen({
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [waitSeconds, reloadThrottle] = useRetryCountdown();
   const passwordRef = useRef<HTMLInputElement>(null);
 
   // Focus is moved deliberately, not with autoFocus. This is the one surface
@@ -27,7 +60,10 @@ export function UnlockScreen({
     passwordRef.current?.focus();
   }, []);
 
+  const throttled = waitSeconds > 0;
+
   async function handleUnlock() {
+    if (throttled) return;
     setError(null);
     setBusy(true);
     try {
@@ -35,6 +71,7 @@ export function UnlockScreen({
       onUnlocked();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+      reloadThrottle();
     } finally {
       setBusy(false);
     }
@@ -50,10 +87,10 @@ export function UnlockScreen({
             className="w-full"
             size="lg"
             loading={busy}
-            disabled={!password}
+            disabled={!password || throttled}
             onClick={() => void handleUnlock()}
           >
-            Unlock
+            {throttled ? `Try again in ${waitSeconds} s` : "Unlock"}
           </Button>
           <p className="flex items-center gap-1.5 font-mono text-[9.5px] uppercase tracking-[0.12em] text-fg-dim">
             <IconLock width={16} height={16} />
@@ -88,11 +125,13 @@ export function UnlockScreen({
               if (error) setError(null);
             }}
             onKeyDown={(e) => {
-              if (e.key === "Enter" && password) void handleUnlock();
+              if (e.key === "Enter" && password && !throttled) void handleUnlock();
             }}
           />
           {error ? (
-            <p className="text-[11.5px] text-[var(--z-danger)]">{error}</p>
+            <p role="alert" className="text-[11.5px] text-[var(--z-danger-fg)]">
+              {error}
+            </p>
           ) : null}
         </div>
 

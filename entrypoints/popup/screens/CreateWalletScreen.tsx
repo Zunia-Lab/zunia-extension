@@ -15,6 +15,10 @@ import {
 } from "@zunialab/ui";
 import { PINNED_CHAIN_IDS } from "../../../lib/chain-catalog";
 import { sendToBackground } from "../../../lib/popup-client";
+import {
+  SENSITIVE_CLIPBOARD_NOTE,
+  useSensitiveClipboard,
+} from "../hooks/useSensitiveClipboard";
 import { NetworkSelectStep } from "./NetworkSelectStep";
 import { OnboardingStep, StepActions } from "./onboarding-ui";
 import { IconCheck, IconCopy, IconEye, IconEyeOff } from "./icons";
@@ -93,6 +97,7 @@ export function CreateWalletScreen({
   const [phrase, setPhrase] = useState<PhraseState>({ status: "generating" });
   const [revealed, setRevealed] = useState(false);
   const [copied, setCopied] = useState(false);
+  const copySensitive = useSensitiveClipboard();
   const [verifyIdx, setVerifyIdx] = useState<number[]>([]);
   const [answers, setAnswers] = useState<Record<number, string>>({});
   const [cursor, setCursor] = useState(0);
@@ -171,7 +176,7 @@ export function CreateWalletScreen({
     if (!mnemonic) return;
     setError(null);
     try {
-      await navigator.clipboard.writeText(mnemonic);
+      await copySensitive(mnemonic);
       setCopied(true);
     } catch {
       setError("Could not copy to clipboard");
@@ -360,7 +365,16 @@ export function CreateWalletScreen({
                 compact
                 className="relative"
               />
-            ) : (
+            ) : null}
+            {mnemonic && copied ? (
+              <p
+                role="status"
+                className="relative text-[11px] leading-[1.45] text-fg-dim"
+              >
+                {SENSITIVE_CLIPBOARD_NOTE}
+              </p>
+            ) : null}
+            {mnemonic ? null : (
               <p className="relative text-[11.5px] text-fg-dim">
                 {generating
                   ? "Generating…"

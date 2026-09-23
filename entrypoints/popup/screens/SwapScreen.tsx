@@ -78,6 +78,7 @@ import {
   useSwapVenue,
 } from "./interchain-ui";
 import { IconSwap } from "./icons";
+import { useSignedSend } from "../state/SigningPassword";
 
 const PERCENTS = [25, 50, 75, 100] as const;
 
@@ -124,6 +125,7 @@ export function SwapScreen({
   balances: Record<string, ChainBalance>;
   initialChainId?: string;
 }) {
+  const signedSend = useSignedSend();
   const { hidden, settings } = usePrefs();
   const liveReads = settings.liveBalances;
 
@@ -391,7 +393,7 @@ export function SwapScreen({
     setBusy(true);
     setError(null);
     try {
-      const broadcastResult = await sendToBackground<{ txhash: string }>(
+      const broadcastResult = await signedSend<{ txhash: string }>(
         "SIGN_AND_BROADCAST_TX",
         {
           chainId: pending.chainId,

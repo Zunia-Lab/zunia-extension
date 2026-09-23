@@ -190,6 +190,8 @@ interface ActiveOverlay {
   iframe: HTMLIFrameElement;
   /** Last height the prompt reported, kept so the clamp can be re-applied. */
   reportedHeight: number;
+  /** Watches for the page moving the host or rewriting its style. */
+  guard: MutationObserver;
 }
 
 export interface ConnectOverlayController {
@@ -234,7 +236,8 @@ export function createConnectOverlay(): ConnectOverlayController {
 
   function teardown(): void {
     if (!active) return;
-    const { host } = active;
+    const { host, guard } = active;
+    guard.disconnect();
     active = null;
     window.clearTimeout(toastTimer);
     host.remove();
@@ -279,7 +282,8 @@ export function createConnectOverlay(): ConnectOverlayController {
 
   function finish(outcome: ConnectOverlayOutcome): void {
     if (!active) return;
-    const { host, root, frame } = active;
+    const { host, root, frame, guard } = active;
+    guard.disconnect();
     // Drop the prompt first: the frame going away is what tells the background
     // the user can no longer answer.
     frame.remove();
@@ -389,7 +393,29 @@ export function createConnectOverlay(): ConnectOverlayController {
       frame.append(iframe);
       root.append(scrim, frame);
       shadow.append(tokenStyle, overlayStyle, root);
-      (document.body ?? document.documentElement).append(host);
+      const parent = document.body ?? document.documentElement;
+      parent.append(host);
+
+      /*
+       * The page cannot reach into the shadow root, but it can still move the
+       * host under an invisible ancestor or rewrite its inline style to fade it
+       * out while a decoy sits underneath. Any such change tears the prompt
+       * down, which the background reads as a rejection.
+       */
+      const lockedStyle = host.getAttribute("style");
+      const guard = new MutationObserver(() => {
+        if (active?.host !== host) return;
+        if (
+          !host.isConnected ||
+          host.parentNode !== parent ||
+          host.getAttribute("style") !== lockedStyle ||
+          host.attributes.length !== 1
+        ) {
+          teardown();
+        }
+      });
+      guard.observe(host, { attributes: true });
+      guard.observe(parent, { childList: true });
 
       active = {
         approvalId,
@@ -398,6 +424,7 @@ export function createConnectOverlay(): ConnectOverlayController {
         frame,
         iframe,
         reportedHeight: CONNECT_FRAME_MIN_HEIGHT,
+        guard,
       };
 
       const loaded = await new Promise<boolean>((resolve) => {

@@ -2,7 +2,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { connectPortName } from "../../lib/connect-overlay";
 import ConnectApp from "./App";
-import { APPROVAL_ID } from "./params";
+import { APPROVAL_ID, embeddedByNamedParent } from "./params";
 import "./style.css";
 
 /**
@@ -16,12 +16,13 @@ import "./style.css";
  * It lives outside React on purpose: a StrictMode remount would otherwise
  * disconnect the port and cancel a perfectly live request.
  */
-if (APPROVAL_ID) {
-  browser.runtime.connect({ name: connectPortName(APPROVAL_ID) });
-}
+const genuine = Boolean(APPROVAL_ID) && embeddedByNamedParent();
 
-createRoot(document.getElementById("root")!).render(
-  <StrictMode>
-    <ConnectApp />
-  </StrictMode>,
-);
+if (genuine) {
+  browser.runtime.connect({ name: connectPortName(APPROVAL_ID) });
+  createRoot(document.getElementById("root")!).render(
+    <StrictMode>
+      <ConnectApp />
+    </StrictMode>,
+  );
+}

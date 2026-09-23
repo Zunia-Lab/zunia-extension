@@ -79,6 +79,7 @@ import {
   useRouteTracking,
 } from "./interchain-ui";
 import { IconChevronDown, IconSend } from "./icons";
+import { useSignedSend } from "../state/SigningPassword";
 
 const PERCENTS = [25, 50, 75, 100] as const;
 type SendMode = "send" | "cross";
@@ -270,6 +271,7 @@ export function SendScreen({
   contacts: AddressBookEntry[];
   onBack: () => void;
 }) {
+  const signedSend = useSignedSend();
   const { hidden, settings } = usePrefs();
   const liveReads = settings.liveBalances;
   const [mode, setMode] = useState<SendMode>("send");
@@ -519,7 +521,7 @@ export function SendScreen({
     try {
       if (cross) {
         if (!pendingMsgs || !preview) return;
-        const broadcastResult = await sendToBackground<{ txhash: string }>(
+        const broadcastResult = await signedSend<{ txhash: string }>(
           "SIGN_AND_BROADCAST_TX",
           {
             chainId: chain.chainId,
@@ -549,7 +551,7 @@ export function SendScreen({
         }
         setTxHash(broadcastResult.txhash);
       } else {
-        const broadcastResult = await sendToBackground<{ txhash: string }>(
+        const broadcastResult = await signedSend<{ txhash: string }>(
           "SIGN_AND_BROADCAST",
           {
             chainId: chain.chainId,

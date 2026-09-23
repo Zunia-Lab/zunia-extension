@@ -31,7 +31,6 @@ import {
   msgWithdrawReward,
 } from "../../../lib/amino-tx";
 import { NO_VALUE, formatUnits } from "../../../lib/format";
-import { sendToBackground } from "../../../lib/popup-client";
 import type { ChainAccountView } from "../hooks/useChainAccounts";
 import {
   useDelegations,
@@ -40,6 +39,7 @@ import {
 } from "../hooks/useChainQuery";
 import { usePrefs } from "../state/Prefs";
 import { IconChevronDown, IconStake } from "./icons";
+import { useSignedSend } from "../state/SigningPassword";
 
 function pct(value: number, digits = 1): string {
   return `${(value * 100).toFixed(digits)}%`;
@@ -228,6 +228,7 @@ export function EarnScreen({
   onOpenChain: (chainId: string) => void;
   onOpenValidator?: (validator: ValidatorInfo) => void;
 }) {
+  const signedSend = useSignedSend();
   const { settings, hidden } = usePrefs();
   const live = settings.liveBalances;
   const chainIds = useMemo(() => chains.map((c) => c.chainId), [chains]);
@@ -310,7 +311,7 @@ export function EarnScreen({
     setBusy(true);
     setError(null);
     try {
-      const result = await sendToBackground<{ txhash: string }>(
+      const result = await signedSend<{ txhash: string }>(
         "SIGN_AND_BROADCAST",
         {
           chainId: chain.chainId,

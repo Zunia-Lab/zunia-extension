@@ -16,6 +16,40 @@ type RpcResponse = {
 
 type EventHandler = (data: unknown) => void;
 
+type DirectSignDocInput = {
+  bodyBytes?: unknown;
+  authInfoBytes?: unknown;
+  chainId?: unknown;
+  accountNumber?: unknown;
+};
+
+/** Typed arrays do not survive runtime messaging as arrays; plain arrays do. */
+function wireBytes(value: unknown): unknown {
+  return value instanceof Uint8Array ? Array.from(value) : value;
+}
+
+/**
+ * The extension hop JSON-serializes every message, which turns a Uint8Array into
+ * an index-keyed object and throws on a bigint. Send plain arrays and a decimal
+ * string instead; the background re-encodes the exact SignDoc bytes from them.
+ */
+function wireDirectSignDoc(signDoc: unknown): unknown {
+  if (!signDoc || typeof signDoc !== "object") return signDoc;
+  const doc = signDoc as DirectSignDocInput;
+  const accountNumber = doc.accountNumber;
+  return {
+    bodyBytes: wireBytes(doc.bodyBytes),
+    authInfoBytes: wireBytes(doc.authInfoBytes),
+    chainId: doc.chainId,
+    accountNumber:
+      accountNumber === undefined || accountNumber === null
+        ? "0"
+        : typeof accountNumber === "object"
+          ? String((accountNumber as { toString(): string }).toString())
+          : String(accountNumber),
+  };
+}
+
 /**
  * MAIN-world provider. Talks only over a nonce-scoped MessageChannel
  * established with the content script (origin checked on both sides).
@@ -36,6 +70,7 @@ export default defineUnlistedScript(() => {
     { resolve: (v: unknown) => void; reject: (e: Error) => void }
   >();
   const listeners = new Map<string, Set<EventHandler>>();
+  let keplrAliasOn = false;
 
   function emit(event: string, data: unknown): void {
     const set = listeners.get(event);
@@ -47,6 +82,12 @@ export default defineUnlistedScript(() => {
         console.error("[zunia] event handler error", err);
       }
     }
+  }
+
+  /** dApps written for Keplr listen on window, not on the provider object. */
+  function dispatchWindowEvent(name: string): void {
+    window.dispatchEvent(new Event(`zunia_${name}`));
+    if (keplrAliasOn) window.dispatchEvent(new Event(`keplr_${name}`));
   }
 
   const portReady = new Promise<void>((resolve, reject) => {
@@ -68,8 +109,19 @@ export default defineUnlistedScript(() => {
       port.onmessage = (portEvent: MessageEvent<RpcResponse & { type?: string; event?: string; data?: unknown }>) => {
         const msg = portEvent.data;
         if (msg?.type === PAGE_CHANNEL.event && msg.event) {
-          if (msg.event === "accountsChanged") emit("keplr_keystorechange", msg.data);
-          if (msg.event === "accountsChanged") emit("accountChanged", msg.data);
+          if (msg.event === "accountsChanged") {
+            emit("keplr_keystorechange", msg.data);
+            emit("accountChanged", msg.data);
+            dispatchWindowEvent("keystorechange");
+          }
+          if (msg.event === "disconnect") {
+            emit("disconnect", msg.data);
+            dispatchWindowEvent("disconnect");
+          }
+          if (msg.event === "locked") {
+            emit("locked", msg.data);
+            window.dispatchEvent(new Event("zunia_locked"));
+          }
           if (msg.event === "chainChanged") emit("chainChanged", msg.data);
           if (msg.event === "settingsChanged") {
             applyKeplrAlias(
@@ -135,8 +187,25 @@ export default defineUnlistedScript(() => {
       signAmino: (signerAddress: string, signDoc: unknown) =>
         request("signAmino", [chainId, signerAddress, signDoc]),
       signDirect: (signerAddress: string, signDoc: unknown) =>
-        request("signDirect", [chainId, signerAddress, signDoc]),
+        signDirect(chainId, signerAddress, signDoc),
     };
+  }
+
+  /** No signDirect: CosmJS picks direct signing whenever a signer offers it. */
+  function getOfflineSignerOnlyAmino(chainId: string): ZuniaOfflineSigner {
+    const { getAccounts, signAmino } = getOfflineSigner(chainId);
+    return { getAccounts, signAmino };
+  }
+
+  async function signDirect(chainId: string, signer: string, signDoc: unknown) {
+    const response = (await request("signDirect", [
+      chainId,
+      signer,
+      wireDirectSignDoc(signDoc),
+    ])) as { signature: unknown };
+    // The background signed exactly the bytes of this document, so hand the
+    // caller's own object back rather than the JSON copy.
+    return { signed: signDoc, signature: response.signature };
   }
 
   const provider: ZuniaProvider & {
@@ -168,16 +237,19 @@ export default defineUnlistedScript(() => {
     },
     getAccounts: async (chainId?: string) => request("getAccounts", [chainId]),
     getOfflineSigner,
-    getOfflineSignerOnlyAmino: getOfflineSigner,
+    getOfflineSignerOnlyAmino,
     getOfflineSignerAuto: async (chainId) => getOfflineSigner(chainId),
     signAmino: async (chainId, signer, signDoc) =>
       request("signAmino", [chainId, signer, signDoc]),
     signDirect: async (chainId, signer, signDoc) =>
-      request("signDirect", [chainId, signer, signDoc]),
+      signDirect(chainId, signer, signDoc),
     signArbitrary: async (chainId, signer, data) =>
-      request("signArbitrary", [chainId, signer, data]),
+      request("signArbitrary", [chainId, signer, wireBytes(data)]),
     verifyArbitrary: async (...args: unknown[]) =>
-      (await request("verifyArbitrary", args)) as boolean,
+      (await request(
+        "verifyArbitrary",
+        args.map((arg, i) => (i === 2 ? wireBytes(arg) : arg)),
+      )) as boolean,
     disable: async (chainIds?) => {
       await request("disable", chainIds === undefined ? [] : [chainIds]);
     },
@@ -195,6 +267,7 @@ export default defineUnlistedScript(() => {
   };
 
   function applyKeplrAlias(enabled: boolean): void {
+    keplrAliasOn = enabled;
     if (enabled) {
       window.keplr = provider;
     } else if (window.keplr === provider) {

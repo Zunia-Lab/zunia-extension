@@ -3,6 +3,7 @@ import type { DecodedDirectTx, DecodedTxMessage } from "./kernel";
 import { loadKernel, bytesToHex, hexToBytes } from "./kernel";
 import { SECURITY_CONFIG } from "../config/security";
 import { cosmWasmActionName, describeCw721Action } from "./nft";
+import { assertSameChain } from "./provider-guards";
 import { getSettings } from "./settings";
 
 export interface SignSafetySummary {
@@ -125,14 +126,10 @@ export async function buildSignSafety(input: {
   const warnings: string[] = [];
   let requiresBlindSigning = false;
 
-  if (
-    input.decoded.chainId &&
-    input.decoded.chainId !== "unknown" &&
-    input.decoded.chainId !== input.expectedChainId
-  ) {
-    warnings.push(
-      `Chain ID mismatch: request is for ${input.expectedChainId}, document says ${input.decoded.chainId}`,
-    );
+  // "unknown" is what a kernel that cannot read the document reports; the raw
+  // document's own chain id has already been checked by the caller.
+  if (input.decoded.chainId && input.decoded.chainId !== "unknown") {
+    assertSameChain(input.expectedChainId, input.decoded.chainId);
   }
 
   const messages = input.decoded.messages.map((m) => {
@@ -181,56 +178,24 @@ export async function buildSignSafety(input: {
   };
 }
 
-export async function decodeSignDoc(
+/**
+ * Summarize the exact `SignDoc` bytes that will be signed. The kernel decodes
+ * the same bytes the signature covers, so the prompt cannot describe one
+ * transaction while the key signs another.
+ */
+export async function decodeDirectSignBytes(
+  expectedChainId: string,
+  signBytes: Uint8Array,
+): Promise<SignSafetySummary> {
+  const kernel = await loadKernel();
+  const decoded = kernel.decodeDirectTx(bytesToHex(signBytes));
+  return buildSignSafety({ expectedChainId, decoded });
+}
+
+export async function decodeAminoSignDoc(
   expectedChainId: string,
   signDoc: unknown,
 ): Promise<SignSafetySummary> {
-  const kernel = await loadKernel();
-
-  if (
-    signDoc &&
-    typeof signDoc === "object" &&
-    "bodyBytes" in (signDoc as object)
-  ) {
-    // Prefer embedding a JSON mock when body is not real protobuf yet.
-    const doc = signDoc as {
-      chainId?: string;
-      bodyBytes?: Uint8Array | string;
-      authInfoBytes?: Uint8Array | string;
-    };
-    let hex: string;
-    if (typeof doc.bodyBytes === "string") {
-      hex = doc.bodyBytes;
-    } else if (doc.bodyBytes instanceof Uint8Array) {
-      // Try UTF-8 JSON payload used by the mock kernel; otherwise pass raw hex.
-      try {
-        const asText = new TextDecoder().decode(doc.bodyBytes);
-        JSON.parse(asText);
-        hex = bytesToHex(doc.bodyBytes);
-      } catch {
-        hex = bytesToHex(doc.bodyBytes);
-      }
-    } else {
-      hex = bytesToHex(
-        new TextEncoder().encode(
-          JSON.stringify({
-            chainId: doc.chainId ?? expectedChainId,
-            messages: [
-              {
-                typeUrl: "/unknown.Msg",
-                summary: "Sign direct (undecoded body)",
-                unknown: true,
-              },
-            ],
-          }),
-        ),
-      );
-    }
-    const decoded = kernel.decodeDirectTx(hex);
-    return buildSignSafety({ expectedChainId, decoded });
-  }
-
-  // Amino sign doc
   const amino = signDoc as {
     chain_id?: string;
     memo?: string;
@@ -254,10 +219,6 @@ export async function decodeSignDoc(
         : undefined,
     },
   });
-}
-
-export function encodeMockSignDoc(payload: DecodedDirectTx): string {
-  return bytesToHex(new TextEncoder().encode(JSON.stringify(payload)));
 }
 
 export { hexToBytes };

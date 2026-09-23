@@ -15,8 +15,8 @@ export interface ExtensionSettings {
   blindSigning: boolean;
   autoLockMs: number;
   /**
-   * Re-enter the password for every signature — OFF by default.
-   * Persisted but not enforced yet; see INERT_SETTINGS.
+   * Re-enter the password for every signature, OFF by default. Enforced in the
+   * worker: dApp signatures and wallet transactions are refused without it.
    */
   requirePasswordOnSign: boolean;
   theme: ThemePreference;
@@ -46,9 +46,9 @@ export interface ExtensionSettings {
 }
 
 /**
- * Settings that are stored but that no code path reads: the signing path never
- * checks requirePasswordOnSign, nothing reports diagnostics, and there is no
- * browser.notifications call anywhere in the extension.
+ * Settings that are stored but that no code path reads: nothing reports
+ * diagnostics, and there is no browser.notifications call anywhere in the
+ * extension.
  *
  * The fields stay so a preference set today survives until the behaviour ships,
  * but a screen rendering one of these MUST disable the control and show the
@@ -56,10 +56,8 @@ export interface ExtensionSettings {
  * the same change that makes its setting real.
  */
 export const INERT_SETTINGS: Partial<Record<keyof ExtensionSettings, string>> = {
-  requirePasswordOnSign:
-    "Not active yet — this turns on when transaction signing ships.",
-  diagnostics: "Not active yet — nothing is collected or sent.",
-  browserAlerts: "Not active yet — the extension sends no notifications.",
+  diagnostics: "Not active yet. Nothing is collected or sent.",
+  browserAlerts: "Not active yet. The extension sends no notifications.",
 };
 
 export const DEFAULT_SETTINGS: ExtensionSettings = {

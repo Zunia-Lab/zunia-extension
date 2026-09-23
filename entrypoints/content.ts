@@ -89,6 +89,31 @@ export default defineContentScript({
         pageOrigin,
         [channel.port2],
       );
+
+      // The alias setting only arrives as a change event otherwise, so a page
+      // loaded after the user turned it on would never see window.keplr.
+      void getSettings()
+        .then((settings) => {
+          port?.postMessage({
+            type: PAGE_CHANNEL.event,
+            event: "settingsChanged",
+            data: { exposeKeplrAlias: Boolean(settings.exposeKeplrAlias) },
+          });
+        })
+        .catch(() => undefined);
+    }
+
+    /**
+     * The in-page prompt is only safe where the browser can report whether the
+     * frame is actually visible and unobstructed (IntersectionObserver v2).
+     * Without that, a page could fade the prompt out or lay a decoy over it and
+     * steer a click, so the request goes to the popup instead.
+     */
+    function canVerifyFrameVisibility(): boolean {
+      return (
+        typeof IntersectionObserverEntry !== "undefined" &&
+        "isVisible" in IntersectionObserverEntry.prototype
+      );
     }
 
     async function resolvedTheme(): Promise<"dark" | "light"> {
@@ -128,16 +153,37 @@ export default defineContentScript({
       if (window.top !== window.self) {
         return { ok: true, data: { shown: false } };
       }
-      if (overlay.isActive()) {
+      if (overlay.isActive() || !canVerifyFrameVisibility()) {
         return { ok: true, data: { shown: false } };
       }
       const shown = await overlay.show(approvalId, await resolvedTheme());
       return { ok: true, data: { shown } };
     }
 
+    /** Relay a wallet event to the page, if it is addressed to this origin. */
+    function handleProviderEvent(payload: unknown): void {
+      const { event, origins } = (payload ?? {}) as {
+        event?: unknown;
+        origins?: unknown;
+      };
+      if (!port || typeof event !== "string") return;
+      if (event !== "accountsChanged" && event !== "disconnect" && event !== "locked") return;
+      if (Array.isArray(origins) && !origins.includes(pageOrigin)) return;
+      port.postMessage({ type: PAGE_CHANNEL.event, event, data: null });
+    }
+
     browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
-      if (sender.id && sender.id !== browser.runtime.id) return false;
+      if (sender.id !== browser.runtime.id) return false;
+      // Only the worker talks to content scripts. Extension pages broadcast to
+      // each other on the same channel, and those messages are not for us.
+      if (sender.url && !sender.url.startsWith(browser.runtime.getURL("/" as never))) {
+        return false;
+      }
       const typed = message as ExtensionMessage;
+      if (typed?.type === "PROVIDER_EVENT") {
+        handleProviderEvent(typed.payload);
+        return false;
+      }
       if (typed?.type !== "SHOW_CONNECT_OVERLAY") return false;
       void handleShowConnectOverlay(typed.payload).then(sendResponse);
       return true;
@@ -146,8 +192,10 @@ export default defineContentScript({
     window.addEventListener("message", onWindowMessage);
     injectProvider();
 
+    // Content scripts cannot read storage.session, where the active account
+    // lives; the worker broadcasts account switches as PROVIDER_EVENT instead.
     browser.storage.onChanged.addListener((changes, area) => {
-      if (area !== "local" && area !== "session") return;
+      if (area !== "local") return;
       if (!port) return;
       if (changes[STORAGE_KEYS.settings]) {
         const next = changes[STORAGE_KEYS.settings].newValue as
@@ -159,10 +207,7 @@ export default defineContentScript({
           data: { exposeKeplrAlias: Boolean(next?.exposeKeplrAlias) },
         });
       }
-      if (
-        changes[STORAGE_KEYS.sessionActiveAccount] ||
-        changes[STORAGE_KEYS.accounts]
-      ) {
+      if (changes[STORAGE_KEYS.accounts]) {
         port.postMessage({
           type: PAGE_CHANNEL.event,
           event: "accountsChanged",

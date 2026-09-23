@@ -17,17 +17,31 @@ export const INITIAL_THEME =
   params.get(CONNECT_PARAM.theme) === "light" ? "light" : "dark";
 
 /**
- * `postMessage` target for the parent frame. Falls back to `*` when the
- * content script could not supply a usable origin — acceptable only because
- * the payload is limited to "close me" / "I am this tall", which carries no
- * secret and grants no authority.
+ * `postMessage` target for the parent frame, or null when the content script
+ * could not supply a usable origin. Never `*`: with no named target the frame
+ * stays silent rather than broadcasting to whoever embeds it.
  */
-export function parentTargetOrigin(): string {
+export function parentTargetOrigin(): string | null {
   try {
     const url = new URL(PARENT_ORIGIN);
     if (url.protocol === "https:" || url.protocol === "http:") return url.origin;
   } catch {
     // Fall through.
   }
-  return "*";
+  return null;
+}
+
+/**
+ * Whether the page actually embedding this frame is the one the URL names.
+ * A page that copies the frame URL into its own iframe cannot fake
+ * `ancestorOrigins`, which the browser fills in. Browsers without it rely on
+ * the worker's one-frame-per-request binding alone.
+ */
+export function embeddedByNamedParent(): boolean {
+  const target = parentTargetOrigin();
+  if (!target) return false;
+  const ancestors = (window.location as Location & { ancestorOrigins?: DOMStringList })
+    .ancestorOrigins;
+  if (!ancestors) return true;
+  return ancestors.length > 0 && ancestors[0] === target;
 }

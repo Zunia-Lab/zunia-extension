@@ -4,6 +4,13 @@ import { chainJsonFor } from "./chains";
 import { hydrateCustomChains } from "./custom-chains";
 import { loadKernel } from "./kernel";
 import { clearApprovals } from "./approvals";
+import {
+  EMPTY_THROTTLE,
+  assertNotThrottled,
+  readThrottleState,
+  recordFailure,
+  type ThrottleState,
+} from "./password-throttle";
 
 export interface AccountInfo {
   index: number;
@@ -241,14 +248,65 @@ export async function importWallet(input: {
   return account;
 }
 
-export async function unlockWallet(password: string): Promise<AccountInfo[]> {
+export async function getPasswordThrottle(): Promise<ThrottleState> {
+  const result = await browser.storage.local.get(STORAGE_KEYS.passwordThrottle);
+  return readThrottleState(result[STORAGE_KEYS.passwordThrottle], Date.now());
+}
+
+let passwordQueue: Promise<unknown> = Promise.resolve();
+
+/** One password check at a time, so parallel guesses cannot all read a clean throttle. */
+function serialized<T>(task: () => Promise<T>): Promise<T> {
+  const run = passwordQueue.then(task, task);
+  passwordQueue = run.catch(() => undefined);
+  return run;
+}
+
+/**
+ * Open the sealed envelope with the password, refusing while a backoff is in
+ * force and extending it on every failure. Every password check goes through here.
+ */
+function openEnvelope(password: string): Promise<string> {
+  return serialized(() => openEnvelopeNow(password));
+}
+
+async function openEnvelopeNow(password: string): Promise<string> {
   const result = await browser.storage.local.get(STORAGE_KEYS.envelope);
   const record = result[STORAGE_KEYS.envelope] as EnvelopeRecord | undefined;
-  if (!record?.envelope) {
-    throw new Error("No wallet found");
-  }
+  if (!record?.envelope) throw new Error("No wallet found");
+
+  const throttle = await getPasswordThrottle();
+  assertNotThrottled(throttle, Date.now());
+
   const kernel = await loadKernel();
-  const phrase = kernel.openKeyring(record.envelope, password);
+  let phrase: string;
+  try {
+    phrase = kernel.openKeyring(record.envelope, password);
+  } catch {
+    const next = recordFailure(throttle, Date.now());
+    await browser.storage.local.set({ [STORAGE_KEYS.passwordThrottle]: next });
+    throw new Error(
+      next.retryAt
+        ? `Wrong password. Wait ${Math.ceil((next.retryAt - Date.now()) / 1000)} s before trying again.`
+        : "Wrong password",
+    );
+  }
+  if (throttle.failures > 0) {
+    await browser.storage.local.set({ [STORAGE_KEYS.passwordThrottle]: EMPTY_THROTTLE });
+  }
+  return phrase;
+}
+
+/** Check the password without changing the session. Used for per-signature confirmation. */
+export async function verifyPassword(password: string): Promise<void> {
+  if (typeof password !== "string" || !password) {
+    throw new Error("Enter your password to sign");
+  }
+  await openEnvelope(password);
+}
+
+export async function unlockWallet(password: string): Promise<AccountInfo[]> {
+  const phrase = await openEnvelope(password);
   let accounts = await getAccounts();
   if (accounts.length === 0) {
     accounts = [await deriveDefaultAccount(phrase, 0, "Account 1")];
@@ -298,11 +356,7 @@ export async function getChainAccounts(
 
 /** Re-open the sealed envelope. Always gated by the password prompt. */
 export async function revealMnemonic(password: string): Promise<string> {
-  const result = await browser.storage.local.get(STORAGE_KEYS.envelope);
-  const record = result[STORAGE_KEYS.envelope] as EnvelopeRecord | undefined;
-  if (!record?.envelope) throw new Error("No wallet found");
-  const kernel = await loadKernel();
-  return kernel.openKeyring(record.envelope, password);
+  return openEnvelope(password);
 }
 
 /**
@@ -322,6 +376,7 @@ export async function resetWallet(password?: string): Promise<void> {
     STORAGE_KEYS.enabledChains,
     STORAGE_KEYS.balanceCache,
     STORAGE_KEYS.addressBook,
+    STORAGE_KEYS.passwordThrottle,
   ]);
 }
 

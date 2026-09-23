@@ -39,6 +39,8 @@ export const STORAGE_KEYS = {
   nftContracts: "zunia.nftContracts",
   /** cw-ics721 bridge addresses the user pinned, keyed by chain id. */
   nftBridges: "zunia.nftBridges",
+  /** Consecutive wrong passwords and when the next attempt is allowed. No secrets. */
+  passwordThrottle: "zunia.passwordThrottle",
   /** Unlocked mnemonic ONLY in chrome.storage.session. */
   sessionMnemonic: "zunia.session.mnemonic",
   sessionUnlockedAt: "zunia.session.unlockedAt",

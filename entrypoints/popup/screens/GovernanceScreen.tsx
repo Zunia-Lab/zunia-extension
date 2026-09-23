@@ -14,11 +14,11 @@ import {
 import type { ProposalInfo, ProposalStatus } from "../../../lib/chain-queries";
 import { estimateFee, msgVote, type VoteOption as AminoVote } from "../../../lib/amino-tx";
 import { formatUnits } from "../../../lib/format";
-import { sendToBackground } from "../../../lib/popup-client";
 import type { ChainAccountView } from "../hooks/useChainAccounts";
 import { useProposals } from "../hooks/useChainQuery";
 import { usePrefs } from "../state/Prefs";
 import { IconGovernance } from "./icons";
+import { useSignedSend } from "../state/SigningPassword";
 
 type VoteOption = AminoVote;
 
@@ -160,6 +160,7 @@ export function GovernanceScreen({
   chains: ChainAccountView[];
   onBack: () => void;
 }) {
+  const signedSend = useSignedSend();
   const { settings } = usePrefs();
   const live = settings.liveBalances;
   const chainIds = useMemo(() => chains.map((c) => c.chainId), [chains]);
@@ -199,7 +200,7 @@ export function GovernanceScreen({
     setBusy(true);
     setError(null);
     try {
-      const result = await sendToBackground<{ txhash: string }>(
+      const result = await signedSend<{ txhash: string }>(
         "SIGN_AND_BROADCAST",
         {
           chainId: selectedProposal.chainId,

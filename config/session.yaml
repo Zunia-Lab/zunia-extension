@@ -1,10 +1,14 @@
-# Auto-lock / storage policy (extension + shared docs)
+# Auto-lock / storage policy (extension + shared docs). Mirrored in
+# config/session.ts, which is what the code reads.
 
 schema_version: 1
 
 storage:
-  decrypted_key_in_service_worker_memory_only: true
-  never_persist_decrypted_to_chrome_storage: true
+  # The unlocked phrase lives in chrome.storage.session: memory only, cleared
+  # when the browser closes, and readable by extension pages and the service
+  # worker but not by content scripts (TRUSTED_CONTEXTS access level).
+  decrypted_phrase_in_session_storage_only: true
+  never_persist_decrypted_to_disk: true
 
 auto_lock:
   default_ms: 600000
@@ -13,8 +17,12 @@ auto_lock:
   on_browser_close: true
   on_device_lock: true
   lock_now_action: true
-  lock_when_popup_closes_if_require_password_per_session: true
 
 password:
+  # 3 free attempts, then 2 s doubling per failure, capped at 5 minutes.
+  # Persisted, so restarting the service worker does not reset it.
   rate_limit: exponential_backoff
-  wipe_after_n_failures_opt_in: true
+  free_attempts: 3
+  max_delay_ms: 300000
+  # Optional per-signature password confirmation (Settings > Security).
+  per_signature_confirmation: opt_in

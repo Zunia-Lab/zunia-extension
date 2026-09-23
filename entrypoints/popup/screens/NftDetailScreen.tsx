@@ -66,6 +66,7 @@ import {
   useNftMediaGate,
 } from "./nft-ui";
 import { IconChevronDown } from "./icons";
+import { useSignedSend } from "../state/SigningPassword";
 
 type Phase = "view" | "transfer" | "confirm" | "sent";
 type Destination = "same" | "cross";
@@ -95,6 +96,7 @@ export function NftDetailScreen({
   contacts: readonly AddressBookEntry[];
   onBack: () => void;
 }) {
+  const signedSend = useSignedSend();
   const media = useNftMediaGate();
   const kernel = useKernelSigning();
   const { supported } = useNftChains(chains);
@@ -424,7 +426,7 @@ export function NftDetailScreen({
     setBusy(true);
     setError(null);
     try {
-      const result = await sendToBackground<{
+      const result = await signedSend<{
         txhash: string;
         code: number;
         rawLog: string;

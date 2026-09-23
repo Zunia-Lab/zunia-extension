@@ -1,9 +1,20 @@
 import {
-  enqueueApproval,
   enqueueApprovalWithId,
+  extendApprovalChains,
+  findPendingEnable,
   getPendingApprovals,
+  setApprovalHost,
+  type ApprovalRequest,
 } from "./approvals";
-import { BUILTIN_CHAINS, chainJsonFor, getBuiltinChain, type ChainInfo } from "./chains";
+import { approvalUiOpen, openApprovalUi } from "./approval-ui";
+import { findCatalogEntry } from "./chain-catalog";
+import { draftFromSuggestedChain } from "./chain-draft";
+import { BUILTIN_CHAINS, chainJsonFor, toChainInfo, type ChainInfo } from "./chains";
+import {
+  hydrateCustomChains,
+  listCustomChains,
+  saveCustomChain,
+} from "./custom-chains";
 import {
   adr36PayloadIsSafe,
   adr36SignBytesHex,
@@ -15,13 +26,24 @@ import {
   serializeAminoSignDoc,
   toBase64,
   verifyAdr36,
+  type DerivedAddress,
 } from "./kernel";
+import { assessOrigin } from "./origin-risk";
 import {
   grantPermission,
   hasPermission,
   revokeChain,
   revokePermission,
 } from "./permissions";
+import {
+  aminoSignDocChainId,
+  assertSameChain,
+  assertSigner,
+  bytesFromWire,
+  directSignDocToWire,
+  encodeDirectSignDoc,
+  normalizeDirectSignDoc,
+} from "./provider-guards";
 import {
   getAccounts,
   getActiveAccountIndex,
@@ -31,8 +53,13 @@ import {
 } from "./session";
 import { getSettings } from "./settings";
 import type { ExtensionResponse } from "./messaging";
-import { decodeSignDoc, rememberRecipient } from "./signing";
+import {
+  decodeAminoSignDoc,
+  decodeDirectSignBytes,
+  rememberRecipient,
+} from "./signing";
 import { STORAGE_KEYS } from "./storage-keys";
+import { SECURITY_CONFIG } from "../config/security";
 
 export type ProviderMethod =
   | "enable"
@@ -48,10 +75,9 @@ export type ProviderMethod =
   | "getChainInfos"
   | "getChainInfosWithoutEndpoints";
 
-function dataToBytes(data: string | Uint8Array | number[]): Uint8Array {
+function dataToBytes(data: unknown): Uint8Array {
   if (typeof data === "string") return new TextEncoder().encode(data);
-  if (data instanceof Uint8Array) return data;
-  return Uint8Array.from(data);
+  return bytesFromWire(data, "data");
 }
 
 function previewText(dataBytes: Uint8Array): string {
@@ -94,29 +120,6 @@ function parsePubKeyBytes(raw: unknown): Uint8Array {
   return fromBase64(value);
 }
 
-async function openApprovalUi(): Promise<void> {
-  try {
-    if (browser.action?.openPopup) {
-      await browser.action.openPopup();
-      return;
-    }
-  } catch {
-    // Fall through to window.
-  }
-  const url = browser.runtime.getURL("popup.html" as never);
-  // windows.create sizes the OUTER frame, so the title bar and borders come out
-  // of the height given here: asking for 600 leaves roughly 565 of viewport and
-  // pushes the approval footer off-screen. Ask for the chrome back. The exact
-  // overhead differs per platform, so popup/style.css also lets the document
-  // adapt down instead of relying on this number being right everywhere.
-  await browser.windows.create({
-    url: `${url}?approve=1`,
-    type: "popup",
-    width: 360,
-    height: 640,
-  });
-}
-
 /**
  * Thrown when a provider method is part of the API surface but the capability
  * behind it does not exist yet. Only `Error.message` survives the hop through
@@ -135,52 +138,219 @@ export class ProviderUnsupportedError extends Error {
 /**
  * Asks the tab that made the request to draw the connect modal over the page.
  *
- * Resolves false when there is no content script to talk to (the tab was
- * closed, or the page is one the script never ran on), so the caller can fall
- * back to the toolbar popup rather than leaving the dApp waiting on a modal
- * that was never mounted.
+ * Resolves true only when the content script reports the prompt is actually on
+ * screen. Anything else (no content script, a nested frame, a browser that
+ * cannot prove the frame is visible, another prompt already up) sends the
+ * request to the popup instead of leaving the dApp waiting on nothing.
  */
 async function showConnectOverlay(
   tabId: number | undefined,
   approvalId: string,
+  origin: string,
 ): Promise<boolean> {
   if (typeof tabId !== "number") return false;
   try {
-    const response = (await browser.tabs.sendMessage(tabId, {
-      type: "SHOW_CONNECT_OVERLAY",
-      payload: { approvalId },
-    })) as ExtensionResponse | undefined;
-    return Boolean(response?.ok);
+    const response = (await browser.tabs.sendMessage(
+      tabId,
+      { type: "SHOW_CONNECT_OVERLAY", payload: { approvalId, origin } },
+      { frameId: 0 },
+    )) as ExtensionResponse | undefined;
+    return (
+      response?.ok === true &&
+      (response.data as { shown?: unknown } | undefined)?.shown === true
+    );
   } catch {
     return false;
   }
 }
 
-async function requireUnlocked(): Promise<string> {
-  const mnemonic = await getSessionMnemonic();
+let unlockWait: Promise<void> | null = null;
+let cancelUnlock: ((reason: string) => void) | null = null;
+
+/** Rejects a request that is waiting for the user to unlock. */
+export function cancelUnlockWait(reason: string): void {
+  cancelUnlock?.(reason);
+}
+
+/**
+ * Wait for the user to unlock, opening the popup to ask. Every request that
+ * arrives while locked shares one wait, so a burst of calls opens one window.
+ */
+function waitForUnlock(): Promise<void> {
+  if (unlockWait) return unlockWait;
+  unlockWait = new Promise<void>((resolve, reject) => {
+    const onChanged = (
+      changes: Record<string, { newValue?: unknown }>,
+      area: string,
+    ) => {
+      if (area !== "session") return;
+      if (typeof changes[STORAGE_KEYS.sessionMnemonic]?.newValue === "string") finish();
+    };
+    const timer = setTimeout(
+      () => finish("Zunia stayed locked, so the request was cancelled"),
+      SECURITY_CONFIG.approvals.ttlMs,
+    );
+    function finish(error?: string) {
+      clearTimeout(timer);
+      browser.storage.onChanged.removeListener(onChanged);
+      unlockWait = null;
+      cancelUnlock = null;
+      if (error) reject(new Error(error));
+      else resolve();
+    }
+    cancelUnlock = finish;
+    browser.storage.onChanged.addListener(onChanged);
+    // The unlock may have landed between the caller's check and the listener.
+    void isUnlocked().then((open) => {
+      if (open) finish();
+      else void openApprovalUi();
+    });
+  });
+  return unlockWait;
+}
+
+async function unlockedMnemonic(): Promise<string> {
+  let mnemonic = await getSessionMnemonic();
+  if (!mnemonic) {
+    await waitForUnlock();
+    mnemonic = await getSessionMnemonic();
+  }
   if (!mnemonic) throw new Error("Wallet is locked");
   await touchSession();
   return mnemonic;
 }
 
-async function loadSuggestedChains(): Promise<ChainInfo[]> {
-  const result = await browser.storage.local.get(STORAGE_KEYS.suggestedChains);
-  return (
-    (result[STORAGE_KEYS.suggestedChains] as ChainInfo[] | undefined) ?? []
-  );
+let catalogReady: Promise<unknown> | null = null;
+
+/** Custom chains are hydrated at boot, but a request can wake the worker first. */
+async function ensureCatalog(): Promise<void> {
+  catalogReady ??= hydrateCustomChains().catch(() => []);
+  await catalogReady;
 }
 
-async function allChains(): Promise<ChainInfo[]> {
-  const suggested = await loadSuggestedChains();
-  const map = new Map<string, ChainInfo>();
-  for (const c of [...BUILTIN_CHAINS, ...suggested]) {
-    map.set(c.chainId, c);
+function requireChainId(value: unknown): string {
+  if (typeof value !== "string" || !value.trim()) throw new Error("chainId required");
+  return value;
+}
+
+async function requireKnownChain(chainId: string): Promise<void> {
+  await ensureCatalog();
+  if (!findCatalogEntry(chainId)) {
+    throw new Error(
+      `Zunia does not know the chain ${chainId}. Add it with experimentalSuggestChain first.`,
+    );
   }
-  return [...map.values()];
 }
 
-function normalizeChainIds(chainIds: string | string[]): string[] {
-  return (Array.isArray(chainIds) ? chainIds : [chainIds]).filter(Boolean);
+async function requirePermission(origin: string, chainId: string): Promise<void> {
+  if (!(await hasPermission(origin, [chainId]))) throw new Error("Not authorized");
+}
+
+interface ActiveKey {
+  name: string;
+  index: number;
+  derived: DerivedAddress;
+}
+
+async function activeKey(mnemonic: string, chainId: string): Promise<ActiveKey> {
+  const accounts = await getAccounts();
+  const active = await getActiveAccountIndex();
+  const account = accounts.find((a) => a.index === active) ?? accounts[0];
+  if (!account) throw new Error("No account");
+  const kernel = await loadKernel();
+  return {
+    name: account.name,
+    index: account.index,
+    derived: kernel.deriveAddress(mnemonic, "", chainJsonFor(chainId), account.index),
+  };
+}
+
+function originWarnings(origin: string): string[] {
+  return assessOrigin(origin).warnings;
+}
+
+type NewApproval = Omit<ApprovalRequest, "id" | "createdAt" | "expiresAt">;
+
+/** Queue a request for the popup, bring the popup up, and wait for the answer. */
+async function approveInPopup(request: NewApproval): Promise<void> {
+  const { result } = enqueueApprovalWithId({ ...request, host: "popup" });
+  void openApprovalUi();
+  const answer = (await result) as { approved?: boolean } | undefined;
+  if (!answer?.approved) throw new Error("Request rejected");
+}
+
+/**
+ * After the user approves, the session and the active account are read again:
+ * the wallet may have locked, or the user may have switched accounts in the
+ * popup while the prompt was open. Either way the key checked before the prompt
+ * is no longer the key that would sign.
+ */
+async function keyAfterApproval(
+  chainId: string,
+  signer: string,
+  expectedIndex: number,
+): Promise<{ mnemonic: string; key: ActiveKey }> {
+  const mnemonic = await getSessionMnemonic();
+  if (!mnemonic) throw new Error("Wallet locked before signing");
+  const key = await activeKey(mnemonic, chainId);
+  if (key.index !== expectedIndex) {
+    throw new Error("The active account changed while the request was open. Ask the site to try again.");
+  }
+  assertSigner(signer, key.derived.bech32Address);
+  return { mnemonic, key };
+}
+
+function secpSignature(pubKey: Uint8Array, signatureHex: string) {
+  return {
+    pub_key: {
+      type: "tendermint/PubKeySecp256k1",
+      value: toBase64(pubKey),
+    },
+    signature: toBase64(hexToBytes(signatureHex)),
+  };
+}
+
+function normalizeChainIds(chainIds: unknown): string[] {
+  const list = Array.isArray(chainIds) ? chainIds : [chainIds];
+  const out = list.filter((id): id is string => typeof id === "string" && id.trim() !== "");
+  return [...new Set(out)];
+}
+
+type PublicChainInfo = Omit<ChainInfo, "rpc" | "rest"> & {
+  bech32Config: {
+    bech32PrefixAccAddr: string;
+    bech32PrefixAccPub: string;
+    bech32PrefixValAddr: string;
+    bech32PrefixValPub: string;
+    bech32PrefixConsAddr: string;
+    bech32PrefixConsPub: string;
+  };
+};
+
+function toPublicChainInfo(info: ChainInfo): PublicChainInfo {
+  const { rpc: _rpc, rest: _rest, ...rest } = info;
+  const p = info.bech32Prefix;
+  return {
+    ...rest,
+    bech32Config: {
+      bech32PrefixAccAddr: p,
+      bech32PrefixAccPub: `${p}pub`,
+      bech32PrefixValAddr: `${p}valoper`,
+      bech32PrefixValPub: `${p}valoperpub`,
+      bech32PrefixConsAddr: `${p}valcons`,
+      bech32PrefixConsPub: `${p}valconspub`,
+    },
+  };
+}
+
+/** Chains a page may learn about. Never includes endpoints: a user's own node URL can carry a key. */
+async function publicChainInfos(): Promise<PublicChainInfo[]> {
+  await ensureCatalog();
+  const custom = await listCustomChains();
+  const map = new Map<string, PublicChainInfo>();
+  for (const info of BUILTIN_CHAINS) map.set(info.chainId, toPublicChainInfo(info));
+  for (const entry of custom) map.set(entry.chainId, toPublicChainInfo(toChainInfo(entry)));
+  return [...map.values()];
 }
 
 export async function handleProviderRequest(input: {
@@ -194,128 +364,121 @@ export async function handleProviderRequest(input: {
 
   switch (method) {
     case "enable": {
-      const chainIds = normalizeChainIds(args[0] as string | string[]);
+      const chainIds = normalizeChainIds(args[0]);
       if (chainIds.length === 0) throw new Error("chainId required");
-      if (!(await isUnlocked())) throw new Error("Wallet is locked");
+      for (const chainId of chainIds) await requireKnownChain(chainId);
+
+      const wasLocked = !(await isUnlocked());
+      if (wasLocked) await waitForUnlock();
       if (await hasPermission(origin, chainIds)) return null;
 
-      const { id, result } = enqueueApprovalWithId({
-        kind: "enable",
-        origin,
-        chainIds,
-        title: `Connect to ${origin}`,
-        detail: { chainIds },
-      });
+      const joined = findPendingEnable(origin, tabId);
+      let result: Promise<unknown>;
+      if (joined) {
+        extendApprovalChains(joined.id, chainIds);
+        result = joined.result;
+      } else {
+        const queued = enqueueApprovalWithId({
+          kind: "enable",
+          origin,
+          chainIds,
+          tabId,
+          title: `Connect to ${origin}`,
+          detail: { chainIds },
+          warnings: originWarnings(origin),
+        });
+        result = queued.result;
+        // Connection prompts render over the page so the choice stays next to
+        // the site asking for it, but only when the popup is not already the
+        // place the user is looking. Signing never renders in-page.
+        const inPage =
+          !wasLocked &&
+          !approvalUiOpen() &&
+          (await showConnectOverlay(tabId, queued.id, origin));
+        setApprovalHost(queued.id, inPage ? "overlay" : "popup");
+        if (!inPage) void openApprovalUi();
+      }
 
-      // Connection prompts render over the page so the choice stays next to
-      // the site asking for it. Signing never does: those keep to the popup,
-      // which a page cannot draw over or spoof.
-      void showConnectOverlay(tabId, id).then((mounted) => {
-        if (mounted) return;
-        void openApprovalUi();
-      });
-
-      const approved = (await result) as { approved: boolean };
+      const approved = (await result) as { approved?: boolean } | undefined;
       if (!approved?.approved) throw new Error("Request rejected");
       await grantPermission(origin, chainIds);
       return null;
     }
 
     case "disable": {
-      const chainIds = args[0] as string | string[] | undefined;
-      if (chainIds === undefined || chainIds === null) {
+      if (args[0] === undefined || args[0] === null) {
         await revokePermission(origin);
         return null;
       }
-      for (const chainId of normalizeChainIds(chainIds)) {
+      for (const chainId of normalizeChainIds(args[0])) {
         await revokeChain(origin, chainId);
       }
       return null;
     }
 
     case "getKey": {
-      const chainId = String(args[0] ?? "");
-      if (!chainId) throw new Error("chainId required");
-      if (!(await hasPermission(origin, [chainId]))) {
-        throw new Error("Not authorized");
-      }
-      const mnemonic = await requireUnlocked();
-      const accounts = await getAccounts();
-      const active = await getActiveAccountIndex();
-      const account = accounts.find((a) => a.index === active) ?? accounts[0];
-      if (!account) throw new Error("No account");
-      const kernel = await loadKernel();
-      const derived = kernel.deriveAddress(
-        mnemonic,
-        "",
-        chainJsonFor(chainId),
-        account.index,
-      );
+      const chainId = requireChainId(args[0]);
+      await requirePermission(origin, chainId);
+      const mnemonic = await unlockedMnemonic();
+      const key = await activeKey(mnemonic, chainId);
       return {
-        name: account.name,
-        algo: derived.algo,
-        pubKey: Array.from(derived.pubKey),
-        address: derived.address,
-        bech32Address: derived.bech32Address,
+        name: key.name,
+        algo: key.derived.algo,
+        pubKey: Array.from(key.derived.pubKey),
+        address: key.derived.address,
+        bech32Address: key.derived.bech32Address,
         isNanoLedger: false,
       };
     }
 
     case "getAccounts": {
-      const chainId = String(args[0] ?? args[0] ?? "");
-      // Keplr-style offline signer uses chain from getOfflineSigner; here we accept optional chainId.
-      const accounts = await getAccounts();
-      if (!(await isUnlocked())) throw new Error("Wallet is locked");
-      if (chainId && !(await hasPermission(origin, [chainId]))) {
-        throw new Error("Not authorized");
-      }
-      const mnemonic = await requireUnlocked();
-      const kernel = await loadKernel();
-      const active = await getActiveAccountIndex();
-      const account = accounts.find((a) => a.index === active) ?? accounts[0];
-      if (!account) return [];
-      const derived = kernel.deriveAddress(
-        mnemonic,
-        "",
-        chainJsonFor(chainId || "cosmoshub-4"),
-        account.index,
-      );
+      // The offline signer always passes its chain. Without one there is no
+      // grant to check, so there is nothing to answer.
+      const chainId = requireChainId(args[0]);
+      await requirePermission(origin, chainId);
+      const mnemonic = await unlockedMnemonic();
+      const key = await activeKey(mnemonic, chainId);
       return [
         {
-          address: derived.bech32Address,
-          algo: derived.algo,
-          pubkey: Array.from(derived.pubKey),
+          address: key.derived.bech32Address,
+          algo: key.derived.algo,
+          pubkey: Array.from(key.derived.pubKey),
         },
       ];
     }
 
     case "signAmino": {
-      const chainId = String(args[0] ?? "");
-      const signer = String(args[1] ?? "");
+      const chainId = requireChainId(args[0]);
+      const signer = args[1];
       const signDoc = args[2];
-      if (!(await hasPermission(origin, [chainId]))) {
-        throw new Error("Not authorized");
-      }
-      const mnemonic = await requireUnlocked();
-      const summary = await decodeSignDoc(chainId, signDoc);
+      await requirePermission(origin, chainId);
+      assertSameChain(chainId, aminoSignDocChainId(signDoc));
+      const mnemonic = await unlockedMnemonic();
+      const before = await activeKey(mnemonic, chainId);
+      assertSigner(signer, before.derived.bech32Address);
+
+      const summary = await decodeAminoSignDoc(chainId, signDoc);
       if (summary.requiresBlindSigning) {
         throw new Error("Blind signing disabled for unknown messages");
       }
-      const approval = enqueueApproval({
+      await approveInPopup({
         kind: "signAmino",
         origin,
         chainIds: [chainId],
+        tabId,
         title: `Sign transaction on ${chainId}`,
-        detail: { signer, signDoc, summary },
-        warnings: summary.warnings,
+        detail: { signer, summary },
+        warnings: [...originWarnings(origin), ...summary.warnings],
       });
-      void openApprovalUi();
-      const approved = (await approval) as { approved: boolean };
-      if (!approved?.approved) throw new Error("Request rejected");
 
-      // Walk the sign doc's own messages. The previous loop iterated
-      // summary.messages but read msgs[0] on every pass, so a multi-send taught
-      // the address book its first recipient N times and dropped the rest.
+      const { mnemonic: current, key } = await keyAfterApproval(
+        chainId,
+        signer as string,
+        before.index,
+      );
+
+      // Walk the sign doc's own messages so a multi-send teaches the address
+      // book every recipient, not the first one N times.
       const outgoing = (
         signDoc as { msgs?: Array<{ value?: { to_address?: string } }> }
       )?.msgs;
@@ -325,95 +488,117 @@ export async function handleProviderRequest(input: {
       }
 
       const kernel = await loadKernel();
-      const active = await getActiveAccountIndex();
-      const signBytesHex = bytesToHex(serializeAminoSignDoc(signDoc));
       const signatureHex = kernel.signCosmos(
-        mnemonic,
+        current,
         "",
         chainJsonFor(chainId),
-        active,
-        signBytesHex,
-      );
-      const derived = kernel.deriveAddress(
-        mnemonic,
-        "",
-        chainJsonFor(chainId),
-        active,
+        key.index,
+        bytesToHex(serializeAminoSignDoc(signDoc)),
       );
       return {
         signed: signDoc,
-        signature: {
-          pub_key: {
-            type: "tendermint/PubKeySecp256k1",
-            value: toBase64(derived.pubKey),
-          },
-          signature: toBase64(hexToBytes(signatureHex)),
-        },
+        signature: secpSignature(key.derived.pubKey, signatureHex),
+      };
+    }
+
+    case "signDirect": {
+      const chainId = requireChainId(args[0]);
+      const signer = args[1];
+      await requirePermission(origin, chainId);
+      const doc = normalizeDirectSignDoc(args[2]);
+      assertSameChain(chainId, doc.chainId);
+      const signBytes = encodeDirectSignDoc(doc);
+      const mnemonic = await unlockedMnemonic();
+      const before = await activeKey(mnemonic, chainId);
+      assertSigner(signer, before.derived.bech32Address);
+
+      const summary = await decodeDirectSignBytes(chainId, signBytes);
+      if (summary.requiresBlindSigning) {
+        throw new Error("Blind signing disabled for unknown messages");
+      }
+      await approveInPopup({
+        kind: "signDirect",
+        origin,
+        chainIds: [chainId],
+        tabId,
+        title: `Sign transaction on ${chainId}`,
+        detail: { signer, summary },
+        warnings: [...originWarnings(origin), ...summary.warnings],
+      });
+
+      const { mnemonic: current, key } = await keyAfterApproval(
+        chainId,
+        signer as string,
+        before.index,
+      );
+      const kernel = await loadKernel();
+      const signatureHex = kernel.signCosmos(
+        current,
+        "",
+        chainJsonFor(chainId),
+        key.index,
+        bytesToHex(signBytes),
+      );
+      return {
+        signed: directSignDocToWire(doc),
+        signature: secpSignature(key.derived.pubKey, signatureHex),
       };
     }
 
     case "signArbitrary": {
-      const chainId = String(args[0] ?? "");
-      const signer = String(args[1] ?? "");
-      const data = args[2] as string | Uint8Array | number[];
-      if (!chainId) throw new Error("chainId required");
-      if (!signer) throw new Error("signer required");
+      const chainId = requireChainId(args[0]);
+      const signer = args[1];
+      const data = args[2];
+      if (typeof signer !== "string" || !signer) throw new Error("signer required");
       if (data == null) throw new Error("data required");
-      if (!(await hasPermission(origin, [chainId]))) {
-        throw new Error("Not authorized");
-      }
-      const mnemonic = await requireUnlocked();
+      await requirePermission(origin, chainId);
       const dataBytes = dataToBytes(data);
       if (!adr36PayloadIsSafe(dataBytes)) {
         throw new Error(
           "ADR-36 data looks like a transaction sign doc; refusing to sign",
         );
       }
+      const mnemonic = await unlockedMnemonic();
+      const before = await activeKey(mnemonic, chainId);
+      assertSigner(signer, before.derived.bech32Address);
 
-      const preview = previewText(dataBytes);
-      const approval = enqueueApproval({
+      await approveInPopup({
         kind: "signArbitrary",
         origin,
         chainIds: [chainId],
+        tabId,
         title: `Sign message on ${chainId}`,
-        detail: { signer, preview, encoding: typeof data === "string" ? "utf8" : "bytes" },
+        detail: {
+          signer,
+          preview: previewText(dataBytes),
+          encoding: typeof data === "string" ? "utf8" : "bytes",
+        },
+        warnings: originWarnings(origin),
       });
-      void openApprovalUi();
-      const approved = (await approval) as { approved: boolean };
-      if (!approved?.approved) throw new Error("Request rejected");
 
+      const { mnemonic: current, key } = await keyAfterApproval(
+        chainId,
+        signer,
+        before.index,
+      );
       const kernel = await loadKernel();
-      const active = await getActiveAccountIndex();
-      const signDoc = adr36SignDoc(signer, dataBytes);
       const signatureHex = kernel.signCosmos(
-        mnemonic,
+        current,
         "",
         chainJsonFor(chainId),
-        active,
+        key.index,
         adr36SignBytesHex(signer, dataBytes),
       );
-      const derived = kernel.deriveAddress(
-        mnemonic,
-        "",
-        chainJsonFor(chainId),
-        active,
-      );
       return {
-        signed: signDoc,
-        signature: {
-          pub_key: {
-            type: "tendermint/PubKeySecp256k1",
-            value: toBase64(derived.pubKey),
-          },
-          signature: toBase64(hexToBytes(signatureHex)),
-        },
+        signed: adr36SignDoc(signer, dataBytes),
+        signature: secpSignature(key.derived.pubKey, signatureHex),
       };
     }
 
     case "verifyArbitrary": {
-      const chainId = String(args[0] ?? "");
+      const chainId = requireChainId(args[0]);
       const signer = String(args[1] ?? "");
-      const data = args[2] as string | Uint8Array | number[];
+      const data = args[2];
       const signatureArg = args[3] as
         | {
             pub_key?: { type?: string; value?: string };
@@ -421,12 +606,10 @@ export async function handleProviderRequest(input: {
           }
         | string
         | undefined;
-      if (!chainId || !signer || data == null || signatureArg == null) {
+      if (!signer || data == null || signatureArg == null) {
         throw new Error("chainId, signer, data, and signature required");
       }
-      if (!(await hasPermission(origin, [chainId]))) {
-        throw new Error("Not authorized");
-      }
+      await requirePermission(origin, chainId);
 
       const dataBytes = dataToBytes(data);
       if (!adr36PayloadIsSafe(dataBytes)) return false;
@@ -434,16 +617,10 @@ export async function handleProviderRequest(input: {
       let pubKeyBytes: Uint8Array;
       let sigBytes: Uint8Array;
       if (typeof signatureArg === "string") {
-        const mnemonic = await requireUnlocked();
-        const kernel = await loadKernel();
-        const active = await getActiveAccountIndex();
-        const derived = kernel.deriveAddress(
-          mnemonic,
-          "",
-          chainJsonFor(chainId),
-          active,
-        );
-        pubKeyBytes = derived.pubKey;
+        const mnemonic = await getSessionMnemonic();
+        if (!mnemonic) throw new Error("Wallet is locked");
+        const key = await activeKey(mnemonic, chainId);
+        pubKeyBytes = key.derived.pubKey;
         sigBytes = parseSignatureBytes(signatureArg);
       } else {
         if (!signatureArg.pub_key?.value || !signatureArg.signature) {
@@ -454,65 +631,6 @@ export async function handleProviderRequest(input: {
       }
 
       return verifyAdr36(signer, dataBytes, pubKeyBytes, sigBytes);
-    }
-
-    case "signDirect": {
-      const chainId = String(args[0] ?? "");
-      const signer = String(args[1] ?? "");
-      const signDoc = args[2];
-      if (!(await hasPermission(origin, [chainId]))) {
-        throw new Error("Not authorized");
-      }
-      const mnemonic = await requireUnlocked();
-      const summary = await decodeSignDoc(chainId, signDoc);
-      if (summary.requiresBlindSigning) {
-        throw new Error("Blind signing disabled for unknown messages");
-      }
-      const approval = enqueueApproval({
-        kind: "signDirect",
-        origin,
-        chainIds: [chainId],
-        title: `Sign direct on ${chainId}`,
-        detail: { signer, signDoc, summary },
-        warnings: summary.warnings,
-      });
-      void openApprovalUi();
-      const approved = (await approval) as { approved: boolean };
-      if (!approved?.approved) throw new Error("Request rejected");
-
-      const kernel = await loadKernel();
-      const active = await getActiveAccountIndex();
-      const signBytesHex =
-        typeof signDoc === "string" && /^(0x)?[0-9a-fA-F]+$/.test(signDoc)
-          ? signDoc
-          : bytesToHex(
-              typeof signDoc === "string"
-                ? new TextEncoder().encode(signDoc)
-                : serializeAminoSignDoc(signDoc),
-            );
-      const signatureHex = kernel.signCosmos(
-        mnemonic,
-        "",
-        chainJsonFor(chainId),
-        active,
-        signBytesHex,
-      );
-      const derived = kernel.deriveAddress(
-        mnemonic,
-        "",
-        chainJsonFor(chainId),
-        active,
-      );
-      return {
-        signed: signDoc,
-        signature: {
-          pub_key: {
-            type: "tendermint/PubKeySecp256k1",
-            value: toBase64(derived.pubKey),
-          },
-          signature: toBase64(hexToBytes(signatureHex)),
-        },
-      };
     }
 
     case "sendTx": {
@@ -526,35 +644,29 @@ export async function handleProviderRequest(input: {
     }
 
     case "experimentalSuggestChain": {
-      const chainInfo = args[0] as ChainInfo;
-      if (!chainInfo?.chainId) throw new Error("Invalid chain info");
-      const approval = enqueueApproval({
+      const draft = draftFromSuggestedChain(args[0]);
+      await ensureCatalog();
+      // Already known, from the registry or an earlier suggestion: nothing to ask.
+      if (findCatalogEntry(draft.chainId)) return null;
+      await approveInPopup({
         kind: "suggestChain",
         origin,
-        chainIds: [chainInfo.chainId],
-        title: `Add chain ${chainInfo.chainName ?? chainInfo.chainId}`,
-        detail: { chainInfo },
+        chainIds: [draft.chainId],
+        tabId,
+        title: `Add ${draft.chainName}`,
+        detail: { draft },
+        warnings: [
+          ...originWarnings(origin),
+          "Balances and transactions for this network will go through the endpoints below, which this site chose.",
+        ],
       });
-      void openApprovalUi();
-      const approved = (await approval) as { approved: boolean };
-      if (!approved?.approved) throw new Error("Request rejected");
-      const existing = await loadSuggestedChains();
-      if (!existing.some((c) => c.chainId === chainInfo.chainId) && !getBuiltinChain(chainInfo.chainId)) {
-        await browser.storage.local.set({
-          [STORAGE_KEYS.suggestedChains]: [...existing, chainInfo],
-        });
-      }
+      await saveCustomChain(draft);
       return null;
     }
 
     case "getChainInfos":
-    case "getChainInfosWithoutEndpoints": {
-      const chains = await allChains();
-      if (method === "getChainInfosWithoutEndpoints") {
-        return chains.map(({ rpc: _r, rest: _s, ...rest }) => rest);
-      }
-      return chains;
-    }
+    case "getChainInfosWithoutEndpoints":
+      return publicChainInfos();
 
     default:
       throw new Error(`Method not implemented: ${method}`);

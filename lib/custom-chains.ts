@@ -9,29 +9,10 @@ import {
   setCustomCatalogEntries,
   type CatalogEntry,
 } from "./chain-catalog";
-import { CHAIN_CATALOG } from "./chain-catalog.generated";
+import { validateCustomChainDraft, type CustomChainDraft } from "./chain-draft";
 import { STORAGE_KEYS } from "./storage-keys";
 
-export interface CustomChainDraft {
-  chainName: string;
-  chainId: string;
-  rpc: string;
-  rest: string;
-  bech32Prefix: string;
-  coinType: number;
-  coinDenom: string;
-  coinMinimalDenom: string;
-  coinDecimals: number;
-  gasPrice: number;
-}
-
-function isHttps(value: string): boolean {
-  try {
-    return new URL(value).protocol === "https:";
-  } catch {
-    return false;
-  }
-}
+export type { CustomChainDraft } from "./chain-draft";
 
 function toEntry(draft: CustomChainDraft): CatalogEntry {
   return {
@@ -76,25 +57,11 @@ export async function hydrateCustomChains(): Promise<CatalogEntry[]> {
 export async function saveCustomChain(
   draft: CustomChainDraft,
 ): Promise<CatalogEntry[]> {
-  const chainId = draft.chainId.trim();
-  if (!chainId) throw new Error("Chain ID is required");
-  if (CHAIN_CATALOG.some((c) => c.chainId === chainId)) {
-    throw new Error("That chain ID is already in the registry");
-  }
-  if (!/^[a-z]{2,}$/.test(draft.bech32Prefix)) {
-    throw new Error("Prefix must be lowercase letters");
-  }
-  if (!isHttps(draft.rpc) || !isHttps(draft.rest)) {
-    throw new Error("RPC and REST must be https:// URLs");
-  }
-  if (!Number.isInteger(draft.coinType) || draft.coinType < 0) {
-    throw new Error("Coin type must be a whole number");
-  }
-
+  const clean = validateCustomChainDraft(draft);
   const rows = await read();
   const next = [
-    ...rows.filter((c) => c.chainId !== chainId),
-    toEntry({ ...draft, chainId }),
+    ...rows.filter((c) => c.chainId !== clean.chainId),
+    toEntry(clean),
   ];
   await browser.storage.local.set({ [STORAGE_KEYS.customChains]: next });
   setCustomCatalogEntries(next);

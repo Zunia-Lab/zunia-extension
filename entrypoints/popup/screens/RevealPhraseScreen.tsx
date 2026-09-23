@@ -7,6 +7,10 @@ import {
   ScreenScaffold,
 } from "@zunialab/ui";
 import { sendToBackground } from "../../../lib/popup-client";
+import {
+  SENSITIVE_CLIPBOARD_NOTE,
+  useSensitiveClipboard,
+} from "../hooks/useSensitiveClipboard";
 import { IconCheck, IconCopy } from "./icons";
 
 export function RevealPhraseScreen({ onBack }: { onBack: () => void }) {
@@ -15,6 +19,8 @@ export function RevealPhraseScreen({ onBack }: { onBack: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [copiedOnce, setCopiedOnce] = useState(false);
+  const copySensitive = useSensitiveClipboard();
 
   async function reveal() {
     setBusy(true);
@@ -35,8 +41,15 @@ export function RevealPhraseScreen({ onBack }: { onBack: () => void }) {
 
   async function copy() {
     if (!phrase) return;
-    await navigator.clipboard.writeText(phrase);
+    try {
+      await copySensitive(phrase);
+    } catch {
+      setError("Could not copy to clipboard");
+      return;
+    }
+    setError(null);
     setCopied(true);
+    setCopiedOnce(true);
     window.setTimeout(() => setCopied(false), 1600);
   }
 
@@ -82,7 +95,22 @@ export function RevealPhraseScreen({ onBack }: { onBack: () => void }) {
         </Callout>
 
         {phrase ? (
-          <MnemonicGrid words={phrase.split(" ")} revealed />
+          <>
+            <MnemonicGrid words={phrase.split(" ")} revealed />
+            {copiedOnce ? (
+              <p
+                role="status"
+                className="text-[11px] leading-[1.45] text-fg-dim"
+              >
+                {SENSITIVE_CLIPBOARD_NOTE}
+              </p>
+            ) : null}
+            {error ? (
+              <p role="alert" className="text-[11.5px] text-[var(--z-danger-fg)]">
+                {error}
+              </p>
+            ) : null}
+          </>
         ) : (
           <>
             {/* No autofocus: the callout above this field is the warning that
@@ -98,7 +126,9 @@ export function RevealPhraseScreen({ onBack }: { onBack: () => void }) {
               }}
             />
             {error ? (
-              <p className="text-[11.5px] text-[var(--z-danger-fg)]">{error}</p>
+              <p role="alert" className="text-[11.5px] text-[var(--z-danger-fg)]">
+                {error}
+              </p>
             ) : null}
           </>
         )}

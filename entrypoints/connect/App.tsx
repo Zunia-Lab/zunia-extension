@@ -26,9 +26,57 @@ import {
 } from "../../lib/connect-overlay";
 import { sendToBackground } from "../../lib/popup-client";
 import { useExtensionState } from "../popup/hooks/useExtensionState";
-import { UnlockScreen } from "../popup/screens/UnlockScreen";
 import { IconCheck, IconClose } from "../popup/screens/icons";
 import { APPROVAL_ID, INITIAL_THEME, parentTargetOrigin } from "./params";
+
+/** How long the prompt must be fully visible before Connect accepts a click. */
+const ARM_DELAY_MS = 600;
+
+type VisibilityEntry = IntersectionObserverEntry & { isVisible?: boolean };
+
+/**
+ * True once the browser has reported this frame visible and unobstructed for
+ * {@link ARM_DELAY_MS}, false the moment that stops being true.
+ *
+ * IntersectionObserver v2 folds in everything the page could do to this frame
+ * from outside: opacity or filters on an ancestor, a decoy element laid over
+ * it, a transform that hides part of it. Without that report there is no way
+ * to tell a real click from a steered one, so the prompt never arms.
+ */
+function useVerifiedVisibility(
+  target: React.RefObject<HTMLElement | null>,
+  enabled: boolean,
+): { armed: boolean; supported: boolean } {
+  const supported =
+    typeof IntersectionObserverEntry !== "undefined" &&
+    "isVisible" in IntersectionObserverEntry.prototype;
+  const [armed, setArmed] = useState(false);
+
+  useEffect(() => {
+    const node = target.current;
+    if (!node || !enabled || !supported) return;
+    let timer: number | undefined;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const entry = entries[entries.length - 1] as VisibilityEntry | undefined;
+        window.clearTimeout(timer);
+        if (entry?.isVisible === true) {
+          timer = window.setTimeout(() => setArmed(true), ARM_DELAY_MS);
+        } else {
+          setArmed(false);
+        }
+      },
+      { trackVisibility: true, delay: 100 } as IntersectionObserverInit,
+    );
+    observer.observe(node);
+    return () => {
+      window.clearTimeout(timer);
+      observer.disconnect();
+    };
+  }, [target, enabled, supported]);
+
+  return { armed: armed && enabled && supported, supported };
+}
 
 /**
  * The only thing this frame tells the dApp's page. Presentation signals only —
@@ -36,7 +84,8 @@ import { APPROVAL_ID, INITIAL_THEME, parentTargetOrigin } from "./params";
  * cannot observe or forge them.
  */
 function postToParent(message: ConnectOverlayMessage): void {
-  window.parent.postMessage(message, parentTargetOrigin());
+  const target = parentTargetOrigin();
+  if (target) window.parent.postMessage(message, target);
 }
 
 /** Accessible name of the dialog. Every state below renders a title with this id. */
@@ -222,7 +271,11 @@ function ConnectApproval({
 }) {
   const [picked, setPicked] = useState<number | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const cardRef = useRef<HTMLDivElement>(null);
   const noAccountsId = useId();
+  const coveredId = useId();
+  const { armed, supported } = useVerifiedVisibility(cardRef, true);
+  const warnings = approval.warnings ?? [];
 
   // Derived, never synced from an effect. The list can change under the prompt
   // (the chain-scoped addresses resolve after the stored ones), and an effect
@@ -277,113 +330,143 @@ function ConnectApproval({
   return (
     // Bottom padding moves to the action row, which owns it so that the row can
     // sit flush with the frame edge once it pins.
-    <ModalCard className="px-[22px] pb-0 pt-[22px]">
-      <ModalHeader origin={approval.origin} onClose={onReject} />
+    <div ref={cardRef}>
+      <ModalCard className="px-[22px] pb-0 pt-[22px]">
+        <ModalHeader origin={approval.origin} onClose={onReject} />
 
-      <p className="mt-3.5 text-[12px] leading-relaxed text-fg-muted">
-        Choose the account this site may see. It can read balances and request
-        signatures, which you approve one at a time.
-      </p>
+        <p className="mt-3.5 text-[12px] leading-relaxed text-fg-muted">
+          Choose the account this site may see. It can read balances and request
+          signatures, which you approve one at a time.
+        </p>
 
-      <div className="mt-3 flex flex-wrap gap-1.5">
-        {chainNames.map((chainName) => (
-          <span
-            key={chainName}
-            className="rounded-full border border-[var(--z-line)] px-2.5 py-1 font-mono text-[9px] uppercase tracking-[0.08em] text-fg-dim"
-          >
-            {chainName}
-          </span>
-        ))}
-      </div>
-
-      {/*
-        The list is the only part of the card allowed to grow with the number
-        of accounts. Everything the decision needs — the origin, the chains and
-        the two buttons — stays outside it, so a wallet with twenty accounts
-        prompts exactly like a wallet with two.
-      */}
-      <div
-        ref={listRef}
-        // -mx-px/px-px: the scroller clips both axes, and without a 1px gutter
-        // it would eat the rows' focus ring at the left and right edges.
-        className="-mx-px mt-4 flex max-h-[220px] flex-col gap-2 overflow-y-auto overscroll-contain px-px"
-        role="radiogroup"
-        aria-label="Account"
-      >
-        {accounts.length === 0 ? (
-          <p
-            id={noAccountsId}
-            className="rounded-[13px] bg-[var(--z-glass)] px-3 py-[11px] text-[12px] leading-relaxed text-fg-muted"
-          >
-            No account is available for this network yet, so there is nothing to
-            connect. Open Zunia from the toolbar to add one, then ask the site
-            to try again.
-          </p>
-        ) : (
-          accounts.map((account, position) => (
-            <AccountRow
-              key={account.index}
-              name={account.name}
-              address={account.address}
-              selected={account.index === selected}
-              tabbable={position === focusedPosition}
-              onSelect={() => setPicked(account.index)}
-              onKeyDown={onRowKeyDown}
-            />
-          ))
-        )}
-      </div>
-
-      {/*
-        Sticky, not fixed: at the common short-list size this sits where it
-        always did. It only pins when the parent has clamped the frame shorter
-        than the card, which is the case where these buttons used to be
-        unreachable and `enable()` could only be settled by rejecting.
-
-        The failure Callout lives inside the sticky region rather than above it.
-        On a clamped frame the card is already taller than the iframe, so an
-        error rendered outside this region is drawn entirely below the fold and
-        nothing scrolls it into view: the button just stops spinning and the
-        request looks like it silently did nothing.
-      */}
-      <div className="sticky bottom-0 mt-4 bg-[var(--z-surface-raised)] pb-[22px]">
-        {error ? (
-          <div className="mb-3">
-            <Callout tone="danger">{error}</Callout>
+        {warnings.length > 0 ? (
+          <div className="mt-3">
+            <Callout tone="warning" title="Check this site">
+              <ul className="flex flex-col gap-1">
+                {warnings.map((warning) => (
+                  <li key={warning}>{warning}</li>
+                ))}
+              </ul>
+            </Callout>
           </div>
         ) : null}
-        <div className="flex gap-2.5">
-          <Button
-            variant="secondary"
-            size="lg"
-            className="h-[42px] flex-1 text-[12.5px]"
-            disabled={busy}
-            onClick={onReject}
-          >
-            Cancel
-          </Button>
-          {/*
-            No `title` here: Button composes `disabled:pointer-events-none`, so a
-            disabled control never receives hover and the browser never renders
-            its tooltip. The reason is carried by the paragraph in the list
-            above, which is visible, and by aria-describedby, which reaches a
-            screen reader.
-          */}
-          <Button
-            size="lg"
-            className="h-[42px] flex-1 text-[12.5px]"
-            loading={busy}
-            disabled={accounts.length === 0}
-            aria-describedby={
-              accounts.length === 0 ? noAccountsId : undefined
-            }
-            onClick={() => onApprove(selected)}
-          >
-            Connect
-          </Button>
+
+        <div className="mt-3 flex flex-wrap gap-1.5">
+          {chainNames.map((chainName) => (
+            <span
+              key={chainName}
+              className="rounded-full border border-[var(--z-line)] px-2.5 py-1 font-mono text-[9px] uppercase tracking-[0.08em] text-fg-dim"
+            >
+              {chainName}
+            </span>
+          ))}
         </div>
-      </div>
-    </ModalCard>
+
+        {/*
+          The list is the only part of the card allowed to grow with the number
+          of accounts. Everything the decision needs (the origin, the chains and
+          the two buttons) stays outside it, so a wallet with twenty accounts
+          prompts exactly like a wallet with two.
+        */}
+        <div
+          ref={listRef}
+          // -mx-px/px-px: the scroller clips both axes, and without a 1px gutter
+          // it would eat the rows' focus ring at the left and right edges.
+          className="-mx-px mt-4 flex max-h-[220px] flex-col gap-2 overflow-y-auto overscroll-contain px-px"
+          role="radiogroup"
+          aria-label="Account"
+        >
+          {accounts.length === 0 ? (
+            <p
+              id={noAccountsId}
+              className="rounded-[13px] bg-[var(--z-glass)] px-3 py-[11px] text-[12px] leading-relaxed text-fg-muted"
+            >
+              No account is available for this network yet, so there is nothing to
+              connect. Open Zunia from the toolbar to add one, then ask the site
+              to try again.
+            </p>
+          ) : (
+            accounts.map((account, position) => (
+              <AccountRow
+                key={account.index}
+                name={account.name}
+                address={account.address}
+                selected={account.index === selected}
+                tabbable={position === focusedPosition}
+                onSelect={() => setPicked(account.index)}
+                onKeyDown={onRowKeyDown}
+              />
+            ))
+          )}
+        </div>
+
+        {/*
+          Sticky, not fixed: at the common short-list size this sits where it
+          always did. It only pins when the parent has clamped the frame shorter
+          than the card, which is the case where these buttons used to be
+          unreachable and `enable()` could only be settled by rejecting.
+
+          The failure Callout lives inside the sticky region rather than above it.
+          On a clamped frame the card is already taller than the iframe, so an
+          error rendered outside this region is drawn entirely below the fold and
+          nothing scrolls it into view: the button just stops spinning and the
+          request looks like it silently did nothing.
+        */}
+        <div className="sticky bottom-0 mt-4 bg-[var(--z-surface-raised)] pb-[22px]">
+          {error ? (
+            <div className="mb-3">
+              <Callout tone="danger">{error}</Callout>
+            </div>
+          ) : null}
+          {!armed && accounts.length > 0 ? (
+            <p
+              id={coveredId}
+              className="mb-3 text-[11px] leading-relaxed text-fg-dim"
+            >
+              {supported
+                ? "Connect unlocks once this prompt is fully visible. If something on the page covers it, answer from the Zunia toolbar button instead."
+                : "This browser cannot confirm the prompt is visible. Answer from the Zunia toolbar button instead."}
+            </p>
+          ) : null}
+          <div className="flex gap-2.5">
+            <Button
+              variant="secondary"
+              size="lg"
+              className="h-[42px] flex-1 text-[12.5px]"
+              disabled={busy}
+              onClick={onReject}
+            >
+              Cancel
+            </Button>
+            {/*
+              No `title` here: Button composes `disabled:pointer-events-none`, so a
+              disabled control never receives hover and the browser never renders
+              its tooltip. The reason is carried by the paragraph in the list
+              above, which is visible, and by aria-describedby, which reaches a
+              screen reader.
+            */}
+            <Button
+              size="lg"
+              className="h-[42px] flex-1 text-[12.5px]"
+              loading={busy}
+              disabled={accounts.length === 0 || !armed}
+              aria-describedby={
+                accounts.length === 0
+                  ? noAccountsId
+                  : !armed
+                    ? coveredId
+                    : undefined
+              }
+              onClick={() => {
+                if (armed) onApprove(selected);
+              }}
+            >
+              Connect
+            </Button>
+          </div>
+        </div>
+      </ModalCard>
+    </div>
   );
 }
 
@@ -417,8 +500,8 @@ function StatusCard({
 }
 
 function ConnectBody() {
-  const state = useExtensionState();
-  const { status, approvals, refresh } = state;
+  const state = useExtensionState({ grants: false });
+  const { status, approvals } = state;
   const [accounts, setAccounts] = useState<AccountAddress[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -436,6 +519,23 @@ function ConnectBody() {
    * those stay in the toolbar popup, which a page cannot draw over.
    */
   const wrongKind = approval !== null && approval.kind !== "enable";
+
+  // Once the request has been on screen, its disappearance means it was
+  // answered somewhere else (the toolbar popup), expired, or was cancelled by a
+  // lock. The dApp already has its answer, so the frame just goes away.
+  const [seen, setSeen] = useState(false);
+  if (approval && !seen) setSeen(true);
+  const gone = seen && !approval;
+
+  useEffect(() => {
+    if (!gone) return;
+    postToParent({
+      channel: CONNECT_OVERLAY_CHANNEL,
+      action: "done",
+      approvalId: APPROVAL_ID,
+      outcome: "dismissed",
+    });
+  }, [gone]);
 
   const finish = useCallback((outcome: ConnectOverlayOutcome) => {
     setFinished(true);
@@ -613,7 +713,7 @@ function ConnectBody() {
 
   let body: React.ReactNode;
 
-  if (finished) {
+  if (finished || gone) {
     body = null;
   } else if (!status) {
     body = (
@@ -634,25 +734,16 @@ function ConnectBody() {
       />
     );
   } else if (!status.unlocked) {
-    // Locked: the unlock form comes first, then the approval renders in place.
+    // The password is never typed into a frame that lives inside someone
+    // else's page. A locked wallet is unlocked from the toolbar popup before
+    // this prompt is ever shown; getting here means it locked while open.
     body = (
-      <ModalCard className="h-[430px]">
-        {/* UnlockScreen draws its own heading; the dialog still needs a name. */}
-        <h2 id={MODAL_TITLE_ID} className="sr-only">
-          Unlock Zunia to continue
-        </h2>
-        <UnlockScreen
-          autoLockMs={status.autoLockMs}
-          onUnlocked={() => void refresh()}
-          onForgot={() => {
-            // Recovery needs the full-size UI; the frame cannot host it.
-            void browser.tabs.create({
-              url: browser.runtime.getURL("/popup.html" as never),
-            });
-            finish("dismissed");
-          }}
-        />
-      </ModalCard>
+      <StatusCard
+        origin={approval?.origin ?? window.location.origin}
+        title="Zunia is locked"
+        description="The request was cancelled when the wallet locked. Ask the site to connect again and unlock Zunia when it asks."
+        onClose={() => finish("dismissed")}
+      />
     );
   } else if (!approval || wrongKind) {
     body = (

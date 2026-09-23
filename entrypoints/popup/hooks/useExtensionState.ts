@@ -4,6 +4,7 @@ import type { SessionStatus } from "../../../lib/session";
 import type { ExtensionSettings } from "../../../lib/settings";
 import type { ApprovalRequest } from "../../../lib/approvals";
 import type { OriginGrant } from "../../../lib/permissions";
+import { STORAGE_KEYS } from "../../../lib/storage-keys";
 
 interface ExtensionSnapshot {
   attempt: number;
@@ -17,7 +18,8 @@ interface ExtensionSnapshot {
 const NO_APPROVALS: ApprovalRequest[] = [];
 const NO_GRANTS: OriginGrant[] = [];
 
-export function useExtensionState() {
+export function useExtensionState(options: { grants?: boolean } = {}) {
+  const withGrants = options.grants ?? true;
   const [attempt, setAttempt] = useState(0);
   const [snapshot, setSnapshot] = useState<ExtensionSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -28,7 +30,9 @@ export function useExtensionState() {
       sendToBackground<SessionStatus>("GET_STATUS"),
       sendToBackground<ExtensionSettings>("GET_SETTINGS"),
       sendToBackground<ApprovalRequest[]>("GET_PENDING_APPROVALS"),
-      sendToBackground<OriginGrant[]>("LIST_PERMISSIONS"),
+      withGrants
+        ? sendToBackground<OriginGrant[]>("LIST_PERMISSIONS")
+        : Promise.resolve(NO_GRANTS),
     ])
       .then(([status, settings, approvals, grants]) => {
         if (cancelled) return;
@@ -52,11 +56,30 @@ export function useExtensionState() {
     return () => {
       cancelled = true;
     };
-  }, [attempt]);
+  }, [attempt, withGrants]);
 
   const refresh = useCallback(() => {
     setAttempt((n) => n + 1);
   }, []);
+
+  // Live updates: a dApp request arriving, or the wallet locking or unlocking
+  // somewhere else, re-reads the snapshot instead of waiting for a reopen.
+  useEffect(() => {
+    const onMessage = (message: unknown) => {
+      if ((message as { type?: string } | null)?.type === "APPROVALS_CHANGED") refresh();
+      // Never answer: other extension pages send requests meant for the worker.
+      return undefined;
+    };
+    const onStorage = (changes: Record<string, unknown>, area: string) => {
+      if (area === "session" && STORAGE_KEYS.sessionMnemonic in changes) refresh();
+    };
+    browser.runtime.onMessage.addListener(onMessage);
+    browser.storage.onChanged.addListener(onStorage);
+    return () => {
+      browser.runtime.onMessage.removeListener(onMessage);
+      browser.storage.onChanged.removeListener(onStorage);
+    };
+  }, [refresh]);
 
   // Derived, not stored: a refresh is in flight for exactly as long as the
   // snapshot lags the attempt that asked for it. Storing it needs setLoading in

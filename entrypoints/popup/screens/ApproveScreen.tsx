@@ -1,14 +1,17 @@
+import { useEffect, useState } from "react";
 import {
   Button,
   Callout,
   EmptyState,
   KeyValueRow,
+  PasswordInput,
   ScreenScaffold,
   SectionLabel,
   cn,
   truncateAddress,
 } from "@zunialab/ui";
-import type { ApprovalRequest } from "../../../lib/approvals";
+import { SIGNING_KINDS, type ApprovalRequest } from "../../../lib/approvals";
+import type { CustomChainDraft } from "../../../lib/chain-draft";
 import type { SessionStatus } from "../../../lib/session";
 import type { SignSafetySummary } from "../../../lib/signing";
 import { findCatalogEntry } from "../../../lib/chain-catalog";
@@ -39,7 +42,7 @@ const KIND_LABEL: Record<ApprovalRequest["kind"], string> = {
 
 /**
  * What approving actually does, spelled out on the screen. Users read "Approve"
- * as "the transfer happens"; for every kind Zunia handles, it does not — the
+ * as "the transfer happens"; for every kind Zunia handles, it does not. The
  * dApp is the one that talks to the network.
  *
  * sendTx is absent on purpose: it cannot be approved at all, and says so in a
@@ -49,35 +52,67 @@ const KIND_EFFECT: Partial<Record<ApprovalRequest["kind"], string>> = {
   enable:
     "Approving lets this site read your addresses on these networks. It cannot move funds, and nothing is signed.",
   signAmino:
-    "Approving signs this transaction and returns the signature to the site. Zunia does not broadcast it — the site submits it to the network.",
+    "Approving signs this transaction and returns the signature to the site. Zunia does not broadcast it; the site submits it to the network.",
   signDirect:
-    "Approving signs this transaction and returns the signature to the site. Zunia does not broadcast it — the site submits it to the network.",
+    "Approving signs this transaction and returns the signature to the site. Zunia does not broadcast it; the site submits it to the network.",
   signArbitrary:
     "Approving signs this off-chain message (ADR-36) and returns the signature to the site. It cannot move funds by itself.",
   suggestChain:
     "Approving adds this network to your wallet. Nothing is signed and no funds move.",
 };
 
+function useSecondsLeft(expiresAt: number | undefined): number | null {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!expiresAt) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [expiresAt]);
+  if (!expiresAt) return null;
+  return Math.max(0, Math.round((expiresAt - now) / 1000));
+}
+
+function formatCountdown(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
 function OriginHeader({
   origin,
   chainIds,
   kind,
   queued,
+  secondsLeft,
 }: {
   origin: string;
   chainIds: string[];
   kind: ApprovalRequest["kind"];
   queued: number;
+  secondsLeft: number | null;
 }) {
   return (
     <div className="flex flex-col gap-3 border-b border-[var(--z-line)] px-4 pb-3 pt-3">
       <div className="flex items-center gap-2">
         <SectionLabel>{KIND_LABEL[kind]}</SectionLabel>
-        {queued > 1 ? (
-          <span className="ml-auto rounded-full border border-[var(--z-line)] px-2 py-[2px] font-mono text-[9px] uppercase tracking-[0.08em] text-fg-dim">
-            +{queued - 1} queued
-          </span>
-        ) : null}
+        <span className="ml-auto flex items-center gap-1.5">
+          {secondsLeft !== null ? (
+            <span
+              className={cn(
+                "font-mono text-[9px] uppercase tracking-[0.08em]",
+                secondsLeft <= 30 ? "text-[var(--z-warning-fg)]" : "text-fg-dim",
+              )}
+              aria-label={`Expires in ${formatCountdown(secondsLeft)}`}
+            >
+              {formatCountdown(secondsLeft)}
+            </span>
+          ) : null}
+          {queued > 1 ? (
+            <span className="rounded-full border border-[var(--z-line)] px-2 py-[2px] font-mono text-[9px] uppercase tracking-[0.08em] text-fg-dim">
+              +{queued - 1} queued
+            </span>
+          ) : null}
+        </span>
       </div>
       <div className="flex items-center gap-2.5">
         <span className="flex size-[34px] shrink-0 items-center justify-center rounded-full border border-[var(--z-line)] text-fg-muted">
@@ -98,16 +133,54 @@ function OriginHeader({
   );
 }
 
+function SuggestedChainDetails({ draft }: { draft: CustomChainDraft }) {
+  return (
+    <div className="flex flex-col gap-2.5 rounded-[14px] border border-[var(--z-line)] px-3 py-3">
+      <KeyValueRow label="Name" value={draft.chainName} />
+      <KeyValueRow label="Chain ID" value={draft.chainId} />
+      <KeyValueRow label="Token" value={`${draft.coinDenom} (${draft.coinMinimalDenom}, ${draft.coinDecimals} decimals)`} />
+      <KeyValueRow label="Address prefix" value={draft.bech32Prefix} />
+      <KeyValueRow label="Coin type" value={String(draft.coinType)} />
+      <div className="flex flex-col gap-1">
+        <span className="text-[11px] text-fg-dim">RPC</span>
+        <span className="break-all font-mono text-[10.5px] text-fg">{draft.rpc}</span>
+      </div>
+      <div className="flex flex-col gap-1">
+        <span className="text-[11px] text-fg-dim">REST</span>
+        <span className="break-all font-mono text-[10.5px] text-fg">{draft.rest}</span>
+      </div>
+    </div>
+  );
+}
+
 export function ApproveScreen({
   approvals,
   status,
+  requirePassword,
   onDone,
 }: {
   approvals: ApprovalRequest[];
   status: SessionStatus;
+  requirePassword: boolean;
   onDone: () => void;
 }) {
   const current = approvals[0];
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState<"approve" | "reject" | null>(null);
+  const secondsLeft = useSecondsLeft(current?.expiresAt);
+  const currentId = current?.id;
+
+  // Each request starts clean: an error or a typed password never carries over
+  // to the next one in the queue.
+  const [shownId, setShownId] = useState(currentId);
+  if (shownId !== currentId) {
+    setShownId(currentId);
+    setPassword("");
+    setError(null);
+    setBusy(null);
+  }
+
   const active =
     status.accounts.find((a) => a.index === status.activeAccountIndex) ??
     status.accounts[0];
@@ -141,20 +214,38 @@ export function ApproveScreen({
   const unsupported = current.kind === "sendTx";
   const blocked = Boolean(summary?.requiresBlindSigning);
   const effect = KIND_EFFECT[current.kind];
+  const needsPassword = requirePassword && SIGNING_KINDS.has(current.kind);
+  const signer = (current.detail as { signer?: unknown } | undefined)?.signer;
+  const draft = (current.detail as { draft?: CustomChainDraft } | undefined)?.draft;
+  const expired = secondsLeft === 0;
 
   async function approve() {
-    await sendToBackground("RESOLVE_APPROVAL", {
-      id: current!.id,
-      result: { approved: true },
-    });
-    onDone();
+    setBusy("approve");
+    setError(null);
+    try {
+      await sendToBackground("RESOLVE_APPROVAL", {
+        id: current!.id,
+        result: { approved: true },
+        password: needsPassword ? password : undefined,
+      });
+      setPassword("");
+      onDone();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setBusy(null);
+    }
   }
 
   async function reject() {
-    await sendToBackground("REJECT_APPROVAL", {
-      id: current!.id,
-      reason: "User rejected",
-    });
+    setBusy("reject");
+    try {
+      await sendToBackground("REJECT_APPROVAL", {
+        id: current!.id,
+        reason: "User rejected",
+      });
+    } catch {
+      // Already gone from the queue (expired, or the tab closed): nothing left to reject.
+    }
     onDone();
   }
 
@@ -166,6 +257,7 @@ export function ApproveScreen({
           chainIds={current.chainIds}
           kind={current.kind}
           queued={approvals.length}
+          secondsLeft={secondsLeft}
         />
       }
       footer={
@@ -179,23 +271,50 @@ export function ApproveScreen({
             Reject request
           </Button>
         ) : (
-          <div className="flex gap-2">
-            <Button
-              variant="secondary"
-              className="flex-1"
-              size="lg"
-              onClick={() => void reject()}
-            >
-              Reject
-            </Button>
-            <Button
-              className="flex-[1.4]"
-              size="lg"
-              disabled={blocked}
-              onClick={() => void approve()}
-            >
-              Approve
-            </Button>
+          <div className="flex flex-col gap-2.5">
+            {needsPassword && !blocked ? (
+              <PasswordInput
+                aria-label="Password to sign"
+                placeholder="Password to sign"
+                value={password}
+                state={error ? "error" : "default"}
+                onChange={(e) => {
+                  setPassword(e.target.value);
+                  if (error) setError(null);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && password && !busy) void approve();
+                }}
+              />
+            ) : null}
+            {error ? (
+              <p role="alert" className="text-[11.5px] text-[var(--z-danger-fg)]">
+                {error}
+              </p>
+            ) : null}
+            <div className="flex gap-2">
+              <Button
+                variant="secondary"
+                className="flex-1"
+                size="lg"
+                loading={busy === "reject"}
+                disabled={busy !== null}
+                onClick={() => void reject()}
+              >
+                Reject
+              </Button>
+              <Button
+                className="flex-[1.4]"
+                size="lg"
+                loading={busy === "approve"}
+                disabled={
+                  blocked || expired || busy !== null || (needsPassword && !password)
+                }
+                onClick={() => void approve()}
+              >
+                {needsPassword ? "Sign" : "Approve"}
+              </Button>
+            </div>
           </div>
         )
       }
@@ -213,6 +332,12 @@ export function ApproveScreen({
             That path does not exist, so there is nothing to approve here and
             nothing has been sent. Reject the request and let the site broadcast
             the signature itself.
+          </Callout>
+        ) : null}
+
+        {expired ? (
+          <Callout tone="warning" title="This request expired">
+            Nothing was signed. Ask the site to send the request again.
           </Callout>
         ) : null}
 
@@ -239,6 +364,8 @@ export function ApproveScreen({
           </Callout>
         ) : null}
 
+        {draft ? <SuggestedChainDetails draft={draft} /> : null}
+
         {summary && summary.messages.length > 0 ? (
           <ol className="flex flex-col gap-2">
             {summary.messages.map((message, i) => (
@@ -258,9 +385,11 @@ export function ApproveScreen({
                   <span className="block text-[12.5px] leading-snug text-fg">
                     {message.summary}
                   </span>
-                  <span className="mt-1 block truncate font-mono text-[9.5px] text-fg-dim">
-                    {message.type}
-                  </span>
+                  {message.type ? (
+                    <span className="mt-1 block truncate font-mono text-[9.5px] text-fg-dim">
+                      {message.type}
+                    </span>
+                  ) : null}
                 </span>
               </li>
             ))}
@@ -281,22 +410,28 @@ export function ApproveScreen({
           </div>
         ) : null}
 
-        <div className="flex flex-col gap-2.5 rounded-[14px] border border-[var(--z-line)] px-3 py-3">
-          <KeyValueRow
-            label="Wallet"
-            value={
-              active
-                ? `${active.name} · ${truncateAddress(active.address, 8, 4)}`
-                : "—"
-            }
-          />
-          {summary?.fees.map((fee) => (
-            <KeyValueRow key={fee.label} label={fee.label} value={fee.value} />
-          ))}
-          {summary?.memo ? (
-            <KeyValueRow label="Memo" value={summary.memo} />
-          ) : null}
-        </div>
+        {current.kind !== "suggestChain" ? (
+          <div className="flex flex-col gap-2.5 rounded-[14px] border border-[var(--z-line)] px-3 py-3">
+            <KeyValueRow
+              label="Wallet"
+              value={
+                active
+                  ? `${active.name} · ${truncateAddress(
+                      typeof signer === "string" ? signer : active.address,
+                      8,
+                      4,
+                    )}`
+                  : "No account"
+              }
+            />
+            {summary?.fees.map((fee) => (
+              <KeyValueRow key={fee.label} label={fee.label} value={fee.value} />
+            ))}
+            {summary?.memo ? (
+              <KeyValueRow label="Memo" value={summary.memo} />
+            ) : null}
+          </div>
+        ) : null}
 
         <p className="flex items-center justify-center gap-1.5 pb-1 font-mono text-[9px] uppercase tracking-[0.12em] text-fg-dim">
           <IconShield width={16} height={16} />

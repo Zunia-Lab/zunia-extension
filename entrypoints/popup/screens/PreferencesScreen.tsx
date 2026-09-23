@@ -5,7 +5,11 @@ import {
   ScreenScaffold,
   Segmented,
 } from "@zunialab/ui";
-import { CURRENCIES, type CurrencyCode } from "../../../lib/settings";
+import {
+  CURRENCIES,
+  INERT_SETTINGS,
+  type CurrencyCode,
+} from "../../../lib/settings";
 import {
   dropLiveBalancePermission,
   hasLiveBalancePermission,
@@ -88,8 +92,12 @@ export function PreferencesScreen({ onBack }: { onBack: () => void }) {
           />
           <SettingsToggle
             title="Anonymous diagnostics"
-            description="Crash counts only. Never addresses, balances, or phrases."
-            checked={settings.diagnostics}
+            description={
+              INERT_SETTINGS.diagnostics ??
+              "Crash counts only. Never addresses, balances, or phrases."
+            }
+            checked={INERT_SETTINGS.diagnostics ? false : settings.diagnostics}
+            disabled={Boolean(INERT_SETTINGS.diagnostics)}
             onCheckedChange={(diagnostics) => void update({ diagnostics })}
           />
         </SettingsGroup>
@@ -114,8 +122,12 @@ export function PreferencesScreen({ onBack }: { onBack: () => void }) {
           />
           <SettingsToggle
             title="Browser alerts"
-            description="Notify on transfers and governance deadlines."
-            checked={settings.browserAlerts}
+            description={
+              INERT_SETTINGS.browserAlerts ??
+              "Notify on transfers and governance deadlines."
+            }
+            checked={INERT_SETTINGS.browserAlerts ? false : settings.browserAlerts}
+            disabled={Boolean(INERT_SETTINGS.browserAlerts)}
             onCheckedChange={(browserAlerts) => void update({ browserAlerts })}
           />
         </SettingsGroup>

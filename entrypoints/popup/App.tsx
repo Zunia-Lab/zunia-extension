@@ -16,6 +16,7 @@ import { useChainAccounts } from "./hooks/useChainAccounts";
 import { useBalances } from "./hooks/useBalances";
 import { usePrices } from "./hooks/usePrices";
 import { PrefsProvider } from "./state/Prefs";
+import { SigningPasswordProvider } from "./state/SigningPassword";
 import { BottomNav } from "./components/BottomNav";
 import { MoreDrawer } from "./components/MoreDrawer";
 import {
@@ -103,10 +104,17 @@ const NO_CONTACTS: AddressBookEntry[] = [];
 function AppBody({ state }: { state: ExtensionState }) {
   const { status, settings, approvals, grants, error, loading, refresh } =
     state;
-  const [override, setOverride] = useState<PopupLocation | null>(() => {
+  const [override, setOverrideState] = useState<PopupLocation | null>(() => {
     const route = initialRouteFromUrl();
     return route ? { route } : null;
   });
+  // When the user last navigated. A dApp request newer than that takes over the
+  // screen; an older one waits until the user comes back to it.
+  const [navigatedAt, setNavigatedAt] = useState(0);
+  const setOverride = useCallback((next: PopupLocation | null) => {
+    setOverrideState(next);
+    setNavigatedAt(Date.now());
+  }, []);
   const [menuOpen, setMenuOpen] = useState(false);
   const [contacts, setContacts] = useState<AddressBookEntry[]>(NO_CONTACTS);
   const [selectedTx, setSelectedTx] = useState<ActivityItem | null>(null);
@@ -167,6 +175,11 @@ function AppBody({ state }: { state: ExtensionState }) {
     };
   }, [unlocked, contactsToken]);
 
+  const newestApprovalAt = approvals.reduce(
+    (latest, item) => Math.max(latest, item.createdAt),
+    0,
+  );
+
   const location: PopupLocation = useMemo(() => {
     if (override?.route === "create" || override?.route === "import") {
       return override;
@@ -178,38 +191,55 @@ function AppBody({ state }: { state: ExtensionState }) {
         ? override
         : { route: "unlock" };
     }
-    if (override && UNLOCKED_ROUTES.includes(override.route)) return override;
+    if (override && UNLOCKED_ROUTES.includes(override.route)) {
+      if (approvals.length > 0 && newestApprovalAt > navigatedAt) {
+        return { route: "approve" };
+      }
+      return override;
+    }
     if (approvals.length > 0) return { route: "approve" };
     return { route: "home" };
-  }, [loading, status, override, approvals.length]);
+  }, [loading, status, override, approvals.length, newestApprovalAt, navigatedAt]);
 
   const route = location.route;
 
-  const go = useCallback((next: PopupRoute | null, chainId?: string) => {
-    setOverride(next ? { route: next, chainId } : null);
-  }, []);
+  const go = useCallback(
+    (next: PopupRoute | null, chainId?: string) => {
+      setOverride(next ? { route: next, chainId } : null);
+    },
+    [setOverride],
+  );
 
-  const openTx = useCallback((item: ActivityItem) => {
-    setSelectedTx(item);
-    setOverride({
-      route: "tx",
-      chainId: item.chainId,
-      hash: item.hash,
-    });
-  }, []);
+  const openTx = useCallback(
+    (item: ActivityItem) => {
+      setSelectedTx(item);
+      setOverride({
+        route: "tx",
+        chainId: item.chainId,
+        hash: item.hash,
+      });
+    },
+    [setOverride],
+  );
 
-  const openValidator = useCallback((validator: ValidatorInfo) => {
-    setSelectedValidator(validator);
-    setOverride({
-      route: "validator",
-      chainId: validator.chainId,
-      operatorAddress: validator.operatorAddress,
-    });
-  }, []);
+  const openValidator = useCallback(
+    (validator: ValidatorInfo) => {
+      setSelectedValidator(validator);
+      setOverride({
+        route: "validator",
+        chainId: validator.chainId,
+        operatorAddress: validator.operatorAddress,
+      });
+    },
+    [setOverride],
+  );
 
-  const openAsset = useCallback((chainId: string) => {
-    setOverride({ route: "asset", chainId });
-  }, []);
+  const openAsset = useCallback(
+    (chainId: string) => {
+      setOverride({ route: "asset", chainId });
+    },
+    [setOverride],
+  );
 
   // A CW721 token is identified by three things, so all three travel in the
   // location: a token id is unique only inside its contract, and a contract
@@ -223,13 +253,13 @@ function AppBody({ state }: { state: ExtensionState }) {
         tokenId: input.tokenId,
       });
     },
-    [],
+    [setOverride],
   );
 
   const back = useCallback(() => {
     const parent = PARENT_ROUTE[route] ?? "home";
     setOverride(parent === "home" ? null : { route: parent });
-  }, [route]);
+  }, [route, setOverride]);
 
   const activeAccount = status?.accounts.find(
     (a) => a.index === status.activeAccountIndex,
@@ -589,7 +619,13 @@ function AppBody({ state }: { state: ExtensionState }) {
         <ApproveScreen
           approvals={approvals}
           status={status}
+          requirePassword={Boolean(settings?.requirePasswordOnSign)}
           onDone={() => {
+            // A window opened only to answer requests closes with the last one.
+            if (initialRouteFromUrl() === "approve" && approvals.length <= 1) {
+              window.close();
+              return;
+            }
             go(null);
             void refresh();
           }}
@@ -624,7 +660,11 @@ export default function App() {
         settings={state.settings}
         onChanged={() => void state.refresh()}
       >
-        <AppBody state={state} />
+        <SigningPasswordProvider
+          required={Boolean(state.settings?.requirePasswordOnSign)}
+        >
+          <AppBody state={state} />
+        </SigningPasswordProvider>
       </PrefsProvider>
     </ThemeProvider>
   );

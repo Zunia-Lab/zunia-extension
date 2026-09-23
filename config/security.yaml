@@ -1,4 +1,5 @@
-# Extension dApp / phishing hardening (config only)
+# Extension dApp / phishing hardening. Mirrored in config/security.ts, which is
+# what the code reads. Every entry below describes behavior that exists.
 
 schema_version: 1
 
@@ -8,24 +9,39 @@ permissions:
   revocable: true
   listed_in_settings: true
   expire_sessions: true
+  default_ttl_days: 7
 
 provider:
   no_post_message_wildcard: true
   origin_check_both_sides: true
   isolated_message_channel: true
-  approval_ui: extension_popup_or_window
-  never_in_page_iframe: true
+  # The origin is taken from the browser's sender record, never from the message.
+  origin_from_sender: true
+  # Connection prompts render in-page only where the browser can prove the frame
+  # is visible and unobstructed (IntersectionObserver v2). Otherwise the popup.
+  connect_prompt_in_page: visibility_verified_only
+  signing_ui: extension_popup_or_window
+
+approvals:
+  ttl_minutes: 5
+  reject_on_ui_close: true
 
 rate_limits:
   max_pending_approvals: 3
   queue_extra_prompts: true
 
+signing:
+  blind_signing_default: false
+  warn_unknown_msgs: true
+  warn_first_time_recipient: true
+  refuse_chain_id_mismatch: true
+  require_active_signer: true
+
 phishing:
-  blocklist_enabled: true
-  # Community lists to consume when backend ships
-  sources:
-    - https://raw.githubusercontent.com/Zunia-Lab/zunia-backend/main/data/phishing.json
+  # Computed locally from the origin: lookalike names, punycode, raw IPs.
   lookalike_warn: true
+  # No remote blocklist is consulted today.
+  remote_blocklist: false
 
 csp:
   unsafe_eval: false

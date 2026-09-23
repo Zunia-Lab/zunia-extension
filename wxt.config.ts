@@ -123,6 +123,13 @@ export default defineConfig({
         resources: ["injected.js", "content-scripts/injected.js"],
         matches: [...PROVIDER_RESOURCE_MATCHES],
       },
+      {
+        // The in-page connect prompt. Only this page is frameable by sites;
+        // the popup, onboarding and everything that signs are not web
+        // accessible, so no page can embed them.
+        resources: ["connect.html"],
+        matches: [...PROVIDER_RESOURCE_MATCHES],
+      },
     ],
     content_security_policy: {
       /**
@@ -143,9 +150,14 @@ export default defineConfig({
        * unchanged. An `<img>` cannot execute script, and every NFT image is
        * rendered with `referrerPolicy="no-referrer"` so the request carries
        * nothing about this extension.
+       *
+       * `frame-ancestors` admits the pages the connect prompt is drawn on and
+       * nothing else. It applies to every extension page, but only
+       * connect.html is web accessible, so it is the only page a site can
+       * actually load in a frame.
        */
       extension_pages:
-        "script-src 'self'; object-src 'self'; frame-ancestors 'none'; img-src 'self' data: https:;",
+        "script-src 'self'; object-src 'self'; frame-ancestors 'self' https: http://localhost:* http://127.0.0.1:*; img-src 'self' data: https:;",
     },
     browser_specific_settings: {
       gecko: {

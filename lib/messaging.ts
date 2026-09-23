@@ -103,7 +103,13 @@ export type ExtensionMessageType =
    */
   | "SIGN_AND_BROADCAST_TX"
   /** Background → content script: mount the in-page connect modal. */
-  | "SHOW_CONNECT_OVERLAY";
+  | "SHOW_CONNECT_OVERLAY"
+  /** Background → content scripts: relay a provider event to matching pages. */
+  | "PROVIDER_EVENT"
+  /** Background → extension pages: the approval queue changed. */
+  | "APPROVALS_CHANGED"
+  /** Consecutive wrong passwords and when the next attempt is allowed. */
+  | "GET_PASSWORD_THROTTLE";
 
 export interface ExtensionMessage {
   type: ExtensionMessageType;
@@ -124,11 +130,3 @@ export const PAGE_CHANNEL = {
   event: "zunia:event",
 } as const;
 
-export function assertInternalSender(
-  sender: { id?: string; origin?: string; url?: string },
-  extensionId: string,
-): boolean {
-  // Messages from extension pages / content scripts share the extension id.
-  if (sender.id && sender.id !== extensionId) return false;
-  return true;
-}

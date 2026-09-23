@@ -1,16 +1,17 @@
 /**
- * Secure dApp / WalletConnect connection config for the browser extension.
+ * dApp connection surface of the browser extension: the in-page provider, who
+ * may message the extension, and where the provider is injected.
  */
 
 export const CONNECT_CONFIG = {
-  schemaVersion: 1,
+  schemaVersion: 2,
 
   provider: {
     /** Primary in-page API: window.zunia */
     globalName: "zunia" as const,
     /** Optional Keplr-compatible alias for existing dApps */
     keplrCompatibleAlias: "keplr" as const,
-    /** Default OFF — user opts in via chrome.storage.local settings. */
+    /** Default OFF. The user opts in from Settings > Security. */
     exposeKeplrAlias: false,
     version: "0.1.0",
     isZunia: true,
@@ -25,7 +26,10 @@ export const CONNECT_CONFIG = {
     ],
   },
 
-  /** Origins that may message the extension via chrome.runtime (dashboard / site). */
+  /**
+   * Origins that may message the extension via chrome.runtime. They get PING
+   * and a lock status without accounts, nothing else.
+   */
   externallyConnectableMatches: [
     "https://zunialab.com/*",
     "https://*.zunialab.com/*",
@@ -46,29 +50,21 @@ export const CONNECT_CONFIG = {
   ],
 
   security: {
-    /** Per-origin permission before enable() / getAccounts */
+    /** Per-origin, per-chain approval before enable(), getKey, or getAccounts */
     defaultOriginPolicy: "prompt" as const,
     requireUserApproval: true,
+    /** Every signature request opens a decoded preview in the extension popup */
     requireTxPreview: true,
-    /** Do not auto-approve known phishing domains (list filled later) */
-    blocklistEnabled: true,
-    /** Isolate provider in MAIN world via separate injected script */
+    /** Provider runs in the MAIN world, keys stay in the service worker */
     injectInMainWorld: true,
   },
 
-  walletConnect: {
-    version: 2,
-    /** Same Cloud project as mobile / dashboard */
-    projectIdEnv: "WXT_WALLETCONNECT_PROJECT_ID",
-    relayUrl: "wss://relay.walletconnect.com",
-    /** Mobile deep link when extension opens WC pairing on phone */
-    mobileDeepLink: "zunia://wc",
-    universalLink: "https://zunialab.com/wc",
-  },
-
+  /** Methods window.zunia implements. sendTx exists and always refuses. */
   cosmosMethods: [
     "enable",
+    "disable",
     "getKey",
+    "getAccounts",
     "getOfflineSigner",
     "getOfflineSignerOnlyAmino",
     "getOfflineSignerAuto",
@@ -77,6 +73,7 @@ export const CONNECT_CONFIG = {
     "signArbitrary",
     "verifyArbitrary",
     "experimentalSuggestChain",
+    "getChainInfos",
     "getChainInfosWithoutEndpoints",
   ],
 } as const;

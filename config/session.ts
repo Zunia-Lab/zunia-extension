@@ -5,8 +5,12 @@
 export const SESSION_CONFIG = {
   schemaVersion: 1,
   storage: {
-    decryptedKeyInServiceWorkerMemoryOnly: true,
-    neverPersistDecryptedToChromeStorage: true,
+    /**
+     * chrome.storage.session: memory only, gone when the browser closes, and not
+     * readable by content scripts at the default TRUSTED_CONTEXTS access level.
+     */
+    decryptedPhraseInSessionStorageOnly: true,
+    neverPersistDecryptedToDisk: true,
   },
   autoLock: {
     defaultMs: 600_000,
@@ -18,8 +22,9 @@ export const SESSION_CONFIG = {
     alarmName: "zunia-autolock",
   },
   password: {
+    /** See lib/password-throttle.ts for the schedule. */
     rateLimit: "exponential_backoff" as const,
-    wipeAfterNFailuresOptIn: true,
+    perSignatureConfirmation: "opt_in" as const,
   },
 } as const;
 

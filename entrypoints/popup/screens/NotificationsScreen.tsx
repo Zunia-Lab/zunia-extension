@@ -9,6 +9,7 @@ import {
 import type { ApprovalRequest } from "../../../lib/approvals";
 import type { ChainBalance } from "../../../lib/balances";
 import { relativeTime } from "../../../lib/format";
+import { INERT_SETTINGS } from "../../../lib/settings";
 import { SettingsGroup, SettingsToggle } from "../components/SettingsList";
 import type { ChainAccountView } from "../hooks/useChainAccounts";
 import {
@@ -177,8 +178,11 @@ export function NotificationsScreen({
         <SettingsGroup label="Alerts">
           <SettingsToggle
             title="Browser alerts"
-            description="Transfers and governance deadlines."
-            checked={settings.browserAlerts}
+            description={
+              INERT_SETTINGS.browserAlerts ?? "Transfers and governance deadlines."
+            }
+            checked={INERT_SETTINGS.browserAlerts ? false : settings.browserAlerts}
+            disabled={Boolean(INERT_SETTINGS.browserAlerts)}
             onCheckedChange={(browserAlerts) => void update({ browserAlerts })}
           />
         </SettingsGroup>
