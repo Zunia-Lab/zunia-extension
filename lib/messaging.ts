@@ -82,7 +82,9 @@ export type ExtensionMessageType =
   | "REVEAL_MNEMONIC"
   | "RESET_WALLET"
   | "LIST_PERMISSIONS"
+  /** One site, or one chain of it when `chainId` is set. */
   | "REVOKE_PERMISSION"
+  | "REVOKE_ALL_PERMISSIONS"
   | "GET_SETTINGS"
   | "SET_SETTINGS"
   | "GET_PENDING_APPROVALS"

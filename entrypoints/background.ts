@@ -21,6 +21,8 @@ import {
 } from "../lib/messaging";
 import {
   listActiveGrants,
+  revokeAllPermissions,
+  revokeChain,
   revokePermission,
 } from "../lib/permissions";
 import {
@@ -169,14 +171,18 @@ async function requireSigningPassword(password: unknown): Promise<void> {
  * without it every page with the provider hears it, carrying no data, which is
  * how Keplr's `keplr_keystorechange` behaves.
  */
-async function broadcastProviderEvent(event: string, origins?: string[]): Promise<void> {
+async function broadcastProviderEvent(
+  event: string,
+  origins?: string[],
+  data?: { chainIds: string[] },
+): Promise<void> {
   let tabs: Array<{ id?: number }> = [];
   try {
     tabs = await browser.tabs.query({});
   } catch {
     return;
   }
-  const message = { type: "PROVIDER_EVENT", payload: { event, origins } };
+  const message = { type: "PROVIDER_EVENT", payload: { event, origins, data } };
   await Promise.all(
     tabs.map((tab) =>
       typeof tab.id === "number"
@@ -548,10 +554,26 @@ async function routeMessage(
         return { ok: true, data: await listActiveGrants() };
 
       case "REVOKE_PERMISSION": {
-        const payload = message.payload as { origin: string };
-        await revokePermission(payload.origin);
-        void broadcastProviderEvent("disconnect", [payload.origin]);
+        const payload = (message.payload ?? {}) as Record<string, unknown>;
+        const origin = textField(payload.origin);
+        if (!origin) return { ok: false, error: "origin required" };
+        const chainId = textField(payload.chainId);
+        // Either way the page hears it: a site that keeps other chains is
+        // told which ones it lost.
+        if (chainId) {
+          await revokeChain(origin, chainId);
+          void broadcastProviderEvent("disconnect", [origin], { chainIds: [chainId] });
+        } else {
+          await revokePermission(origin);
+          void broadcastProviderEvent("disconnect", [origin]);
+        }
         return { ok: true };
+      }
+
+      case "REVOKE_ALL_PERMISSIONS": {
+        const origins = await revokeAllPermissions();
+        if (origins.length > 0) void broadcastProviderEvent("disconnect", origins);
+        return { ok: true, data: { revoked: origins.length } };
       }
 
       case "GET_SETTINGS":

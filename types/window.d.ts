@@ -51,11 +51,13 @@ export interface ZuniaProvider {
     chainId: string,
     signer: string,
     signDoc: unknown,
+    signOptions?: { preferNoSetFee?: boolean; preferNoSetMemo?: boolean },
   ): Promise<unknown>;
   signDirect?(
     chainId: string,
     signer: string,
     signDoc: unknown,
+    signOptions?: { preferNoSetFee?: boolean; preferNoSetMemo?: boolean },
   ): Promise<unknown>;
   sendTx?(
     chainId: string,

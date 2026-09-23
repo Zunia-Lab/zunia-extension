@@ -33,7 +33,14 @@ const KNOWN_DOMAINS = [
 /** Brand tokens long enough that finding one inside another domain means something. */
 const BRAND_TOKENS = KNOWN_DOMAINS.map((d) => d.split(".")[0]).filter((t) => t.length >= 5);
 
+/**
+ * `suspicious` when any of the patterns above matched, `local` for a page
+ * served from this computer, `none` otherwise.
+ */
+export type OriginRiskLevel = "none" | "local" | "suspicious";
+
 export interface OriginRisk {
+  level: OriginRiskLevel;
   warnings: string[];
 }
 
@@ -74,13 +81,13 @@ export function assessOrigin(origin: string): OriginRisk {
   try {
     url = new URL(origin);
   } catch {
-    return { warnings: ["Zunia could not read this site's address."] };
+    return { level: "suspicious", warnings: ["Zunia could not read this site's address."] };
   }
   const host = url.hostname.toLowerCase();
   const warnings: string[] = [];
 
   if (isLocalHost(host)) {
-    return { warnings: ["This is a site running on your own computer."] };
+    return { level: "local", warnings: ["This is a site running on your own computer."] };
   }
   if (url.protocol !== "https:") {
     warnings.push("The connection to this site is not encrypted.");
@@ -108,5 +115,5 @@ export function assessOrigin(origin: string): OriginRisk {
     }
   }
 
-  return { warnings };
+  return { level: warnings.length > 0 ? "suspicious" : "none", warnings };
 }

@@ -116,7 +116,10 @@ export default defineUnlistedScript(() => {
           }
           if (msg.event === "disconnect") {
             emit("disconnect", msg.data);
-            dispatchWindowEvent("disconnect");
+            // Losing some chains is a key change for a Keplr-style dApp, which
+            // then finds out which getKey calls stopped working.
+            const partial = Array.isArray((msg.data as { chainIds?: unknown } | null)?.chainIds);
+            dispatchWindowEvent(partial ? "keystorechange" : "disconnect");
           }
           if (msg.event === "locked") {
             emit("locked", msg.data);
@@ -170,6 +173,17 @@ export default defineUnlistedScript(() => {
     listeners.get(event)?.delete(handler);
   }
 
+  /**
+   * Keplr's sign options: the call's own first, then `defaultOptions.sign`,
+   * which dApps set on the provider. Only `preferNoSetFee` changes anything.
+   */
+  function signOptionsFor(explicit: unknown): { preferNoSetFee: boolean } {
+    const defaults = (provider.defaultOptions as { sign?: { preferNoSetFee?: unknown } } | undefined)
+      ?.sign;
+    const given = explicit && typeof explicit === "object" ? (explicit as { preferNoSetFee?: unknown }) : {};
+    return { preferNoSetFee: (given.preferNoSetFee ?? defaults?.preferNoSetFee) === true };
+  }
+
   function getOfflineSigner(chainId: string): ZuniaOfflineSigner {
     return {
       getAccounts: async () => {
@@ -185,7 +199,7 @@ export default defineUnlistedScript(() => {
         }));
       },
       signAmino: (signerAddress: string, signDoc: unknown) =>
-        request("signAmino", [chainId, signerAddress, signDoc]),
+        request("signAmino", [chainId, signerAddress, signDoc, signOptionsFor(undefined)]),
       signDirect: (signerAddress: string, signDoc: unknown) =>
         signDirect(chainId, signerAddress, signDoc),
     };
@@ -197,14 +211,33 @@ export default defineUnlistedScript(() => {
     return { getAccounts, signAmino };
   }
 
-  async function signDirect(chainId: string, signer: string, signDoc: unknown) {
+  async function signDirect(
+    chainId: string,
+    signer: string,
+    signDoc: unknown,
+    signOptions?: unknown,
+  ) {
     const response = (await request("signDirect", [
       chainId,
       signer,
       wireDirectSignDoc(signDoc),
-    ])) as { signature: unknown };
+      signOptionsFor(signOptions),
+    ])) as {
+      signature: unknown;
+      feeChanged?: boolean;
+      signed?: { authInfoBytes?: unknown };
+    };
     // The background signed exactly the bytes of this document, so hand the
-    // caller's own object back rather than the JSON copy.
+    // caller's own object back rather than the JSON copy. When the user picked
+    // another fee tier only the auth info changed, and the caller needs it to
+    // broadcast what was signed.
+    const authInfoBytes = response.signed?.authInfoBytes;
+    if (response.feeChanged === true && Array.isArray(authInfoBytes) && signDoc && typeof signDoc === "object") {
+      return {
+        signed: { ...signDoc, authInfoBytes: Uint8Array.from(authInfoBytes as number[]) },
+        signature: response.signature,
+      };
+    }
     return { signed: signDoc, signature: response.signature };
   }
 
@@ -239,10 +272,10 @@ export default defineUnlistedScript(() => {
     getOfflineSigner,
     getOfflineSignerOnlyAmino,
     getOfflineSignerAuto: async (chainId) => getOfflineSigner(chainId),
-    signAmino: async (chainId, signer, signDoc) =>
-      request("signAmino", [chainId, signer, signDoc]),
-    signDirect: async (chainId, signer, signDoc) =>
-      signDirect(chainId, signer, signDoc),
+    signAmino: async (chainId, signer, signDoc, signOptions?: unknown) =>
+      request("signAmino", [chainId, signer, signDoc, signOptionsFor(signOptions)]),
+    signDirect: async (chainId, signer, signDoc, signOptions?: unknown) =>
+      signDirect(chainId, signer, signDoc, signOptions),
     signArbitrary: async (chainId, signer, data) =>
       request("signArbitrary", [chainId, signer, wireBytes(data)]),
     verifyArbitrary: async (...args: unknown[]) =>

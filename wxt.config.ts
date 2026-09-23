@@ -148,6 +148,11 @@ export default defineConfig({
        *   list would not make the wallet safer, it would make the "Load
        *   artwork" control a lie, because nothing would ever load.
        *
+       * The same `https:` source also shows the favicon of a site the user
+       * connected, on the Connected dApps screen. It is fetched from that
+       * site's own origin, which already knows the user visits it, and never
+       * from a third-party icon service that would learn the list.
+       *
        * `script-src 'self'` is what actually keeps foreign code out, and it is
        * unchanged. An `<img>` cannot execute script, and every NFT image is
        * rendered with `referrerPolicy="no-referrer"` so the request carries

@@ -234,12 +234,14 @@ describe("custom chain drafts", () => {
 describe("assessOrigin", () => {
   it("stays quiet for the real sites and their subdomains", () => {
     expect(assessOrigin("https://app.osmosis.zone").warnings).toEqual([]);
+    expect(assessOrigin("https://app.osmosis.zone").level).toBe("none");
     expect(assessOrigin("https://wallet.keplr.app").warnings).toEqual([]);
     expect(assessOrigin("https://example.com").warnings).toEqual([]);
   });
 
   it("flags lookalikes, punycode, raw IPs, and plain http", () => {
     expect(assessOrigin("https://osmosls.zone").warnings.join(" ")).toMatch(/osmosis\.zone/);
+    expect(assessOrigin("https://osmosls.zone").level).toBe("suspicious");
     expect(assessOrigin("https://keplr-rewards.io").warnings.join(" ")).toMatch(/keplr\.app/);
     expect(assessOrigin("https://xn--osmsis-8ya.zone").warnings.join(" ")).toMatch(
       /international characters/,
@@ -250,6 +252,7 @@ describe("assessOrigin", () => {
 
   it("gives localhost one note, not a warning pile", () => {
     expect(assessOrigin("http://localhost:3000").warnings).toHaveLength(1);
+    expect(assessOrigin("http://localhost:3000").level).toBe("local");
   });
 });
 

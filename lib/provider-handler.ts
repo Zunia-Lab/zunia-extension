@@ -28,12 +28,24 @@ import {
   verifyAdr36,
   type DerivedAddress,
 } from "./kernel";
+import {
+  aminoFeeOf,
+  authInfoFee,
+  feeChoiceFor,
+  isFeeTier,
+  signOptionsFrom,
+  withAminoFee,
+  withAuthInfoFee,
+  type FeeChoice,
+  type FeeTier,
+} from "./fee-tiers";
 import { assessOrigin } from "./origin-risk";
 import {
   grantPermission,
   hasPermission,
   revokeChain,
   revokePermission,
+  touchPermission,
 } from "./permissions";
 import {
   aminoSignDocChainId,
@@ -269,14 +281,26 @@ function originWarnings(origin: string): string[] {
   return assessOrigin(origin).warnings;
 }
 
+/** Record a use of the grant. Bookkeeping only: it never fails the request. */
+function noteUse(origin: string, exposure?: { chainId: string; address: string }): void {
+  void touchPermission(origin, exposure).catch(() => undefined);
+}
+
 type NewApproval = Omit<ApprovalRequest, "id" | "createdAt" | "expiresAt">;
 
 /** Queue a request for the popup, bring the popup up, and wait for the answer. */
-async function approveInPopup(request: NewApproval): Promise<void> {
+async function approveInPopup(request: NewApproval): Promise<{ feeTier?: unknown }> {
   const { result } = enqueueApprovalWithId({ ...request, host: "popup" });
   void openApprovalUi();
-  const answer = (await result) as { approved?: boolean } | undefined;
+  const answer = (await result) as { approved?: boolean; feeTier?: unknown } | undefined;
   if (!answer?.approved) throw new Error("Request rejected");
+  return answer;
+}
+
+/** The tier the user picked, when it differs from the fee the site set. */
+function pickedTier(choice: FeeChoice | null, answer: { feeTier?: unknown }): FeeTier | null {
+  if (!choice || !isFeeTier(answer.feeTier)) return null;
+  return choice.tiers[answer.feeTier] === choice.site ? null : answer.feeTier;
 }
 
 /**
@@ -370,7 +394,10 @@ export async function handleProviderRequest(input: {
 
       const wasLocked = !(await isUnlocked());
       if (wasLocked) await waitForUnlock();
-      if (await hasPermission(origin, chainIds)) return null;
+      if (await hasPermission(origin, chainIds)) {
+        noteUse(origin);
+        return null;
+      }
 
       const joined = findPendingEnable(origin, tabId);
       let result: Promise<unknown>;
@@ -390,10 +417,13 @@ export async function handleProviderRequest(input: {
         result = queued.result;
         // Connection prompts render over the page so the choice stays next to
         // the site asking for it, but only when the popup is not already the
-        // place the user is looking. Signing never renders in-page.
+        // place the user is looking. Signing never renders in-page, and
+        // neither does a prompt for a lookalike site: the page it would sit
+        // on is the one under suspicion.
         const inPage =
           !wasLocked &&
           !approvalUiOpen() &&
+          assessOrigin(origin).level !== "suspicious" &&
           (await showConnectOverlay(tabId, queued.id, origin));
         setApprovalHost(queued.id, inPage ? "overlay" : "popup");
         if (!inPage) void openApprovalUi();
@@ -421,6 +451,7 @@ export async function handleProviderRequest(input: {
       await requirePermission(origin, chainId);
       const mnemonic = await unlockedMnemonic();
       const key = await activeKey(mnemonic, chainId);
+      noteUse(origin, { chainId, address: key.derived.bech32Address });
       return {
         name: key.name,
         algo: key.derived.algo,
@@ -438,6 +469,7 @@ export async function handleProviderRequest(input: {
       await requirePermission(origin, chainId);
       const mnemonic = await unlockedMnemonic();
       const key = await activeKey(mnemonic, chainId);
+      noteUse(origin, { chainId, address: key.derived.bech32Address });
       return [
         {
           address: key.derived.bech32Address,
@@ -451,6 +483,7 @@ export async function handleProviderRequest(input: {
       const chainId = requireChainId(args[0]);
       const signer = args[1];
       const signDoc = args[2];
+      const options = signOptionsFrom(args[3]);
       await requirePermission(origin, chainId);
       assertSameChain(chainId, aminoSignDocChainId(signDoc));
       const mnemonic = await unlockedMnemonic();
@@ -461,13 +494,14 @@ export async function handleProviderRequest(input: {
       if (summary.requiresBlindSigning) {
         throw new Error("Blind signing disabled for unknown messages");
       }
-      await approveInPopup({
+      const feeChoice = feeChoiceFor(chainId, aminoFeeOf(signDoc), options);
+      const answer = await approveInPopup({
         kind: "signAmino",
         origin,
         chainIds: [chainId],
         tabId,
         title: `Sign transaction on ${chainId}`,
-        detail: { signer, summary },
+        detail: { signer, summary, ...(feeChoice ? { feeChoice } : {}) },
         warnings: [...originWarnings(origin), ...summary.warnings],
       });
 
@@ -487,16 +521,28 @@ export async function handleProviderRequest(input: {
         if (recipient) await rememberRecipient(recipient);
       }
 
+      // The site reads the fee back from `signed`, as CosmJS does, so a
+      // tier the user picked is what gets broadcast.
+      const tier = pickedTier(feeChoice, answer);
+      const signed =
+        tier && feeChoice
+          ? withAminoFee(signDoc as { fee?: unknown }, {
+              denom: feeChoice.denom,
+              amount: feeChoice.tiers[tier],
+            })
+          : signDoc;
+
       const kernel = await loadKernel();
       const signatureHex = kernel.signCosmos(
         current,
         "",
         chainJsonFor(chainId),
         key.index,
-        bytesToHex(serializeAminoSignDoc(signDoc)),
+        bytesToHex(serializeAminoSignDoc(signed)),
       );
+      noteUse(origin, { chainId, address: key.derived.bech32Address });
       return {
-        signed: signDoc,
+        signed,
         signature: secpSignature(key.derived.pubKey, signatureHex),
       };
     }
@@ -504,6 +550,7 @@ export async function handleProviderRequest(input: {
     case "signDirect": {
       const chainId = requireChainId(args[0]);
       const signer = args[1];
+      const options = signOptionsFrom(args[3]);
       await requirePermission(origin, chainId);
       const doc = normalizeDirectSignDoc(args[2]);
       assertSameChain(chainId, doc.chainId);
@@ -516,13 +563,14 @@ export async function handleProviderRequest(input: {
       if (summary.requiresBlindSigning) {
         throw new Error("Blind signing disabled for unknown messages");
       }
-      await approveInPopup({
+      const feeChoice = feeChoiceFor(chainId, authInfoFee(doc.authInfoBytes), options);
+      const answer = await approveInPopup({
         kind: "signDirect",
         origin,
         chainIds: [chainId],
         tabId,
         title: `Sign transaction on ${chainId}`,
-        detail: { signer, summary },
+        detail: { signer, summary, ...(feeChoice ? { feeChoice } : {}) },
         warnings: [...originWarnings(origin), ...summary.warnings],
       });
 
@@ -531,17 +579,38 @@ export async function handleProviderRequest(input: {
         signer as string,
         before.index,
       );
+
+      const tier = pickedTier(feeChoice, answer);
+      let signedDoc = doc;
+      if (tier && feeChoice) {
+        const coin = { denom: feeChoice.denom, amount: feeChoice.tiers[tier] };
+        signedDoc = { ...doc, authInfoBytes: withAuthInfoFee(doc.authInfoBytes, coin) };
+        // Read the rewritten bytes back: only the fee coin may differ.
+        const check = authInfoFee(signedDoc.authInfoBytes);
+        const [paid, ...extra] = check?.amount ?? [];
+        if (
+          check?.gas !== feeChoice.gas ||
+          extra.length > 0 ||
+          paid?.denom !== coin.denom ||
+          paid.amount !== coin.amount
+        ) {
+          throw new Error("Zunia could not change the fee safely, so nothing was signed.");
+        }
+      }
+
       const kernel = await loadKernel();
       const signatureHex = kernel.signCosmos(
         current,
         "",
         chainJsonFor(chainId),
         key.index,
-        bytesToHex(signBytes),
+        bytesToHex(signedDoc === doc ? signBytes : encodeDirectSignDoc(signedDoc)),
       );
+      noteUse(origin, { chainId, address: key.derived.bech32Address });
       return {
-        signed: directSignDocToWire(doc),
+        signed: directSignDocToWire(signedDoc),
         signature: secpSignature(key.derived.pubKey, signatureHex),
+        feeChanged: signedDoc !== doc,
       };
     }
 
@@ -589,6 +658,7 @@ export async function handleProviderRequest(input: {
         key.index,
         adr36SignBytesHex(signer, dataBytes),
       );
+      noteUse(origin, { chainId, address: key.derived.bech32Address });
       return {
         signed: adr36SignDoc(signer, dataBytes),
         signature: secpSignature(key.derived.pubKey, signatureHex),

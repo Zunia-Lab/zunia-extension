@@ -144,3 +144,14 @@ export function relativeTime(timestamp: number): string {
   if (hours < 24) return `${hours} h ago`;
   return `${Math.round(hours / 24)} d ago`;
 }
+
+/** `in 3 d`: {@link relativeTime} for a moment still ahead. */
+export function timeUntil(timestamp: number): string {
+  const seconds = Math.round((timestamp - Date.now()) / 1000);
+  if (seconds < 60) return "in under a minute";
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `in ${minutes} min`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `in ${hours} h`;
+  return `in ${Math.round(hours / 24)} d`;
+}

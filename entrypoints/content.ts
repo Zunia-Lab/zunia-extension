@@ -162,14 +162,25 @@ export default defineContentScript({
 
     /** Relay a wallet event to the page, if it is addressed to this origin. */
     function handleProviderEvent(payload: unknown): void {
-      const { event, origins } = (payload ?? {}) as {
+      const { event, origins, data } = (payload ?? {}) as {
         event?: unknown;
         origins?: unknown;
+        data?: unknown;
       };
       if (!port || typeof event !== "string") return;
       if (event !== "accountsChanged" && event !== "disconnect" && event !== "locked") return;
       if (Array.isArray(origins) && !origins.includes(pageOrigin)) return;
-      port.postMessage({ type: PAGE_CHANNEL.event, event, data: null });
+      // A disconnect that names chains took only those; nothing else crosses.
+      const named = (data as { chainIds?: unknown } | null | undefined)?.chainIds;
+      const chainIds =
+        event === "disconnect" && Array.isArray(named)
+          ? named.filter((id): id is string => typeof id === "string").slice(0, 64)
+          : [];
+      port.postMessage({
+        type: PAGE_CHANNEL.event,
+        event,
+        data: chainIds.length > 0 ? { chainIds } : null,
+      });
     }
 
     browser.runtime.onMessage.addListener((message, sender, sendResponse) => {

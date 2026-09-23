@@ -25,6 +25,8 @@ describe("permissionLogic", () => {
       chainIds: ["cosmoshub-4"],
       createdAt: 0,
       expiresAt: 1000,
+      lastUsedAt: null,
+      accounts: {},
     };
     expect(permissionLogic.isGrantActive(grant, 999)).toBe(true);
     expect(permissionLogic.isGrantActive(grant, 1000)).toBe(false);
@@ -36,6 +38,8 @@ describe("permissionLogic", () => {
       chainIds: ["*"],
       createdAt: 0,
       expiresAt: null,
+      lastUsedAt: null,
+      accounts: {},
     };
     expect(permissionLogic.grantAllowsChain(grant, "osmosis-1")).toBe(true);
   });
@@ -44,6 +48,71 @@ describe("permissionLogic", () => {
     expect(
       permissionLogic.mergeChains(["a", "b"], ["b", "c"]),
     ).toEqual(["a", "b", "c"]);
+  });
+
+  it("reads grants saved before usage was tracked", () => {
+    const grant = permissionLogic.normalizeGrant("https://app.example", {
+      origin: "https://elsewhere.example",
+      chainIds: ["cosmoshub-4", 7],
+      createdAt: 5,
+      expiresAt: null,
+    });
+    expect(grant).toEqual({
+      origin: "https://app.example",
+      chainIds: ["cosmoshub-4"],
+      createdAt: 5,
+      expiresAt: null,
+      lastUsedAt: null,
+      accounts: {},
+    });
+    expect(permissionLogic.normalizeGrant("https://app.example", { chainIds: "all" })).toBeNull();
+  });
+
+  it("keeps only exposed accounts for chains still granted", () => {
+    const grant = permissionLogic.normalizeGrant("https://app.example", {
+      chainIds: ["osmosis-1"],
+      createdAt: 0,
+      expiresAt: null,
+      accounts: { "osmosis-1": "osmo1abc", "cosmoshub-4": "cosmos1abc", "juno-1": 3 },
+    });
+    expect(grant?.accounts).toEqual({ "osmosis-1": "osmo1abc" });
+  });
+
+  describe("touchedGrant", () => {
+    const base: OriginGrant = {
+      origin: "https://app.example",
+      chainIds: ["osmosis-1"],
+      createdAt: 0,
+      expiresAt: null,
+      lastUsedAt: 100_000,
+      accounts: { "osmosis-1": "osmo1abc" },
+    };
+
+    it("skips the write for a use within the last minute", () => {
+      expect(permissionLogic.touchedGrant(base, 130_000)).toBeNull();
+      expect(
+        permissionLogic.touchedGrant(base, 130_000, { chainId: "osmosis-1", address: "osmo1abc" }),
+      ).toBeNull();
+    });
+
+    it("records a use after a minute", () => {
+      expect(permissionLogic.touchedGrant(base, 160_000)?.lastUsedAt).toBe(160_000);
+    });
+
+    it("records a new address at once", () => {
+      const next = permissionLogic.touchedGrant(base, 101_000, {
+        chainId: "osmosis-1",
+        address: "osmo1new",
+      });
+      expect(next?.accounts).toEqual({ "osmosis-1": "osmo1new" });
+      expect(next?.lastUsedAt).toBe(101_000);
+    });
+
+    it("ignores an address for a chain the site was not granted", () => {
+      expect(
+        permissionLogic.touchedGrant(base, 101_000, { chainId: "juno-1", address: "juno1abc" }),
+      ).toBeNull();
+    });
   });
 });
 

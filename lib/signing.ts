@@ -2,6 +2,7 @@ import { STORAGE_KEYS } from "./storage-keys";
 import type { DecodedDirectTx, DecodedTxMessage } from "./kernel";
 import { loadKernel, bytesToHex, hexToBytes } from "./kernel";
 import { SECURITY_CONFIG } from "../config/security";
+import { coinDisplay, formatCoin } from "./coin-display";
 import { cosmWasmActionName, describeCw721Action } from "./nft";
 import { assertSameChain } from "./provider-guards";
 import { getSettings } from "./settings";
@@ -159,11 +160,15 @@ export async function buildSignSafety(input: {
 
   const fees: Array<{ label: string; value: string }> = [];
   if (input.decoded.fee) {
+    const { amount, denom, gas } = input.decoded.fee;
+    const display = coinDisplay(input.expectedChainId, denom);
     fees.push({
       label: "Fee",
-      value: `${input.decoded.fee.amount} ${input.decoded.fee.denom}`,
+      // A denom the catalog cannot name keeps its full spelling here: the
+      // prompt is where the user checks exactly what they pay.
+      value: display.known ? formatCoin(amount, display) : `${amount} ${denom}`,
     });
-    fees.push({ label: "Gas", value: input.decoded.fee.gas });
+    fees.push({ label: "Gas", value: /^\d+$/.test(gas) ? Number(gas).toLocaleString("en-US") : gas });
   } else {
     fees.push({ label: "Fee", value: "Not specified" });
   }

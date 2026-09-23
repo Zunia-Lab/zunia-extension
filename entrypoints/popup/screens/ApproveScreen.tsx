@@ -7,11 +7,15 @@ import {
   PasswordInput,
   ScreenScaffold,
   SectionLabel,
+  Segmented,
   cn,
   truncateAddress,
 } from "@zunialab/ui";
 import { SIGNING_KINDS, type ApprovalRequest } from "../../../lib/approvals";
 import type { CustomChainDraft } from "../../../lib/chain-draft";
+import { formatCoin } from "../../../lib/coin-display";
+import type { FeeChoice, FeeTier } from "../../../lib/fee-tiers";
+import { assessOrigin } from "../../../lib/origin-risk";
 import type { SessionStatus } from "../../../lib/session";
 import type { SignSafetySummary } from "../../../lib/signing";
 import { findCatalogEntry } from "../../../lib/chain-catalog";
@@ -72,6 +76,26 @@ function useSecondsLeft(expiresAt: number | undefined): number | null {
   return Math.max(0, Math.round((expiresAt - now) / 1000));
 }
 
+type FeePick = FeeTier | "site";
+
+const FEE_OPTIONS: { value: FeePick; label: string }[] = [
+  { value: "site", label: "Site" },
+  { value: "low", label: "Low" },
+  { value: "average", label: "Medium" },
+  { value: "high", label: "High" },
+];
+
+const FEE_HINT: Record<FeePick, string> = {
+  site: "The fee this site set.",
+  low: "Cheapest. A busy network can refuse it.",
+  average: "The network's usual price.",
+  high: "Pays extra to get through a busy network.",
+};
+
+function feeChoiceFrom(approval: ApprovalRequest): FeeChoice | null {
+  return (approval.detail as { feeChoice?: FeeChoice } | undefined)?.feeChoice ?? null;
+}
+
 function formatCountdown(seconds: number): string {
   const m = Math.floor(seconds / 60);
   const s = seconds % 60;
@@ -84,12 +108,14 @@ function OriginHeader({
   kind,
   queued,
   secondsLeft,
+  suspicious,
 }: {
   origin: string;
   chainIds: string[];
   kind: ApprovalRequest["kind"];
   queued: number;
   secondsLeft: number | null;
+  suspicious: boolean;
 }) {
   return (
     <div className="flex flex-col gap-3 border-b border-[var(--z-line)] px-4 pb-3 pt-3">
@@ -119,7 +145,12 @@ function OriginHeader({
           <IconGlobe width={18} height={18} />
         </span>
         <span className="min-w-0 flex-1">
-          <span className="block truncate text-[13.5px] font-medium text-fg">
+          <span
+            className={cn(
+              "block truncate text-[13.5px] font-medium",
+              suspicious ? "text-[var(--z-danger-fg)]" : "text-fg",
+            )}
+          >
             {hostOf(origin)}
           </span>
           <span className="mt-0.5 block truncate font-mono text-[9.5px] text-fg-dim">
@@ -169,17 +200,19 @@ export function ApproveScreen({
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<"approve" | "reject" | null>(null);
+  const [feePick, setFeePick] = useState<FeePick>("site");
   const secondsLeft = useSecondsLeft(current?.expiresAt);
   const currentId = current?.id;
 
-  // Each request starts clean: an error or a typed password never carries over
-  // to the next one in the queue.
+  // Each request starts clean: an error, a typed password or a fee tier never
+  // carries over to the next one in the queue.
   const [shownId, setShownId] = useState(currentId);
   if (shownId !== currentId) {
     setShownId(currentId);
     setPassword("");
     setError(null);
     setBusy(null);
+    setFeePick("site");
   }
 
   const active =
@@ -207,7 +240,26 @@ export function ApproveScreen({
   }
 
   const summary = summaryFrom(current);
-  const warnings = current.warnings ?? summary?.warnings ?? [];
+  const risk = assessOrigin(current.origin);
+  const suspicious = risk.level === "suspicious";
+  // The origin's own warnings get the banner; the rest stay in the list.
+  const warnings = (current.warnings ?? summary?.warnings ?? []).filter(
+    (warning) => !suspicious || !risk.warnings.includes(warning),
+  );
+  const feeChoice = feeChoiceFrom(current);
+  const feeTier = feeChoice && feePick !== "site" ? feePick : null;
+  const feeRows = (summary?.fees ?? []).map((row) =>
+    row.label === "Fee" && feeChoice
+      ? {
+          ...row,
+          value: formatCoin(feeTier ? feeChoice.tiers[feeTier] : feeChoice.site, {
+            symbol: feeChoice.symbol,
+            decimals: feeChoice.decimals,
+            known: true,
+          }),
+        }
+      : row,
+  );
   // sendTx is refused in lib/provider-handler.ts before it can reach this
   // queue, so this branch should never render. It stays because the kind is
   // still part of the approval type: if one ever arrives, the screen has to say
@@ -226,7 +278,7 @@ export function ApproveScreen({
     try {
       await sendToBackground("RESOLVE_APPROVAL", {
         id: current!.id,
-        result: { approved: true },
+        result: feeTier ? { approved: true, feeTier } : { approved: true },
         password: needsPassword ? password : undefined,
       });
       setPassword("");
@@ -259,6 +311,7 @@ export function ApproveScreen({
           kind={current.kind}
           queued={approvals.length}
           secondsLeft={secondsLeft}
+          suspicious={suspicious}
         />
       }
       footer={
@@ -321,6 +374,20 @@ export function ApproveScreen({
       }
     >
       <div className="flex flex-col gap-3.5 pt-3.5">
+        {suspicious ? (
+          <Callout tone="danger" title="This site's address looks suspicious">
+            <p className="break-all font-mono text-[10.5px]">{current.origin}</p>
+            <ul className="mt-1.5 flex flex-col gap-1">
+              {risk.warnings.map((warning) => (
+                <li key={warning}>{warning}</li>
+              ))}
+            </ul>
+            <p className="mt-1.5">
+              Reject unless you opened this address yourself and trust it.
+            </p>
+          </Callout>
+        ) : null}
+
         <h1 className="text-[17px] font-medium leading-tight tracking-[-0.025em] text-fg">
           {summary && summary.messages.length > 0
             ? `Approve ${summary.messages.length} message${summary.messages.length === 1 ? "" : "s"}`
@@ -425,9 +492,21 @@ export function ApproveScreen({
                   : "No account"
               }
             />
-            {summary?.fees.map((fee) => (
+            {feeRows.map((fee) => (
               <KeyValueRow key={fee.label} label={fee.label} value={fee.value} />
             ))}
+            {feeChoice ? (
+              <div className="flex flex-col gap-1.5">
+                <Segmented<FeePick>
+                  size="sm"
+                  className="w-full"
+                  options={FEE_OPTIONS}
+                  value={feePick}
+                  onChange={setFeePick}
+                />
+                <p className="text-[10.5px] leading-snug text-fg-dim">{FEE_HINT[feePick]}</p>
+              </div>
+            ) : null}
             {summary?.memo ? (
               <KeyValueRow label="Memo" value={summary.memo} />
             ) : null}
