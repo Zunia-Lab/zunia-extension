@@ -10,7 +10,12 @@
 
 import { showBrowserAlert } from "./browser-alerts";
 import { findCatalogEntry } from "./chain-catalog";
-import { trackTransfer, type TrackedRoute } from "./packet-tracking";
+import {
+  routeOutcome,
+  trackTransfer,
+  type RouteOutcome,
+  type TrackedRoute,
+} from "./packet-tracking";
 import {
   listPendingTransfers,
   removePendingTransfer,
@@ -25,22 +30,6 @@ const WATCH_PERIOD_MINUTES = 1;
 /** One walk may read several chains; past this the next alarm tries again. */
 const POLL_TIMEOUT_MS = 45_000;
 const MAX_NOTIFIED = 20;
-
-export type RouteOutcome = "delivered" | "refunded" | "recoverable";
-
-/**
- * What a settled route means for the funds, or `null` while it can still move.
- *
- * A timeout and an error acknowledgement both release the escrow back to the
- * sender. A swap whose output could not be delivered is different: the
- * contract holds it until the recovery address claims it.
- */
-export function routeOutcome(route: TrackedRoute): RouteOutcome | null {
-  if (!route.settled) return null;
-  if (route.failure === "swap-delivery-failed") return "recoverable";
-  if (route.failure === null && route.status === "acknowledged") return "delivered";
-  return "refunded";
-}
 
 function chainName(chainId: string): string {
   return findCatalogEntry(chainId)?.chainName ?? chainId;

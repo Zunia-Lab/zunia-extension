@@ -41,7 +41,7 @@ import {
   SLIPPAGE_PRESETS,
 } from "../../../config/interchain";
 import { NO_VALUE, formatUnits, formatUnitsExact } from "../../../lib/format";
-import { buildRecoverMsg } from "../../../lib/packet-tracking";
+import { buildRecoverMsg, routeOutcome } from "../../../lib/packet-tracking";
 import {
   removePendingTransfer,
   savePendingTransfer,
@@ -670,9 +670,8 @@ export function SwapScreen({
   // failure is deliberately kept: it is the only path back to the recover
   // action once the popup closes.
   const trackedHash = tracked?.txHash ?? null;
-  const finished =
-    tracking.route?.settled === true &&
-    tracking.route.failure !== "swap-delivery-failed";
+  const outcome = tracking.route ? routeOutcome(tracking.route) : null;
+  const finished = outcome === "delivered" || outcome === "refunded";
   useEffect(() => {
     if (!trackedHash || !finished) return;
     void removePendingTransfer(trackedHash);
@@ -947,9 +946,9 @@ export function SwapScreen({
             </Callout>
           ) : null}
           <Callout tone="neutral" title="This keeps running without the popup">
-            The transfer proceeds on chain whether or not Zunia is open. Zunia remembers
-            this route for a day, so you can come back to this screen; the transaction
-            hash above is the only identifier you need in the meantime.
+            The transfer proceeds on chain whether or not Zunia is open. Zunia follows
+            it for a day and lists it at the top of Activity until it arrives; the
+            transaction hash above is the only identifier you need in the meantime.
           </Callout>
         </div>
       </ScreenScaffold>

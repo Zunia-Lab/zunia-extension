@@ -25,6 +25,7 @@ import {
 } from "@zunialab/ui";
 import type {
   ChannelDirectory,
+  ExtractedPacket,
   IbcChannelOption,
   IbcChannelValidation,
 } from "@zunialab/interchain";
@@ -56,7 +57,13 @@ import {
   type RouteHopView,
 } from "../../../lib/route-plan";
 import { listOsmosisAssets, type OsmosisAsset } from "../../../lib/osmosis-assets";
-import { trackTransfer, type TrackedRoute, type TrackInput } from "../../../lib/packet-tracking";
+import {
+  trackTransfer,
+  walkSentPackets,
+  type PacketWalk,
+  type TrackedRoute,
+  type TrackInput,
+} from "../../../lib/packet-tracking";
 import {
   listPendingTransfers,
   removePendingTransfer,
@@ -1083,6 +1090,70 @@ export function useRouteTracking(
   };
 }
 
+/**
+ * Poll the packets a past transaction sent until none of them can change.
+ * The history counterpart of {@link useRouteTracking}, for a transaction the
+ * wallet kept no plan for.
+ */
+export function usePacketWalk(
+  input: { chainId: string; txHash: string; packets: readonly ExtractedPacket[] } | null,
+  intervalMs = 8_000,
+): { walk: PacketWalk | null; error: string | null; loading: boolean; refresh: () => void } {
+  const [state, setState] = useState<{
+    key: string;
+    walk: PacketWalk | null;
+    error: string | null;
+  } | null>(null);
+  const [token, setToken] = useState(0);
+
+  const key =
+    input && input.packets.length > 0
+      ? `${input.chainId}:${input.txHash}:${input.packets.length}:${token}`
+      : "";
+  const settled = state?.key === key && (state.walk?.settled ?? false);
+
+  useEffect(() => {
+    if (!input || !key || settled) return;
+    let cancelled = false;
+    const controller = new AbortController();
+    let timer: number | undefined;
+
+    const poll = async () => {
+      try {
+        const walk = await walkSentPackets({ ...input, signal: controller.signal });
+        if (cancelled) return;
+        setState({ key, walk, error: null });
+        if (!walk.settled) timer = window.setTimeout(() => void poll(), intervalMs);
+      } catch (caught) {
+        if (cancelled) return;
+        setState((previous) => ({
+          key,
+          walk: previous?.key === key ? previous.walk : null,
+          error: describeInterchainError(caught),
+        }));
+        timer = window.setTimeout(() => void poll(), intervalMs * 2);
+      }
+    };
+    void poll();
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+    // `input` is rebuilt on every render by its caller; `key` is its identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key, intervalMs, settled]);
+
+  const current = state?.key === key ? state : null;
+  return {
+    walk: current?.walk ?? null,
+    error: current?.error ?? null,
+    loading: Boolean(key) && current === null,
+    refresh: useCallback(() => setToken((n) => n + 1), []),
+  };
+}
+
 /* -------------------------------------------------------------------------- *
  * Small shared bits
  * -------------------------------------------------------------------------- */
@@ -1179,11 +1250,7 @@ export function TruncatedValue({ children }: { children: string }) {
   );
 }
 
-/** `ibc/27394FB0…41E5EB2` for a voucher, the denom itself for anything else. */
-export function shortDenom(denom: string): string {
-  if (!denom.startsWith("ibc/") || denom.length <= 20) return denom;
-  return `ibc/${denom.slice(4, 12)}…${denom.slice(-6)}`;
-}
+export { shortDenom } from "../../../lib/format";
 
 /**
  * Routes signed earlier that are still in flight.

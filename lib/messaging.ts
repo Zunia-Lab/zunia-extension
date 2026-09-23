@@ -66,6 +66,10 @@ export type ExtensionMessageType =
   | "GET_UNBONDING"
   | "GET_PROPOSALS"
   | "GET_ACTIVITY"
+  /** Activity for the history screen: a row limit in, the chains that failed out. */
+  | "GET_ACTIVITY_FEED"
+  /** One transaction with fees, messages and the IBC packets it sent. */
+  | "GET_TX_DETAIL"
   | "FIND_IBC_CHANNELS"
   | "VALIDATE_IBC_CHANNEL"
   | "LIST_ADDRESS_BOOK"

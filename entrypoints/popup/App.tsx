@@ -55,6 +55,7 @@ import { RevealPhraseScreen } from "./screens/RevealPhraseScreen";
 import { ConnectedSitesScreen } from "./screens/ConnectedSitesScreen";
 import { ApproveScreen } from "./screens/ApproveScreen";
 import type { ActivityItem, ValidatorInfo } from "../../lib/chain-queries";
+import type { PendingTransfer } from "../../lib/pending-transfers";
 
 /** Routes reachable only once the wallet is unlocked. */
 const UNLOCKED_ROUTES: PopupRoute[] = [
@@ -241,12 +242,13 @@ function AppBody({ state }: { state: ExtensionState }) {
   );
 
   const openTx = useCallback(
-    (item: ActivityItem) => {
+    (item: ActivityItem, transfer?: PendingTransfer) => {
       navigate({
         route: "tx",
         chainId: item.chainId,
         hash: item.hash,
         tx: item,
+        ...(transfer ? { transfer } : {}),
       });
     },
     [navigate],
@@ -418,6 +420,7 @@ function AppBody({ state }: { state: ExtensionState }) {
         ? shell(
             <ActivityScreen
               chains={chains}
+              balances={balances}
               onOpenTx={openTx}
             />,
           )
@@ -425,7 +428,13 @@ function AppBody({ state }: { state: ExtensionState }) {
 
       {route === "tx" ? (
         location.tx ? (
-          <TxDetailScreen item={location.tx} onBack={back} />
+          <TxDetailScreen
+            item={location.tx}
+            transfer={location.transfer}
+            balances={balances}
+            onOpenSwap={() => go("swap")}
+            onBack={back}
+          />
         ) : (
           <Unavailable
             title="Transaction"

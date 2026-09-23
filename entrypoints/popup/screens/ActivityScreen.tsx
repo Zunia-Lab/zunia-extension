@@ -1,5 +1,7 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
+  Avatar,
+  Button,
   Callout,
   EmptyState,
   ScreenScaffold,
@@ -10,14 +12,25 @@ import {
   cn,
   focusRing,
 } from "@zunialab/ui";
-import type { ActivityItem } from "../../../lib/chain-queries";
+import type { ChainBalance } from "../../../lib/balances";
+import { findCatalogEntry } from "../../../lib/chain-catalog";
+import { ACTIVITY_PAGE_SIZE, MAX_ACTIVITY_LIMIT, type ActivityItem } from "../../../lib/chain-queries";
 import { formatUnits } from "../../../lib/format";
+import { routeOutcome, type RouteOutcome, type TrackedRoute } from "../../../lib/packet-tracking";
+import {
+  listPendingTransfers,
+  removePendingTransfer,
+  type PendingTransfer,
+} from "../../../lib/pending-transfers";
 import { searchItems } from "../../../lib/picker";
+import { STORAGE_KEYS } from "../../../lib/storage-keys";
 import { ListSkeleton } from "../components/ListSkeleton";
+import { PickerSheet, type PickerItem } from "../components/PickerSheet";
 import type { ChainAccountView } from "../hooks/useChainAccounts";
-import { useActivity } from "../hooks/useChainQuery";
+import { useActivityFeed, useLiveRefresh } from "../hooks/useChainQuery";
 import { usePrefs } from "../state/Prefs";
-import { IconActivity } from "./icons";
+import { IconActivity, IconChevronDown } from "./icons";
+import { useRouteTracking } from "./interchain-ui";
 
 const FILTERS = [
   { id: "all", label: "All" },
@@ -32,12 +45,26 @@ const FILTERS = [
 
 type FilterId = (typeof FILTERS)[number]["id"];
 
+const ALL_NETWORKS = "all-networks";
+
+function isOutgoing(item: ActivityItem): boolean {
+  return item.amount?.startsWith("-") ?? false;
+}
+
 function matchesFilter(item: ActivityItem, filter: FilterId): boolean {
-  if (filter === "all") return true;
-  if (filter === "staking") {
-    return item.kind === "staking" || item.kind === "claim";
+  switch (filter) {
+    case "all":
+      return true;
+    case "staking":
+      return item.kind === "staking" || item.kind === "claim";
+    // A transfer over IBC is still a send or a receipt.
+    case "sent":
+      return item.kind === "sent" || (item.kind === "ibc" && isOutgoing(item));
+    case "received":
+      return item.kind === "received" || (item.kind === "ibc" && !isOutgoing(item));
+    default:
+      return item.kind === filter;
   }
-  return item.kind === filter;
 }
 
 /** TODAY / YESTERDAY / date, matching the design's day grouping. */
@@ -61,24 +88,49 @@ function clockLabel(timestamp: number): string {
   });
 }
 
+/**
+ * Ticker and decimals for a row. The history names the chain's own coins;
+ * an IBC voucher the wallet holds is named from its balances.
+ */
+function tokenMeta(
+  item: ActivityItem,
+  balances: Record<string, ChainBalance>,
+): { symbol: string; decimals: number } {
+  const token = item.denom
+    ? balances[item.chainId]?.tokens.find((row) => row.denom === item.denom)
+    : undefined;
+  return token
+    ? { symbol: token.symbol, decimals: token.decimals }
+    : { symbol: item.symbol, decimals: item.decimals };
+}
+
+function sameHash(a: string, b: string): boolean {
+  return a.toUpperCase() === b.toUpperCase();
+}
+
 function Row({
   item,
+  meta,
   hidden,
   onOpen,
 }: {
   item: ActivityItem;
+  meta: { symbol: string; decimals: number };
   hidden: boolean;
   onOpen: (item: ActivityItem) => void;
 }) {
   const presentation = activityPresentation(item.kind, item.success);
-  const amount = item.amount
+  const unsigned = item.amount?.replace(/^-/, "");
+  // Staking moves value between the account's own balances, so it has no sign.
+  const sign = isOutgoing(item)
+    ? "-"
+    : item.kind === "received" || item.kind === "ibc" || item.kind === "claim"
+      ? "+"
+      : "";
+  const amount = unsigned
     ? hidden
       ? "••••"
-      : `${item.amount.startsWith("-") ? "-" : "+"}${formatUnits(
-          item.amount.replace("-", ""),
-          item.decimals,
-          3,
-        )} ${item.symbol}`
+      : `${sign}${formatUnits(unsigned, meta.decimals, 3)} ${meta.symbol}`
     : null;
   const amountClass = activityAmountClass(item.kind, item.success, item.amount);
 
@@ -111,15 +163,9 @@ function Row({
           {item.subtitle} · {clockLabel(item.timestamp)}
         </span>
       </span>
-      <span className="shrink-0 text-right">
+      <span className="max-w-[46%] shrink-0 text-right">
         {amount ? (
-          <span
-            className={cn(
-              amountInlineClass,
-              "block",
-              amountClass,
-            )}
-          >
+          <span className={cn(amountInlineClass, "block truncate", amountClass)}>
             {amount}
           </span>
         ) : null}
@@ -129,30 +175,272 @@ function Row({
             item.success ? "text-fg-dim" : "text-[var(--z-danger)]",
           )}
         >
-          {item.success ? "confirmed" : "reverted"}
+          {item.success ? "confirmed" : "failed"}
         </span>
       </span>
     </button>
   );
 }
 
-/** Recent transactions across every enabled chain. */
+/* -------------------------------------------------------------------------- *
+ * In flight
+ * -------------------------------------------------------------------------- */
+
+/**
+ * Routes the wallet is still following, newest first.
+ *
+ * A route that lands is dropped from storage, but it stays here for the rest
+ * of the visit so the row turns to "Confirmed" instead of vanishing.
+ */
+function useInFlightTransfers(): readonly PendingTransfer[] {
+  const [rows, setRows] = useState<readonly PendingTransfer[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    const load = () => {
+      void listPendingTransfers().then((fresh) => {
+        if (cancelled) return;
+        setRows((previous) => {
+          const stored = new Set(fresh.map((row) => row.txHash));
+          return [...fresh, ...previous.filter((row) => !stored.has(row.txHash))].sort(
+            (a, b) => b.startedAt - a.startedAt,
+          );
+        });
+      });
+    };
+    const onChanged = (changes: Record<string, unknown>, area: string) => {
+      if (area === "local" && STORAGE_KEYS.pendingTransfers in changes) load();
+    };
+    load();
+    browser.storage.onChanged.addListener(onChanged);
+    return () => {
+      cancelled = true;
+      browser.storage.onChanged.removeListener(onChanged);
+    };
+  }, []);
+  return rows;
+}
+
+function chainName(chainId: string): string {
+  return findCatalogEntry(chainId)?.chainName ?? chainId;
+}
+
+interface InFlightStatus {
+  label: string;
+  detail: string;
+  tone: "info" | "success" | "warning" | "danger" | "muted";
+}
+
+function inFlightStatus(
+  record: PendingTransfer,
+  route: TrackedRoute | null,
+  outcome: RouteOutcome | null,
+  error: string | null,
+): InFlightStatus {
+  const dest = chainName(record.plan.destChainId);
+  const source = chainName(record.chainId);
+  if (outcome === "delivered") {
+    return { label: "Confirmed", detail: `Arrived on ${dest}`, tone: "success" };
+  }
+  if (outcome === "recoverable") {
+    return { label: "Action needed", detail: "Recover the tokens from Swap", tone: "warning" };
+  }
+  if (outcome === "refunded") {
+    return {
+      label: route?.failure === "timeout" ? "Timed out" : "Refunded",
+      detail: `Tokens go back to ${source}`,
+      tone: "danger",
+    };
+  }
+  if (!route) {
+    return error
+      ? { label: "Unknown", detail: "Could not read its status", tone: "muted" }
+      : { label: "Checking", detail: `${source} to ${dest}`, tone: "muted" };
+  }
+  const step = `Step ${route.currentHopIndex + 1} of ${route.hops.length}`;
+  return route.stalled
+    ? { label: "Slow", detail: `${step} is taking longer than usual`, tone: "warning" }
+    : { label: "In flight", detail: `${step}, ${source} to ${dest}`, tone: "info" };
+}
+
+const TONE_CLASS: Record<InFlightStatus["tone"], string> = {
+  info: "text-fg",
+  success: "text-[var(--z-success)]",
+  warning: "text-[var(--z-warning)]",
+  danger: "text-[var(--z-danger)]",
+  muted: "text-fg-dim",
+};
+
+function InFlightRow({
+  record,
+  onOpen,
+}: {
+  record: PendingTransfer;
+  onOpen: (record: PendingTransfer) => void;
+}) {
+  const tracking = useRouteTracking({
+    plan: record.plan,
+    sourceTxHash: record.txHash,
+    expectedAmount: record.amountBaseUnits,
+    ...(record.swapContract ? { swapContract: record.swapContract } : {}),
+    ...(record.recoveryAddress ? { recoveryAddress: record.recoveryAddress } : {}),
+  });
+  const outcome = tracking.route ? routeOutcome(tracking.route) : null;
+  const finished = outcome === "delivered" || outcome === "refunded";
+  useEffect(() => {
+    if (finished) void removePendingTransfer(record.txHash);
+  }, [finished, record.txHash]);
+
+  const status = inFlightStatus(record, tracking.route, outcome, tracking.error);
+  const presentation = activityPresentation(record.kind === "swap" ? "swap" : "ibc", true);
+
+  return (
+    <button
+      type="button"
+      onClick={() => onOpen(record)}
+      className={cn(
+        "flex w-full items-center gap-2.5 rounded-[12px] px-2 py-2.5 text-left",
+        "transition-colors duration-[var(--z-duration-base)] hover:bg-[var(--z-state-hover)]",
+        focusRing,
+      )}
+    >
+      <span
+        className="flex size-8 shrink-0 items-center justify-center rounded-full border text-[15px] font-semibold leading-none"
+        style={{
+          color: presentation.fg,
+          background: presentation.bg,
+          borderColor: presentation.border,
+        }}
+        aria-hidden
+      >
+        {presentation.icon}
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-[12.5px] font-medium text-fg">{record.label}</span>
+        <span className="mt-0.5 block truncate font-mono text-[9.5px] text-fg-dim">
+          {status.detail} · {clockLabel(record.startedAt)}
+        </span>
+      </span>
+      <span
+        role="status"
+        className={cn(
+          "shrink-0 font-mono text-[9.5px] uppercase tracking-[0.08em]",
+          TONE_CLASS[status.tone],
+        )}
+      >
+        {status.label}
+      </span>
+    </button>
+  );
+}
+
+/* -------------------------------------------------------------------------- *
+ * Network filter
+ * -------------------------------------------------------------------------- */
+
+function NetworkFilter({
+  chains,
+  value,
+  onChange,
+}: {
+  chains: readonly ChainAccountView[];
+  value: string | null;
+  onChange: (chainId: string | null) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const active = value ? chains.find((chain) => chain.chainId === value) : undefined;
+  const items = useMemo<PickerItem[]>(
+    () => [
+      {
+        id: ALL_NETWORKS,
+        label: "All networks",
+        sublabel: `${chains.length} enabled`,
+        keywords: ["all", "every"],
+      },
+      ...chains.map((chain) => ({
+        id: chain.chainId,
+        label: chain.entry.chainName,
+        sublabel: `${chain.entry.coinDenom} · ${chain.chainId}`,
+        keywords: [chain.entry.coinDenom, chain.chainId],
+        icon: <Avatar src={chain.iconUrl} fallback={chain.entry.chainName} size={26} />,
+      })),
+    ],
+    [chains],
+  );
+
+  return (
+    <>
+      <button
+        type="button"
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        aria-label={`Show activity on ${active?.entry.chainName ?? "all networks"}`}
+        onClick={() => setOpen(true)}
+        className={cn(
+          "flex items-center gap-1.5 rounded-full border border-[var(--z-line)] py-1 pl-2 pr-1.5",
+          "transition-colors duration-[var(--z-duration-base)] hover:bg-[var(--z-state-hover)]",
+          focusRing,
+        )}
+      >
+        {active ? (
+          <Avatar src={active.iconUrl} fallback={active.entry.chainName} size={16} />
+        ) : null}
+        <span className="max-w-[92px] truncate text-[11px] text-fg-muted">
+          {active?.entry.chainName ?? "All networks"}
+        </span>
+        <IconChevronDown width={16} height={16} className="text-fg-dim" />
+      </button>
+      <PickerSheet
+        open={open}
+        onClose={() => setOpen(false)}
+        title="Show activity on"
+        items={items}
+        selectedId={value ?? ALL_NETWORKS}
+        searchPlaceholder="Search networks"
+        onSelect={(id) => onChange(id === ALL_NETWORKS ? null : id)}
+      />
+    </>
+  );
+}
+
+/* -------------------------------------------------------------------------- *
+ * Screen
+ * -------------------------------------------------------------------------- */
+
+/** Recent transactions across every enabled chain, read again while in view. */
 export function ActivityScreen({
   chains,
+  balances,
   onOpenTx,
 }: {
   chains: ChainAccountView[];
-  onOpenTx: (item: ActivityItem) => void;
+  balances: Record<string, ChainBalance>;
+  onOpenTx: (item: ActivityItem, transfer?: PendingTransfer) => void;
 }) {
   const { settings, hidden } = usePrefs();
   const live = settings.liveBalances;
   const chainIds = useMemo(() => chains.map((c) => c.chainId), [chains]);
-  const { rows, loading } = useActivity(chainIds, live);
+  const [limit, setLimit] = useState(ACTIVITY_PAGE_SIZE);
+  const feed = useActivityFeed(chainIds, live, limit);
+  useLiveRefresh(feed.refresh, live);
+  const inFlight = useInFlightTransfers();
   const [filter, setFilter] = useState<FilterId>("all");
+  const [network, setNetwork] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  // A network that was turned off since it was picked filters nothing.
+  const networkFilter = network && chainIds.includes(network) ? network : null;
+
+  const shownInFlight = useMemo(
+    () => inFlight.filter((row) => !networkFilter || row.chainId === networkFilter),
+    [inFlight, networkFilter],
+  );
 
   const filtered = useMemo(() => {
-    const kept = rows.filter((r) => matchesFilter(r, filter));
+    const kept = feed.rows.filter(
+      (row) =>
+        (!networkFilter || row.chainId === networkFilter) &&
+        matchesFilter(row, filter) &&
+        !inFlight.some((pending) => sameHash(pending.txHash, row.hash)),
+    );
     if (!query.trim()) return kept;
     const chainNames = new Map(chains.map((c) => [c.chainId, c.entry.chainName]));
     const byKey = new Map(kept.map((r) => [`${r.chainId}:${r.hash}`, r]));
@@ -161,13 +449,18 @@ export function ActivityScreen({
         id: `${r.chainId}:${r.hash}`,
         label: r.title,
         sublabel: r.subtitle,
-        keywords: [r.symbol, r.hash, r.chainId, chainNames.get(r.chainId) ?? ""],
+        keywords: [
+          tokenMeta(r, balances).symbol,
+          r.hash,
+          r.chainId,
+          chainNames.get(r.chainId) ?? "",
+        ],
       })),
       query,
     )
       .flatMap((item) => byKey.get(item.id) ?? [])
       .sort((a, b) => b.timestamp - a.timestamp);
-  }, [rows, filter, query, chains]);
+  }, [feed.rows, filter, networkFilter, query, chains, inFlight, balances]);
 
   const groups = useMemo(() => {
     const map = new Map<string, ActivityItem[]>();
@@ -180,16 +473,46 @@ export function ActivityScreen({
     return Array.from(map.entries());
   }, [filtered]);
 
+  function openInFlight(record: PendingTransfer) {
+    onOpenTx(
+      {
+        chainId: record.chainId,
+        hash: record.txHash,
+        kind: record.kind === "swap" ? "swap" : "ibc",
+        title: record.label,
+        subtitle: `${chainName(record.chainId)} to ${chainName(record.plan.destChainId)}`,
+        decimals: 0,
+        symbol: "",
+        timestamp: record.startedAt,
+        success: true,
+      },
+      record,
+    );
+  }
+
+  const narrowed = Boolean(networkFilter) || filter !== "all" || Boolean(query.trim());
+
   return (
     <ScreenScaffold
       title="Activity"
-      right={
-        <span className="font-mono text-[9px] uppercase tracking-[0.12em] text-fg-dim">
-          {chains.length} chains
-        </span>
-      }
+      right={<NetworkFilter chains={chains} value={networkFilter} onChange={setNetwork} />}
     >
       <div className="flex flex-col gap-3 pt-1">
+        {shownInFlight.length > 0 ? (
+          <section aria-label="In flight">
+            <p className="px-1 font-mono text-[9px] uppercase tracking-[0.16em] text-fg-dim">
+              In flight
+            </p>
+            <ul className="-mx-1 mt-1 flex flex-col">
+              {shownInFlight.map((record) => (
+                <li key={record.txHash}>
+                  <InFlightRow record={record} onOpen={openInFlight} />
+                </li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
+
         <ul className="-mx-1 flex gap-1.5 overflow-x-auto px-1 pb-0.5">
           {FILTERS.map((option) => (
             <li key={option.id}>
@@ -212,7 +535,7 @@ export function ActivityScreen({
           ))}
         </ul>
 
-        {rows.length > 0 ? (
+        {feed.rows.length > 0 ? (
           <SearchField
             value={query}
             onValueChange={setQuery}
@@ -227,13 +550,15 @@ export function ActivityScreen({
           </Callout>
         ) : null}
 
-        {loading && rows.length === 0 ? (
+        {feed.loading && feed.rows.length === 0 ? (
           <ListSkeleton rows={5} label="Loading activity" />
-        ) : groups.length === 0 && query.trim() ? (
+        ) : groups.length === 0 && narrowed ? (
           <p className="py-6 text-center text-[12px] text-fg-muted">
-            Nothing matches &ldquo;{query.trim()}&rdquo;.
+            {query.trim()
+              ? `Nothing matches "${query.trim()}".`
+              : "Nothing here with these filters."}
           </p>
-        ) : groups.length === 0 ? (
+        ) : groups.length === 0 && shownInFlight.length === 0 ? (
           <EmptyState
             icon={<IconActivity width={16} height={16} />}
             title="No history yet"
@@ -246,14 +571,19 @@ export function ActivityScreen({
         ) : (
           <div className="flex flex-col gap-3">
             {groups.map(([label, items]) => (
-              <section key={label}>
+              <section key={label} aria-label={label}>
                 <p className="px-1 font-mono text-[9px] uppercase tracking-[0.16em] text-fg-dim">
                   {label}
                 </p>
                 <ul className="-mx-1 mt-1 flex flex-col">
                   {items.map((item) => (
                     <li key={`${item.chainId}:${item.hash}`}>
-                      <Row item={item} hidden={hidden} onOpen={onOpenTx} />
+                      <Row
+                        item={item}
+                        meta={tokenMeta(item, balances)}
+                        hidden={hidden}
+                        onOpen={onOpenTx}
+                      />
                     </li>
                   ))}
                 </ul>
@@ -262,7 +592,18 @@ export function ActivityScreen({
           </div>
         )}
 
-        {live && groups.length > 0 ? (
+        {live && feed.hasMore ? (
+          <Button
+            variant="secondary"
+            size="sm"
+            loading={feed.loadingMore}
+            onClick={() => setLimit((n) => Math.min(n + ACTIVITY_PAGE_SIZE, MAX_ACTIVITY_LIMIT))}
+          >
+            {feed.loadingMore ? "Loading more…" : "Load more"}
+          </Button>
+        ) : null}
+
+        {live && feed.rows.length > 0 && !feed.hasMore ? (
           <p className="pb-1 text-center font-mono text-[9.5px] text-fg-dim">
             Public nodes prune history, so older transactions may be missing
             here. A block explorer keeps the full record.

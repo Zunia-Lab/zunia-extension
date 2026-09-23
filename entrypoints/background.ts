@@ -70,6 +70,7 @@ import { signAndBroadcast } from "../lib/wallet-tx";
 import type { AminoMsg, StdFee } from "../lib/amino-tx";
 import {
   fetchActivity,
+  fetchTxDetail,
   fetchDelegations,
   fetchProposals,
   fetchUnbonding,
@@ -424,6 +425,36 @@ async function routeMessage(
           ),
         );
         return { ok: true, data: rows.flat().sort((a, b) => b.timestamp - a.timestamp) };
+      }
+
+      case "GET_ACTIVITY_FEED": {
+        const payload = message.payload as { chainIds?: string[]; limit?: number };
+        const chainIds = payload?.chainIds ?? (await getEnabledChainIds());
+        const accounts = await getChainAccounts(chainIds);
+        const results = await Promise.all(
+          accounts.map((a) =>
+            fetchActivity(a.chainId, a.address, payload?.limit).then(
+              (rows) => ({ chainId: a.chainId, rows, failed: false }),
+              () => ({ chainId: a.chainId, rows: [], failed: true }),
+            ),
+          ),
+        );
+        return {
+          ok: true,
+          data: {
+            rows: results.flatMap((r) => r.rows).sort((a, b) => b.timestamp - a.timestamp),
+            failed: results.filter((r) => r.failed).map((r) => r.chainId),
+          },
+        };
+      }
+
+      case "GET_TX_DETAIL": {
+        const payload = message.payload as { chainId: string; hash: string };
+        const [account] = await getChainAccounts([payload.chainId]);
+        return {
+          ok: true,
+          data: await fetchTxDetail(payload.chainId, payload.hash, account?.address ?? ""),
+        };
       }
 
       // Channel discovery and validation are the interchain engine's, not this

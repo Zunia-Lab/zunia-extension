@@ -63,6 +63,7 @@ import {
   savePendingTransfer,
   type PendingTransfer,
 } from "../../../lib/pending-transfers";
+import { routeOutcome } from "../../../lib/packet-tracking";
 import type { TxPreview } from "../../../lib/tx-kernel";
 import type { ChainAccountView } from "../hooks/useChainAccounts";
 import { usePrefs } from "../state/Prefs";
@@ -735,7 +736,8 @@ export function SendScreen({
 
   // A settled transfer has nothing left to act on, so stop offering to resume it.
   const trackedHash = tracked?.txHash ?? null;
-  const finished = tracking.route?.settled === true;
+  const outcome = tracking.route ? routeOutcome(tracking.route) : null;
+  const finished = outcome === "delivered" || outcome === "refunded";
   useEffect(() => {
     if (!trackedHash || !finished) return;
     void removePendingTransfer(trackedHash);
@@ -783,7 +785,8 @@ export function SendScreen({
               title="This keeps running without the popup"
             >
               The transfer proceeds on chain whether or not Zunia is open. Zunia
-              remembers this route for a day, so you can reopen this view from Send.
+              follows it for a day and lists it at the top of Activity until it
+              arrives.
             </Callout>
             <div className="mt-3">
               <SaveContactPrompt

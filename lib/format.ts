@@ -98,6 +98,17 @@ export function formatFiat(value: number, currency: string): string {
   return `${sign}${symbol}${formatCompact(Math.abs(value), 2)}`;
 }
 
+/** `ibc/27394FB0…41E5EB2` for a voucher, the denom itself for anything else. */
+export function shortDenom(denom: string): string {
+  if (!denom.startsWith("ibc/") || denom.length <= 20) return denom;
+  return `ibc/${denom.slice(4, 12)}…${denom.slice(-6)}`;
+}
+
+/** `cosmos1qy35…hx9f2k` for a long address; short ones are left whole. */
+export function shortAddress(address: string): string {
+  return address.length > 22 ? `${address.slice(0, 12)}…${address.slice(-6)}` : address;
+}
+
 /** Placeholder used everywhere a real number is not available yet. */
 export const NO_VALUE = "—";
 

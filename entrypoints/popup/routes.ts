@@ -1,4 +1,5 @@
 import type { ActivityItem, ValidatorInfo } from "../../lib/chain-queries";
+import type { PendingTransfer } from "../../lib/pending-transfers";
 
 /** Every view the popup can show. */
 export type PopupRoute =
@@ -52,6 +53,8 @@ export interface PopupLocation {
   hash?: string;
   /** The row the transaction detail was opened from. */
   tx?: ActivityItem;
+  /** The route behind that row, while the wallet is still following it. */
+  transfer?: PendingTransfer;
   /** Validator operator address for the validator detail route. */
   operatorAddress?: string;
   /** The validator the detail was opened from. */

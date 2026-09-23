@@ -1,8 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { RoutePlan } from "@zunialab/interchain";
 
-import type { TrackedRoute } from "../packet-tracking";
-import { outcomeAlert, routeOutcome } from "../transfer-watch";
+import {
+  hasArrived,
+  routeOutcome,
+  type TrackedHopView,
+  type TrackedRoute,
+} from "../packet-tracking";
+import { outcomeAlert } from "../transfer-watch";
 
 function route(overrides: Partial<TrackedRoute>): TrackedRoute {
   return {
@@ -21,16 +26,43 @@ function route(overrides: Partial<TrackedRoute>): TrackedRoute {
   };
 }
 
+function hop(status: TrackedHopView["status"]): TrackedHopView {
+  return { chainId: "cosmoshub-4", chainName: "Cosmos Hub", counterpartyChainId: "osmosis-1", status };
+}
+
 const PLAN = { sourceChainId: "cosmoshub-4", destChainId: "osmosis-1" } as RoutePlan;
+
+describe("hasArrived", () => {
+  it("looks at the last hop, not the ones before it", () => {
+    expect(hasArrived(route({ hops: [hop("acknowledged"), hop("pending")] }))).toBe(false);
+    expect(hasArrived(route({ hops: [hop("acknowledged"), hop("received")] }))).toBe(true);
+    expect(hasArrived(route({ hops: [hop("acknowledged")] }))).toBe(true);
+    expect(hasArrived(route({ hops: [] }))).toBe(false);
+  });
+
+  it("never calls a failed route arrived", () => {
+    expect(
+      hasArrived(route({ hops: [hop("received")], failure: "swap-delivery-failed" })),
+    ).toBe(false);
+  });
+});
 
 describe("routeOutcome", () => {
   it("waits while the route can still move", () => {
-    expect(routeOutcome(route({ status: "relayed" }))).toBeNull();
+    expect(routeOutcome(route({ status: "relayed", hops: [hop("relayed")] }))).toBeNull();
     expect(routeOutcome(route({ failure: "stalled", stalled: true }))).toBeNull();
   });
 
+  it("counts a received packet as delivered before its acknowledgement returns", () => {
+    expect(routeOutcome(route({ status: "received", hops: [hop("received")] }))).toBe(
+      "delivered",
+    );
+  });
+
   it("names what happened to the funds once it settles", () => {
-    expect(routeOutcome(route({ settled: true, status: "acknowledged" }))).toBe("delivered");
+    expect(
+      routeOutcome(route({ settled: true, status: "acknowledged", hops: [hop("acknowledged")] })),
+    ).toBe("delivered");
     expect(routeOutcome(route({ settled: true, status: "timeout", failure: "timeout" }))).toBe(
       "refunded",
     );
