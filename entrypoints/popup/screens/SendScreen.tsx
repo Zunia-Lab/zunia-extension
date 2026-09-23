@@ -73,6 +73,7 @@ import { usePickerMemory } from "../hooks/usePickerMemory";
 import {
   AddressBookPicker,
   AddressFieldActions,
+  ContactChips,
   QrScanOverlay,
 } from "../components/AddressFieldExtras";
 import {
@@ -528,12 +529,13 @@ export function SendScreen({
   const expectedPrefix = cross
     ? destChain?.entry.bech32Prefix
     : chain?.entry.bech32Prefix;
+  const recipientChainId = cross ? destChain?.chainId : chain?.chainId;
 
   const recipientState = useMemo(() => {
     const value = recipient.trim();
     if (!value) return { tone: "default" as const, hint: undefined };
     if (!isBech32(value)) {
-      return { tone: "error" as const, hint: "Not a valid bech32 address" };
+      return { tone: "error" as const, hint: "Not a valid address. Check it for a typo." };
     }
     if (expectedPrefix && prefixOf(value) !== expectedPrefix) {
       return { tone: "error" as const, hint: `Expected a ${expectedPrefix}1… address` };
@@ -639,6 +641,14 @@ export function SendScreen({
     }
   }, [chain, amountUnits, cross, plan]);
 
+  /** Moves a saved recipient up the Recent list. Best effort: the send already happened. */
+  function countSend(address: string) {
+    if (!contacts.some((contact) => contact.address === address)) return;
+    void sendToBackground("TOUCH_ADDRESS_BOOK_ENTRY", { address })
+      .then(() => onContactsChanged?.())
+      .catch(() => undefined);
+  }
+
   async function confirmAndBroadcast() {
     if (!chain || amountUnits === null || !token) return;
     setBusy(true);
@@ -676,6 +686,7 @@ export function SendScreen({
         }
         setTxHash(broadcastResult.txhash);
         setSentTo(recipient.trim());
+        countSend(recipient.trim());
         toast("Transfer sent", { meta: truncateAddress(broadcastResult.txhash, 6, 4) });
       } else {
         const broadcastResult = await signedSend<{ txhash: string }>(
@@ -697,6 +708,7 @@ export function SendScreen({
         );
         setTxHash(broadcastResult.txhash);
         setSentTo(recipient.trim());
+        countSend(recipient.trim());
         toast("Transaction sent", { meta: truncateAddress(broadcastResult.txhash, 6, 4) });
       }
       setPhase("sent");
@@ -1087,24 +1099,13 @@ export function SendScreen({
               />
             }
           />
-          {contacts.length > 0 && !recipient ? (
-            <ul className="mt-2 flex flex-wrap gap-1.5">
-              {contacts.slice(0, 4).map((contact) => (
-                <li key={contact.id}>
-                  <button
-                    type="button"
-                    onClick={() => setRecipient(contact.address)}
-                    className={cn(
-                      "rounded-full border border-[var(--z-line)] px-2.5 py-1 text-[10.5px] text-fg-muted",
-                      "transition-colors duration-[var(--z-duration-base)] hover:border-[var(--z-line-strong)] hover:text-fg",
-                      focusRing,
-                    )}
-                  >
-                    {contact.label}
-                  </button>
-                </li>
-              ))}
-            </ul>
+          {!recipient ? (
+            <ContactChips
+              contacts={contacts}
+              expectedPrefix={expectedPrefix}
+              expectedChainId={recipientChainId}
+              onPick={setRecipient}
+            />
           ) : null}
         </section>
 
@@ -1253,6 +1254,8 @@ export function SendScreen({
         <AddressBookPicker
           contacts={contacts}
           expectedPrefix={expectedPrefix}
+          expectedChainId={recipientChainId}
+          onChanged={onContactsChanged}
           onClose={() => setPicker(null)}
           onPick={(address) => {
             setRecipient(address);

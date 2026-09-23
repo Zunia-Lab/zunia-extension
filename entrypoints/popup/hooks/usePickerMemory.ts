@@ -8,7 +8,7 @@ import {
 } from "../../../lib/picker";
 import { STORAGE_KEYS } from "../../../lib/storage-keys";
 
-export type PickerKind = "chain" | "token" | "contact";
+export type PickerKind = "chain" | "token";
 
 /**
  * Favorites and recent picks for one kind of picker, kept in local storage so

@@ -101,7 +101,13 @@ export interface PickerSection<T> {
  */
 export function pickerSections<T extends Searchable>(
   items: readonly T[],
-  options: { query: string; favorites?: readonly string[]; recents?: readonly string[] },
+  options: {
+    query: string;
+    favorites?: readonly string[];
+    recents?: readonly string[];
+    /** Heading of the full list when other sections precede it. */
+    allTitle?: string;
+  },
 ): PickerSection<T>[] {
   if (normalize(options.query)) {
     return [{ key: "results", title: "Results", items: searchItems(items, options.query) }];
@@ -115,6 +121,10 @@ export function pickerSections<T extends Searchable>(
   const sections: PickerSection<T>[] = [];
   if (favorites.length) sections.push({ key: "favorites", title: "Favorites", items: favorites });
   if (recents.length) sections.push({ key: "recents", title: "Recent", items: recents });
-  sections.push({ key: "all", title: sections.length ? "All" : "", items: [...items] });
+  sections.push({
+    key: "all",
+    title: sections.length ? (options.allTitle ?? "All") : "",
+    items: [...items],
+  });
   return sections;
 }

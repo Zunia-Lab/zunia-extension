@@ -9,8 +9,14 @@ import {
   truncateAddress,
 } from "@zunialab/ui";
 import { extractBech32Address } from "../../../lib/address-payload";
-import type { AddressBookEntry } from "../../../lib/address-book";
-import { IconBook, IconClose, IconQr } from "../screens/icons";
+import {
+  contactsFor,
+  recentContacts,
+  suggestedContacts,
+  type AddressBookEntry,
+} from "../../../lib/address-book";
+import { sendToBackground } from "../../../lib/popup-client";
+import { IconBook, IconClose, IconQr, IconStar } from "../screens/icons";
 import { PickerSheet, type PickerItem } from "./PickerSheet";
 
 type BarcodeDetectorLike = {
@@ -63,33 +69,47 @@ export function AddressFieldActions({
 }
 
 /**
- * Saved recipients as a searchable sheet over the current screen. Only
- * contacts whose address fits the destination chain are listed, so a pick can
- * never fill in an address the chain would reject.
+ * Saved recipients as a searchable sheet over the current screen: favorites,
+ * then recent recipients, then every contact. Only contacts that fit the
+ * destination are listed, the exact prefix and, for a contact pinned to a
+ * network, that network, so a pick never fills in an address for another
+ * chain.
  */
 export function AddressBookPicker({
   contacts,
   expectedPrefix,
+  expectedChainId,
   onPick,
   onClose,
+  onChanged,
 }: {
-  contacts: AddressBookEntry[];
+  contacts: readonly AddressBookEntry[];
   expectedPrefix?: string;
+  expectedChainId?: string;
   onPick: (address: string) => void;
   onClose: () => void;
+  /** Called after a favorite is toggled, so the caller reloads the book. */
+  onChanged?: () => void;
 }) {
+  const usable = useMemo(
+    () => contactsFor(contacts, { prefix: expectedPrefix, chainId: expectedChainId }),
+    [contacts, expectedPrefix, expectedChainId],
+  );
   const items = useMemo<PickerItem[]>(
     () =>
-      contacts
-        .filter((c) => !expectedPrefix || c.address.startsWith(`${expectedPrefix}1`))
-        .map((contact) => ({
-          id: contact.id,
-          label: contact.label,
-          sublabel: truncateAddress(contact.address, 12, 8),
-          keywords: [contact.address],
-        })),
-    [contacts, expectedPrefix],
+      usable.map((contact) => ({
+        id: contact.id,
+        label: contact.label,
+        sublabel: truncateAddress(contact.address, 12, 8),
+        keywords: [contact.address, contact.note ?? ""],
+      })),
+    [usable],
   );
+  const favorites = useMemo(
+    () => usable.filter((contact) => contact.favorite).map((contact) => contact.id),
+    [usable],
+  );
+  const recents = useMemo(() => recentContacts(usable).map((contact) => contact.id), [usable]);
 
   return (
     <PickerSheet
@@ -97,17 +117,73 @@ export function AddressBookPicker({
       onClose={onClose}
       title="Address book"
       items={items}
-      searchPlaceholder="Search by name or address"
+      favorites={favorites}
+      recents={recents}
+      allTitle="Contacts"
+      onToggleFavorite={
+        onChanged
+          ? (id) =>
+              void sendToBackground("TOGGLE_ADDRESS_BOOK_FAVORITE", { id }).then(onChanged)
+          : undefined
+      }
+      searchPlaceholder="Search by name, address or note"
       emptyLabel={
         contacts.length === 0
           ? "No saved recipients yet."
-          : `No saved address starts with ${expectedPrefix}1.`
+          : `No saved address fits this network${expectedPrefix ? ` (${expectedPrefix}1…)` : ""}.`
       }
       onSelect={(id) => {
-        const contact = contacts.find((c) => c.id === id);
+        const contact = usable.find((c) => c.id === id);
         if (contact) onPick(contact.address);
       }}
     />
+  );
+}
+
+/**
+ * One-tap chips under a recipient field: favorites, then recent recipients,
+ * among the contacts that fit the destination.
+ */
+export function ContactChips({
+  contacts,
+  expectedPrefix,
+  expectedChainId,
+  onPick,
+}: {
+  contacts: readonly AddressBookEntry[];
+  expectedPrefix?: string;
+  expectedChainId?: string;
+  onPick: (address: string) => void;
+}) {
+  const chips = useMemo(
+    () =>
+      suggestedContacts(
+        contactsFor(contacts, { prefix: expectedPrefix, chainId: expectedChainId }),
+      ),
+    [contacts, expectedPrefix, expectedChainId],
+  );
+  if (chips.length === 0) return null;
+  return (
+    <ul className="mt-2 flex flex-wrap gap-1.5" aria-label="Saved recipients">
+      {chips.map((contact) => (
+        <li key={contact.id}>
+          <button
+            type="button"
+            onClick={() => onPick(contact.address)}
+            className={cn(
+              "flex items-center gap-1 rounded-full border border-[var(--z-line)] px-2.5 py-1 text-[10.5px] text-fg-muted",
+              "transition-colors duration-[var(--z-duration-base)] hover:border-[var(--z-line-strong)] hover:text-fg",
+              focusRing,
+            )}
+          >
+            {contact.favorite ? (
+              <IconStar filled width={11} height={11} className="text-[var(--z-warning)]" />
+            ) : null}
+            {contact.label}
+          </button>
+        </li>
+      ))}
+    </ul>
   );
 }
 

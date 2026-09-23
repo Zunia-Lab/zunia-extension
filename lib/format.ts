@@ -1,5 +1,7 @@
 /** Display helpers shared by every popup screen. */
 
+import { bech32PrefixOf, isValidBech32Address } from "@zunialab/interchain";
+
 /**
  * Compact magnitude: 2 decimals + k / M / Bn.
  * Examples: 20.34k, 1.50M, 2.10Bn, 12.50
@@ -104,12 +106,22 @@ export function maskAmount(value: string, hidden: boolean): string {
   return hidden ? "••••" : value;
 }
 
+/**
+ * A lowercase bech32 address with a valid checksum. A typo in one character
+ * fails here instead of at signing. Prefixes may contain `_` (`addr_safro`).
+ */
 export function isBech32(address: string): boolean {
-  return /^[a-z0-9]+1[02-9ac-hj-np-z]{20,}$/.test(address.trim());
+  const value = address.trim();
+  return (
+    value === value.toLowerCase() &&
+    /1[02-9ac-hj-np-z]{20,}$/.test(value) &&
+    isValidBech32Address(value)
+  );
 }
 
+/** Everything before the last `1`, or "" when the text is not bech32-shaped. */
 export function prefixOf(address: string): string {
-  return address.split("1")[0] ?? "";
+  return bech32PrefixOf(address.trim().toLowerCase()) ?? "";
 }
 
 export function relativeTime(timestamp: number): string {

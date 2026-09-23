@@ -90,6 +90,10 @@ import {
   listAddressBook,
   removeAddressBookEntry,
   saveAddressBookEntry,
+  toggleAddressBookFavorite,
+  touchAddressBookEntry,
+  updateAddressBookEntry,
+  type ContactPatch,
 } from "../lib/address-book";
 import { getSettings, setSettings } from "../lib/settings";
 import { STORAGE_KEYS } from "../lib/storage-keys";
@@ -141,6 +145,11 @@ async function connectFrameBound(sender: Sender): Promise<boolean> {
     if (waited >= 500) return false;
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
+}
+
+/** A string field from a popup payload; anything else reads as empty. */
+function textField(value: unknown): string {
+  return typeof value === "string" ? value : "";
 }
 
 async function requireSigningPassword(password: unknown): Promise<void> {
@@ -453,17 +462,50 @@ async function routeMessage(
         return { ok: true, data: await listAddressBook() };
 
       case "SAVE_ADDRESS_BOOK_ENTRY": {
-        const payload = message.payload as {
-          label: string;
-          address: string;
-          chainId?: string;
+        const payload = (message.payload ?? {}) as Record<string, unknown>;
+        return {
+          ok: true,
+          data: await saveAddressBookEntry({
+            label: textField(payload.label),
+            address: textField(payload.address),
+            ...(typeof payload.chainId === "string" ? { chainId: payload.chainId } : {}),
+            ...(typeof payload.note === "string" ? { note: payload.note } : {}),
+            favorite: payload.favorite === true,
+          }),
         };
-        return { ok: true, data: await saveAddressBookEntry(payload) };
+      }
+
+      case "UPDATE_ADDRESS_BOOK_ENTRY": {
+        const payload = (message.payload ?? {}) as Record<string, unknown>;
+        const patch: ContactPatch = {
+          ...(typeof payload.label === "string" ? { label: payload.label } : {}),
+          ...(typeof payload.address === "string" ? { address: payload.address } : {}),
+          ...(typeof payload.chainId === "string" || payload.chainId === null
+            ? { chainId: payload.chainId }
+            : {}),
+          ...(typeof payload.note === "string" || payload.note === null
+            ? { note: payload.note }
+            : {}),
+        };
+        return {
+          ok: true,
+          data: await updateAddressBookEntry(textField(payload.id), patch),
+        };
       }
 
       case "REMOVE_ADDRESS_BOOK_ENTRY": {
-        const payload = message.payload as { id: string };
-        return { ok: true, data: await removeAddressBookEntry(payload.id) };
+        const payload = (message.payload ?? {}) as Record<string, unknown>;
+        return { ok: true, data: await removeAddressBookEntry(textField(payload.id)) };
+      }
+
+      case "TOGGLE_ADDRESS_BOOK_FAVORITE": {
+        const payload = (message.payload ?? {}) as Record<string, unknown>;
+        return { ok: true, data: await toggleAddressBookFavorite(textField(payload.id)) };
+      }
+
+      case "TOUCH_ADDRESS_BOOK_ENTRY": {
+        const payload = (message.payload ?? {}) as Record<string, unknown>;
+        return { ok: true, data: await touchAddressBookEntry(textField(payload.address)) };
       }
 
       case "LIST_PERMISSIONS":

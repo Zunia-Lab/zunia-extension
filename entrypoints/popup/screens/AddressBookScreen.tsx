@@ -1,204 +1,214 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import {
   Button,
-  Callout,
   EmptyState,
-  Input,
   ScreenScaffold,
   SearchField,
+  SectionLabel,
   cn,
   focusRing,
+  truncateAddress,
 } from "@zunialab/ui";
 import type { AddressBookEntry } from "../../../lib/address-book";
-import { sendToBackground } from "../../../lib/popup-client";
-import { isBech32, prefixOf } from "../../../lib/format";
+import { findCatalogEntry } from "../../../lib/chain-catalog";
+import { isBech32, relativeTime } from "../../../lib/format";
 import { searchItems } from "../../../lib/picker";
-import { IconBook, IconPlus, IconTrash } from "./icons";
+import { sendToBackground } from "../../../lib/popup-client";
+import { ContactSheet } from "../components/ContactSheet";
+import type { ChainOption } from "../components/ChainSheet";
+import { IconBook, IconChevronRight, IconPlus, IconStar } from "./icons";
+
+/** Shown when the book is long enough that scanning it is slower than typing. */
+const SEARCH_FROM = 4;
+
+function usage(contact: AddressBookEntry): string | null {
+  if (!contact.lastUsedAt || contact.useCount === 0) return null;
+  const times = contact.useCount === 1 ? "once" : `${contact.useCount} times`;
+  return `Sent ${times}, last ${relativeTime(contact.lastUsedAt)}`;
+}
+
+function ContactRow({
+  contact,
+  onToggleFavorite,
+  onEdit,
+}: {
+  contact: AddressBookEntry;
+  onToggleFavorite: () => void;
+  onEdit: () => void;
+}) {
+  const network = contact.chainId
+    ? (findCatalogEntry(contact.chainId)?.chainName ?? contact.chainId)
+    : null;
+  const valid = isBech32(contact.address);
+  const detail = contact.note ?? usage(contact);
+  return (
+    <li className="flex items-center gap-1 rounded-[12px] border border-[var(--z-line)] py-1 pl-1 pr-1.5">
+      <button
+        type="button"
+        aria-pressed={contact.favorite}
+        aria-label={`Favorite ${contact.label}`}
+        onClick={onToggleFavorite}
+        className={cn(
+          "flex size-8 shrink-0 items-center justify-center rounded-full",
+          "transition-colors duration-[var(--z-duration-base)] hover:bg-[var(--z-state-hover)]",
+          contact.favorite ? "text-[var(--z-warning)]" : "text-fg-dim hover:text-fg",
+          focusRing,
+        )}
+      >
+        <IconStar filled={contact.favorite} width={16} height={16} />
+      </button>
+      <button
+        type="button"
+        onClick={onEdit}
+        className={cn(
+          "flex min-w-0 flex-1 items-center gap-2 rounded-[9px] px-1.5 py-1.5 text-left",
+          "transition-colors duration-[var(--z-duration-base)] hover:bg-[var(--z-state-hover)]",
+          focusRing,
+        )}
+      >
+        <span className="min-w-0 flex-1">
+          <span className="flex items-baseline gap-1.5">
+            <span className="truncate text-[12.5px] font-medium text-fg">{contact.label}</span>
+            {network ? (
+              <span className="shrink-0 rounded-full border border-[var(--z-line)] px-1.5 font-mono text-[8.5px] uppercase tracking-[0.08em] text-fg-dim">
+                {network}
+              </span>
+            ) : null}
+          </span>
+          <span className="mt-[3px] block truncate font-mono text-[9.5px] text-fg-dim">
+            {truncateAddress(contact.address, 14, 8)}
+          </span>
+          {!valid ? (
+            <span className="mt-[3px] block text-[10px] text-[var(--z-danger-fg)]">
+              This address fails its checksum. Fix it or delete it.
+            </span>
+          ) : detail ? (
+            <span className="mt-[3px] block truncate text-[10px] text-fg-muted">{detail}</span>
+          ) : null}
+        </span>
+        <IconChevronRight width={16} height={16} className="shrink-0 text-fg-dim" />
+        <span className="sr-only">Edit</span>
+      </button>
+    </li>
+  );
+}
 
 export function AddressBookScreen({
   contacts,
+  chains,
   onBack,
   onChanged,
 }: {
   contacts: AddressBookEntry[];
+  chains: readonly ChainOption[];
   onBack: () => void;
   onChanged: () => void;
 }) {
-  const [adding, setAdding] = useState(false);
-  const [label, setLabel] = useState("");
-  const [address, setAddress] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
   const [query, setQuery] = useState("");
-  const labelRef = useRef<HTMLInputElement>(null);
+  const [editing, setEditing] = useState<AddressBookEntry | "new" | null>(null);
 
-  const shown = useMemo(() => {
+  const results = useMemo(() => {
+    if (!query.trim()) return null;
     const byId = new Map(contacts.map((c) => [c.id, c]));
     return searchItems(
-      contacts.map((c) => ({ id: c.id, label: c.label, keywords: [c.address] })),
+      contacts.map((c) => ({
+        id: c.id,
+        label: c.label,
+        keywords: [
+          c.address,
+          c.note ?? "",
+          c.chainId ?? "",
+          c.chainId ? (findCatalogEntry(c.chainId)?.chainName ?? "") : "",
+        ],
+      })),
       query,
     ).flatMap((item) => byId.get(item.id) ?? []);
   }, [contacts, query]);
 
-  // Focus follows the disclosure, moved here rather than with autoFocus. This
-  // is not a page-load jump: the "Add address" button that held focus is
-  // replaced by this form, so leaving focus where it was would drop a keyboard
-  // user back at the top of the document. The field is labelled "Label", so a
-  // screen reader announces where it has been put.
-  useEffect(() => {
-    if (adding) labelRef.current?.focus();
-  }, [adding]);
+  const favorites = useMemo(() => contacts.filter((c) => c.favorite), [contacts]);
 
-  const addressValid = isBech32(address);
-
-  async function save() {
-    setBusy(true);
-    setError(null);
-    try {
-      await sendToBackground("SAVE_ADDRESS_BOOK_ENTRY", { label, address });
-      setLabel("");
-      setAddress("");
-      setAdding(false);
-      onChanged();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
+  async function toggleFavorite(contact: AddressBookEntry) {
+    await sendToBackground("TOGGLE_ADDRESS_BOOK_FAVORITE", { id: contact.id });
+    onChanged();
   }
 
-  async function remove(id: string) {
-    await sendToBackground("REMOVE_ADDRESS_BOOK_ENTRY", { id });
-    onChanged();
+  function list(rows: readonly AddressBookEntry[]) {
+    return (
+      <ul className="flex flex-col gap-1.5">
+        {rows.map((contact) => (
+          <ContactRow
+            key={contact.id}
+            contact={contact}
+            onToggleFavorite={() => void toggleFavorite(contact)}
+            onEdit={() => setEditing(contact)}
+          />
+        ))}
+      </ul>
+    );
   }
 
   return (
     <ScreenScaffold
       title="Address book"
       onBack={onBack}
-      right={
-        <span className="font-mono text-[9.5px] text-fg-dim">
-          {contacts.length}
-        </span>
-      }
+      right={<span className="font-mono text-[9.5px] text-fg-dim">{contacts.length}</span>}
       footer={
-        adding ? (
-          <div className="flex gap-2">
-            <Button
-              variant="secondary"
-              className="flex-1"
-              onClick={() => {
-                setAdding(false);
-                setError(null);
-              }}
-            >
-              Cancel
-            </Button>
-            <Button
-              className="flex-1"
-              loading={busy}
-              disabled={!label.trim() || !addressValid}
-              onClick={() => void save()}
-            >
-              Save
-            </Button>
-          </div>
-        ) : (
-          <Button
-            variant="secondary"
-            className="w-full"
-            onClick={() => setAdding(true)}
-          >
-            <IconPlus width={16} height={16} />
-            Add address
-          </Button>
-        )
+        <Button variant="secondary" className="w-full" onClick={() => setEditing("new")}>
+          <IconPlus width={16} height={16} />
+          Add contact
+        </Button>
       }
     >
       <div className="flex flex-col gap-3 pt-1">
-        {error ? <Callout tone="danger">{error}</Callout> : null}
-
-        {adding ? (
-          <div className="flex flex-col gap-2.5 rounded-[14px] border border-[var(--z-line)] px-3 py-3">
-            <Input
-              ref={labelRef}
-              label="Label"
-              placeholder="Treasury"
-              value={label}
-              maxLength={40}
-              onChange={(e) => setLabel(e.target.value)}
-            />
-            <Input
-              label="Address"
-              placeholder="cosmos1…"
-              value={address}
-              spellCheck={false}
-              autoComplete="off"
-              state={address ? (addressValid ? "valid" : "error") : "default"}
-              hint={
-                address
-                  ? addressValid
-                    ? `${prefixOf(address)} chain family`
-                    : "Not a valid bech32 address"
-                  : undefined
-              }
-              onChange={(e) => setAddress(e.target.value.trim())}
-            />
-          </div>
-        ) : null}
-
-        {contacts.length === 0 && !adding ? (
+        {contacts.length === 0 ? (
           <EmptyState
             icon={<IconBook width={16} height={16} />}
             title="No saved addresses"
-            description="Save the addresses you send to often and they show up as chips in the send flow."
+            description="Save the addresses you send to often. Send lists them by network, favorites and recent ones first."
           />
         ) : null}
 
-        {contacts.length > 3 && !adding ? (
+        {contacts.length >= SEARCH_FROM ? (
           <SearchField
             value={query}
             onValueChange={setQuery}
-            placeholder="Search by name or address"
+            placeholder="Search by name, address, note or network"
           />
         ) : null}
 
-        {query.trim() && shown.length === 0 ? (
-          <p className="py-6 text-center text-[12px] text-fg-muted">
-            No saved address matches &ldquo;{query.trim()}&rdquo;.
-          </p>
-        ) : null}
-
-        <ul className="flex flex-col gap-2">
-          {shown.map((contact) => (
-            <li
-              key={contact.id}
-              className="flex items-center gap-2.5 rounded-[12px] border border-[var(--z-line)] px-3 py-2.5"
-            >
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-[12.5px] font-medium text-fg">
-                  {contact.label}
-                </span>
-                <span className="mt-[3px] block break-all font-mono text-[9.5px] leading-[1.4] text-fg-dim">
-                  {contact.address}
-                </span>
-              </span>
-              <button
-                type="button"
-                aria-label={`Remove ${contact.label}`}
-                onClick={() => void remove(contact.id)}
-                className={cn(
-                  "flex size-[26px] shrink-0 items-center justify-center rounded-full border border-[var(--z-line)] text-fg-dim",
-                  "transition-colors duration-[var(--z-duration-base)] hover:border-[var(--z-danger-line)] hover:text-[var(--z-danger-fg)]",
-                  focusRing,
-                )}
-              >
-                <IconTrash width={16} height={16} />
-              </button>
-            </li>
-          ))}
-        </ul>
+        {results ? (
+          results.length === 0 ? (
+            <p className="py-6 text-center text-[12px] text-fg-muted">
+              No saved address matches &ldquo;{query.trim()}&rdquo;.
+            </p>
+          ) : (
+            list(results)
+          )
+        ) : (
+          <>
+            {favorites.length > 0 ? (
+              <section className="flex flex-col gap-1.5">
+                <SectionLabel>Favorites</SectionLabel>
+                {list(favorites)}
+              </section>
+            ) : null}
+            {contacts.length > 0 ? (
+              <section className="flex flex-col gap-1.5">
+                {favorites.length > 0 ? <SectionLabel>All</SectionLabel> : null}
+                {list(contacts)}
+              </section>
+            ) : null}
+          </>
+        )}
       </div>
+
+      <ContactSheet
+        open={editing !== null}
+        contact={editing === "new" ? null : editing}
+        chains={chains}
+        onClose={() => setEditing(null)}
+        onChanged={onChanged}
+      />
     </ScreenScaffold>
   );
 }

@@ -56,6 +56,7 @@ import { sendToBackground } from "../../../lib/popup-client";
 import type { TxPreview } from "../../../lib/tx-kernel";
 import type { ChainAccountView } from "../hooks/useChainAccounts";
 import { ChainSheet, PickerTrigger } from "../components/ChainSheet";
+import { ContactChips } from "../components/AddressFieldExtras";
 import { useKernelSigning } from "./interchain-ui";
 import {
   BridgeOverride,
@@ -86,6 +87,7 @@ export function NftDetailScreen({
   tokenId,
   chains,
   contacts,
+  onContactsChanged,
   onBack,
 }: {
   chainId: string;
@@ -93,6 +95,7 @@ export function NftDetailScreen({
   tokenId: string;
   chains: readonly ChainAccountView[];
   contacts: readonly AddressBookEntry[];
+  onContactsChanged?: () => void;
   onBack: () => void;
 }) {
   const signedSend = useSignedSend();
@@ -286,7 +289,7 @@ export function NftDetailScreen({
     const value = recipient.trim();
     if (!value) return { tone: "default" as const, hint: undefined };
     if (!isBech32(value)) {
-      return { tone: "error" as const, hint: "Not a valid bech32 address" };
+      return { tone: "error" as const, hint: "Not a valid address. Check it for a typo." };
     }
     if (expectedPrefix && prefixOf(value) !== expectedPrefix) {
       return {
@@ -441,6 +444,12 @@ export function NftDetailScreen({
       });
       setSent(result);
       setPhase("sent");
+      const to = recipient.trim();
+      if (contacts.some((contact) => contact.address === to)) {
+        void sendToBackground("TOUCH_ADDRESS_BOOK_ENTRY", { address: to })
+          .then(() => onContactsChanged?.())
+          .catch(() => undefined);
+      }
     } catch (caught) {
       setError(signingError(caught));
     } finally {
@@ -828,23 +837,13 @@ export function NftDetailScreen({
               hint={recipientState.hint}
               onChange={(event) => setRecipient(event.target.value)}
             />
-            {contacts.length > 0 && !recipient ? (
-              <ul className="mt-2 flex flex-wrap gap-1.5">
-                {contacts.slice(0, 4).map((contact) => (
-                  <li key={contact.id}>
-                    <button
-                      type="button"
-                      onClick={() => setRecipient(contact.address)}
-                      className={cn(
-                        "rounded-full border border-[var(--z-line)] px-2.5 py-1 text-[10.5px] text-fg-muted hover:text-fg",
-                        focusRing,
-                      )}
-                    >
-                      {contact.label}
-                    </button>
-                  </li>
-                ))}
-              </ul>
+            {!recipient ? (
+              <ContactChips
+                contacts={contacts}
+                expectedPrefix={expectedPrefix}
+                expectedChainId={cross ? destChain?.chainId : chainId}
+                onPick={setRecipient}
+              />
             ) : null}
           </section>
 

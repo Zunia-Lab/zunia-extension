@@ -49,6 +49,7 @@ export function PickerSheet({
   searchPlaceholder = "Search",
   favorites,
   recents,
+  allTitle,
   onToggleFavorite,
   loading = false,
   emptyLabel = "Nothing to choose from yet.",
@@ -62,6 +63,8 @@ export function PickerSheet({
   searchPlaceholder?: string;
   favorites?: readonly string[];
   recents?: readonly string[];
+  /** Heading of the full list under Favorites and Recent. Defaults to "All". */
+  allTitle?: string;
   onToggleFavorite?: (id: string) => void;
   loading?: boolean;
   emptyLabel?: string;
@@ -83,8 +86,8 @@ export function PickerSheet({
   }
 
   const sections = useMemo(
-    () => pickerSections(items, { query, favorites, recents }),
-    [items, query, favorites, recents],
+    () => pickerSections(items, { query, favorites, recents, allTitle }),
+    [items, query, favorites, recents, allTitle],
   );
 
   const entries = useMemo(() => {

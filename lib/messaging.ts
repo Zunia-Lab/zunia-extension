@@ -70,7 +70,11 @@ export type ExtensionMessageType =
   | "VALIDATE_IBC_CHANNEL"
   | "LIST_ADDRESS_BOOK"
   | "SAVE_ADDRESS_BOOK_ENTRY"
+  | "UPDATE_ADDRESS_BOOK_ENTRY"
   | "REMOVE_ADDRESS_BOOK_ENTRY"
+  | "TOGGLE_ADDRESS_BOOK_FAVORITE"
+  /** Count a successful send to a saved address. */
+  | "TOUCH_ADDRESS_BOOK_ENTRY"
   | "REVEAL_MNEMONIC"
   | "RESET_WALLET"
   | "LIST_PERMISSIONS"

@@ -554,6 +554,7 @@ function AppBody({ state }: { state: ExtensionState }) {
             tokenId={location.tokenId}
             chains={chains}
             contacts={contacts}
+            onContactsChanged={loadContacts}
             onBack={back}
           />
         ) : (
@@ -582,6 +583,7 @@ function AppBody({ state }: { state: ExtensionState }) {
       {route === "address-book" ? (
         <AddressBookScreen
           contacts={contacts}
+          chains={chains}
           onBack={back}
           onChanged={loadContacts}
         />
