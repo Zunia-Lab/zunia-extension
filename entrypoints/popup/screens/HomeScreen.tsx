@@ -24,6 +24,7 @@ import type { OriginGrant } from "../../../lib/permissions";
 import type { SessionStatus } from "../../../lib/session";
 import {
   hasLiveBalancePermission,
+  liveBalanceRefusalNote,
   requestLiveBalancePermission,
   type ChainBalance,
   type TokenBalance,
@@ -498,10 +499,13 @@ export function HomeScreen({
   const { rows: activity } = useActivity(chainIds, readsLive);
   const recentActivity = activity.slice(0, 5);
 
+  const [refusal, setRefusal] = useState<string | null>(null);
   useEffect(() => {
     const sync = () => {
       void hasLiveBalancePermission().then((ok) => {
-        if (ok) onHostGranted();
+        if (!ok) return;
+        onHostGranted();
+        setRefusal(null);
       });
     };
     sync();
@@ -512,10 +516,12 @@ export function HomeScreen({
   async function enableLiveBalances() {
     setEnabling(true);
     try {
-      const ok = (await hasLiveBalancePermission())
-        ? true
-        : await requestLiveBalancePermission();
-      if (!ok) return;
+      const ok = await requestLiveBalancePermission();
+      if (!ok) {
+        setRefusal(liveBalanceRefusalNote());
+        return;
+      }
+      setRefusal(null);
       onHostGranted();
       await update({ liveBalances: true });
       onRefresh();
@@ -683,8 +689,11 @@ export function HomeScreen({
           <Callout tone="info" title="Turn on live balances">
             <p>
               Read native, IBC, and factory balances from each chain&rsquo;s
-              public endpoint. Chrome will ask for host access once.
+              public endpoint, once you allow the wallet to reach them.
             </p>
+            {refusal ? (
+              <p className="mt-1.5 text-[var(--z-danger)]">{refusal}</p>
+            ) : null}
             <Button
               size="sm"
               className="mt-2.5"

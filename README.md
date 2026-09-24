@@ -30,10 +30,13 @@ Every target is Manifest V3.
 
 | Browser | Background | Build | Output | Verified |
 | --- | --- | --- | --- | --- |
-| Chrome, Brave, Opera | Service worker | `pnpm build:chrome` | `.output/chrome-mv3` | Automated: WASM kernel loads, provider injects under strict page CSPs |
+| Chrome, Brave, Opera | Service worker | `pnpm build:chrome` | `.output/chrome-mv3` | Automated in Chromium: WASM kernel loads, provider injects under strict page CSPs, a dApp connects, signs in and signs, and hears account switches and revocation live |
 | Edge | Service worker | `pnpm build:edge` | `.output/edge-mv3` | Same Chromium build as Chrome |
-| Firefox 140+ (desktop) | Event page | `pnpm build:firefox` | `.output/firefox-mv3` | Automated: WASM kernel loads, provider injects under strict page CSPs, addons-linter reports no errors |
-| Safari (macOS, iOS) | Service worker | `pnpm safari:build` | `.output/safari-mv3`, Xcode project in `safari/` | CI builds the macOS and iOS Simulator apps; not yet exercised inside Safari |
+| Firefox 140+ (desktop) | Event page | `pnpm build:firefox` | `.output/firefox-mv3` | Automated: the same checks as Chrome, with the connect request approved from the toolbar popup, and the wallet staying unlocked when Firefox unloads the idle background page; addons-linter reports no errors |
+| Safari (macOS, iOS) | Service worker | `pnpm safari:build` | `.output/safari-mv3`, Xcode project in `safari/` | CI builds the macOS and iOS Simulator apps. By hand in Safari on the iOS Simulator: the provider reaches strict-CSP pages, a dApp connects, signs in and signs, and hears account switches, locks and revocation live. macOS Safari not yet run |
+
+The automated checks are the `stack/` suite in
+[zunia-e2e](https://github.com/Zunia-Lab/zunia-e2e), run locally against these builds.
 
 Firefox 140 is the floor because that is where Firefox shows its own data consent prompt,
 which the manifest's `data_collection_permissions` relies on. Firefox for Android is not

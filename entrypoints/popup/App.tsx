@@ -8,6 +8,8 @@ import {
   Spinner,
   ThemeProvider,
 } from "@zunialab/ui";
+import { SESSION_CONFIG } from "../../config/session";
+import { watchUserActivity } from "../../lib/activity";
 import type { AddressBookEntry } from "../../lib/address-book";
 import { closeApprovalSurface } from "../../lib/approval-ui";
 import { sendToBackground } from "../../lib/popup-client";
@@ -157,6 +159,14 @@ function AppBody({ state }: { state: ExtensionState }) {
   const [contacts, setContacts] = useState<AddressBookEntry[]>(NO_CONTACTS);
 
   const unlocked = Boolean(status?.unlocked);
+  useEffect(() => {
+    if (!unlocked) return;
+    return watchUserActivity(
+      window,
+      () => void sendToBackground("TOUCH_SESSION").catch(() => undefined),
+      SESSION_CONFIG.autoLock.activityReportMs,
+    );
+  }, [unlocked]);
   const {
     accounts: chains,
     chainIds,
@@ -325,7 +335,7 @@ function AppBody({ state }: { state: ExtensionState }) {
   );
 
   return (
-    <PopupShell showChrome={false}>
+    <PopupShell showChrome={false} className={showTabs ? undefined : "zunia-fit"}>
       {error ? (
         <div className="px-4 pt-3">
           <Callout tone="danger">{error}</Callout>

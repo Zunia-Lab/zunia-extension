@@ -53,4 +53,6 @@ export const STORAGE_KEYS = {
   sessionActiveAccount: "zunia.session.activeAccount",
   /** Tab id to the origin of the page that made provider calls in it. */
   providerTabs: "zunia.session.providerTabs",
+  /** Recent wallet events for Safari's event ports, see lib/event-port.ts. */
+  providerEventLog: "zunia.session.providerEventLog",
 } as const;

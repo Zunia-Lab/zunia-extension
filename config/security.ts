@@ -32,6 +32,14 @@ export const SECURITY_CONFIG = {
     ttlMs: 5 * 60 * 1000,
     /** Closing the popup or window that shows a request rejects it. */
     rejectOnUiClose: true,
+    /**
+     * How often the pages that need the worker running ping it: a page with a
+     * request open, the approval screen, and on Safari a page that receives
+     * wallet events. Browsers stop an idle extension worker even while a port
+     * is open (Safari on iOS after about 8 seconds, Chrome after 30), and the
+     * requests waiting in it go with it.
+     */
+    keepAliveMs: 3_000,
   },
   rateLimits: {
     maxPendingApprovals: 3,

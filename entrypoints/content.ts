@@ -1,5 +1,7 @@
 import { CONNECT_CONFIG } from "../config/connect";
+import { SECURITY_CONFIG } from "../config/security";
 import { createConnectOverlay } from "../lib/connect-overlay-view";
+import { EVENT_PORT, type EventPortMessage } from "../lib/event-port";
 import { PAGE_CHANNEL } from "../lib/messaging";
 import type { ExtensionMessage, ExtensionResponse } from "../lib/messaging";
 import { providerErrorCode, type ProviderErrorCode } from "../lib/provider-errors";
@@ -23,6 +25,7 @@ class BridgeError extends Error {
  * 2. Completes a MessageChannel handshake (origin-checked both sides).
  * 3. Proxies provider RPC to the background with the page origin.
  * 4. Hosts the in-page connect modal on request from the background.
+ * 5. Passes the page the wallet events addressed to its origin.
  */
 export default defineContentScript({
   matches: [...CONNECT_CONFIG.contentScriptMatches],
@@ -45,6 +48,75 @@ export default defineContentScript({
       script.addEventListener("load", () => script.remove());
     }
 
+    // Safari never hands this script the worker's tabs.sendMessage, so there a
+    // page that has used the provider gets its events over a port it opens.
+    // See lib/event-port.ts.
+    const eventsOverPort = import.meta.env.BROWSER === "safari";
+    let usesProvider = false;
+    let eventPort: ReturnType<typeof browser.runtime.connect> | null = null;
+    let lastEventSeq = 0;
+
+    function openEventPort(): void {
+      const next = browser.runtime.connect({ name: EVENT_PORT });
+      next.onMessage.addListener((message: unknown) => {
+        const batch = message as EventPortMessage | null;
+        if (batch?.type !== "events") return;
+        for (const item of batch.events) {
+          if (item.seq <= lastEventSeq) continue;
+          lastEventSeq = item.seq;
+          handleProviderEvent(item);
+        }
+        lastEventSeq = Math.max(lastEventSeq, batch.seq);
+      });
+      next.onDisconnect.addListener(() => {
+        if (eventPort === next) eventPort = null;
+      });
+      const resume: EventPortMessage = { type: "resume", after: lastEventSeq };
+      next.postMessage(resume);
+      eventPort = next;
+    }
+
+    // Browsers stop an idle extension worker (Safari on iOS within seconds),
+    // and what it holds goes with it: a request waiting on the user, or on
+    // Safari the event port. Ping while either needs it.
+    let openRequests = 0;
+    let keepAlive: ReturnType<typeof setInterval> | undefined;
+    const ping: ExtensionMessage = { type: "PING" };
+
+    function wantsEvents(): boolean {
+      return eventsOverPort && usesProvider && document.visibilityState === "visible";
+    }
+
+    function tick(): void {
+      if (openRequests === 0 && !wantsEvents()) {
+        clearInterval(keepAlive);
+        keepAlive = undefined;
+        return;
+      }
+      void browser.runtime.sendMessage(ping).catch(() => undefined);
+      if (wantsEvents() && !eventPort) openEventPort();
+    }
+
+    function keepWorkerUp(): void {
+      keepAlive ??= setInterval(tick, SECURITY_CONFIG.approvals.keepAliveMs);
+    }
+
+    function startEvents(): void {
+      // Events are for the top document, as on the tabs.sendMessage path.
+      if (!eventsOverPort || usesProvider || window.top !== window.self) return;
+      usesProvider = true;
+      // Sequence numbers are timestamps: start from now, not from history.
+      lastEventSeq = Date.now() - 1;
+      openEventPort();
+    }
+
+    // Coming back to the tab: connect again and collect what was missed.
+    document.addEventListener("visibilitychange", () => {
+      if (!wantsEvents()) return;
+      if (!eventPort) openEventPort();
+      keepWorkerUp();
+    });
+
     async function forwardToBackground(
       method: string,
       args: unknown[],
@@ -54,9 +126,17 @@ export default defineContentScript({
         origin: pageOrigin,
         payload: { method, args },
       };
-      const response = (await browser.runtime.sendMessage(
-        message,
-      )) as ExtensionResponse;
+      startEvents();
+      openRequests += 1;
+      keepWorkerUp();
+      let response: ExtensionResponse;
+      try {
+        response = (await browser.runtime.sendMessage(
+          message,
+        )) as ExtensionResponse;
+      } finally {
+        openRequests -= 1;
+      }
       if (!response?.ok) {
         throw new BridgeError(
           response?.error ?? "Provider request failed",
@@ -201,9 +281,9 @@ export default defineContentScript({
     window.addEventListener("message", onWindowMessage);
     injectProvider();
 
-    // Account and connection changes arrive from the worker as PROVIDER_EVENT,
-    // addressed to connected sites only. The alias setting is not about any
-    // site, so every page follows it here.
+    // Account and connection changes arrive from the worker as PROVIDER_EVENT
+    // (or on Safari over the event port), addressed to connected sites only.
+    // The alias setting is not about any site, so every page follows it here.
     browser.storage.onChanged.addListener((changes, area) => {
       if (area !== "local" || !port || !changes[STORAGE_KEYS.settings]) return;
       const next = changes[STORAGE_KEYS.settings].newValue as

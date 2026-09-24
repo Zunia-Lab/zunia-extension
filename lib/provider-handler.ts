@@ -18,7 +18,6 @@ import {
 import {
   adr36PayloadIsSafe,
   adr36SignBytesHex,
-  adr36SignDoc,
   bytesToHex,
   fromBase64,
   hexToBytes,
@@ -712,10 +711,9 @@ async function dispatchProviderRequest(input: ProviderRequest): Promise<unknown>
         adr36SignBytesHex(signer, dataBytes),
       );
       noteUse(origin, { chainId, address: key.derived.bech32Address });
-      return {
-        signed: adr36SignDoc(signer, dataBytes),
-        signature: secpSignature(key.derived.pubKey, signatureHex),
-      };
+      // Keplr's contract: the StdSignature itself, which is what cosmos-kit,
+      // graz and the Zunia SDK pass to their ADR-36 verifiers.
+      return secpSignature(key.derived.pubKey, signatureHex);
     }
 
     case "verifyArbitrary": {

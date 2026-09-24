@@ -14,9 +14,13 @@ auto_lock:
   default_ms: 600000
   min_ms: 60000
   max_ms: 3600000
+  # Holds by construction: the browser empties storage.session when it closes.
   on_browser_close: true
   on_device_lock: true
   lock_now_action: true
+  # An unlocked wallet page reports input at most every 30 s, and each report
+  # restarts the timer, so auto-lock counts time without input.
+  activity_report_ms: 30000
 
 password:
   # 3 free attempts, then 2 s doubling per failure, capped at 5 minutes.

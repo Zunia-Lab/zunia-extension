@@ -7,6 +7,7 @@
  */
 
 import { SECURITY_CONFIG } from "../config/security";
+import type { ExtensionMessage } from "./messaging";
 
 export const APPROVAL_UI_PORT = "zunia:approval-ui";
 
@@ -41,6 +42,49 @@ export function registerApprovalUiPort(port: Port): void {
   });
 }
 
+let releaseHeldPort: (() => void) | null = null;
+
+/**
+ * Called once by an approval surface when it loads. Holds the port for the
+ * life of the page, and pings the worker while the page is on screen: browsers
+ * stop an idle worker even with a port open, and the request on screen would
+ * go with it. The pings are runtime messages, not port messages, because
+ * Safari stops the worker two minutes after the last runtime message however
+ * busy the port is. If the worker was replaced anyway, the page connects again
+ * so the new one knows a surface is open.
+ */
+export function holdApprovalUiPort(): void {
+  let port: Port | null = null;
+  // Cleared while the page is going away. Safari drops the port a moment
+  // before the page dies, and connecting again then would leave the worker
+  // counting a surface that no longer exists.
+  let held = true;
+  const connect = () => {
+    const next = browser.runtime.connect({ name: APPROVAL_UI_PORT });
+    next.onDisconnect.addListener(() => {
+      if (port === next) port = null;
+    });
+    port = next;
+  };
+  const release = () => {
+    held = false;
+    port?.disconnect();
+    port = null;
+  };
+  connect();
+  const ping: ExtensionMessage = { type: "PING" };
+  setInterval(() => {
+    if (!held || document.visibilityState !== "visible") return;
+    if (!port) connect();
+    void browser.runtime.sendMessage(ping).catch(() => undefined);
+  }, SECURITY_CONFIG.approvals.keepAliveMs);
+  window.addEventListener("pagehide", release);
+  window.addEventListener("pageshow", (event) => {
+    if (event.persisted) held = true;
+  });
+  releaseHeldPort = release;
+}
+
 async function openNow(): Promise<void> {
   try {
     if (browser.action?.openPopup) {
@@ -48,7 +92,8 @@ async function openNow(): Promise<void> {
       return;
     }
   } catch {
-    // No focused window or no gesture: fall through to a window.
+    // No focused window, no gesture, or (Safari) a popup it still thinks is
+    // open: fall through to a window.
   }
   const url = `${browser.runtime.getURL("popup.html" as never)}?approve=1`;
   // Safari on iOS and iPadOS has no windows API, so the queue opens in a tab,
@@ -77,6 +122,7 @@ async function openNow(): Promise<void> {
  * window, and falls back to `window.close()`.
  */
 export async function closeApprovalSurface(): Promise<void> {
+  releaseHeldPort?.();
   try {
     const tab = await browser.tabs.getCurrent();
     if (tab?.id !== undefined) {

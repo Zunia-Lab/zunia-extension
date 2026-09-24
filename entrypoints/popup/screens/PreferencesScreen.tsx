@@ -13,6 +13,7 @@ import {
 import {
   dropLiveBalancePermission,
   hasLiveBalancePermission,
+  liveBalanceRefusalNote,
   requestLiveBalancePermission,
 } from "../../../lib/balances";
 import {
@@ -41,11 +42,9 @@ export function PreferencesScreen({ onBack }: { onBack: () => void }) {
       setGranted(false);
       return;
     }
-    const ok = (await hasLiveBalancePermission())
-      ? true
-      : await requestLiveBalancePermission();
+    const ok = await requestLiveBalancePermission();
     if (!ok) {
-      setError("Permission denied, so balances stay hidden.");
+      setError(liveBalanceRefusalNote());
       return;
     }
     setGranted(true);
@@ -107,7 +106,7 @@ export function PreferencesScreen({ onBack }: { onBack: () => void }) {
         <SettingsGroup label="Data">
           <SettingsToggle
             title="Live balances"
-            description="Read balances from each chain's public endpoint. Asks for host access the first time."
+            description="Read balances from each chain's public endpoint, once you allow the wallet to reach them."
             checked={settings.liveBalances && granted}
             onCheckedChange={(next) => void toggleLiveBalances(next)}
           />

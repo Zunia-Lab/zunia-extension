@@ -20,13 +20,19 @@ One codebase, four Manifest V3 builds. `wxt.config.ts` computes the manifest per
 | `check:build` (MV3, CSP, one kernel binary, permissions, per-browser keys) | CI | CI | CI | CI |
 | addons-linter (`pnpm lint:firefox`) | | | CI, no errors | |
 | Xcode app builds for macOS and the iOS Simulator (`scripts/safari.mjs build`) | | | | CI |
-| WASM kernel loads (`KERNEL_STATUS` reports `flavor: "wasm"`) | Automated | Chromium build | Automated | Manual |
-| Provider injects under `script-src 'self'`, nonce plus `strict-dynamic`, and Trusted Types page policies | Automated | Chromium build | Automated | Manual |
+| WASM kernel loads (`KERNEL_STATUS` reports `flavor: "wasm"`) | Automated | Chromium build | Automated | Partly, iOS Simulator |
+| Provider injects under `script-src 'self'`, nonce plus `strict-dynamic`, and Trusted Types page policies | Automated | Chromium build | Automated | By hand, iOS Simulator |
+| A dApp connects, signs in (verified by its server), gets an Amino signature, and hears an account switch and a revocation live | Automated | Chromium build | Automated | By hand, iOS Simulator |
+| Opening the wallet restarts the auto-lock timer | Automated | Chromium build | | |
+| The wallet stays unlocked when the browser unloads an idle background page | | | Automated | |
 
-The automated checks load the production build into Chromium through Playwright and into
-Firefox through geckodriver, then call the worker from an extension page. The remaining two
-addons-linter warnings are React DOM's own `innerHTML` code path for
-`dangerouslySetInnerHTML`, which this codebase does not use.
+The automated rows are the `stack/` suite in
+[zunia-e2e](https://github.com/Zunia-Lab/zunia-e2e), run locally against the production builds
+and the SDK's example dApp. Playwright loads `.output/chrome-mv3` into Chromium; puppeteer-core
+loads `.output/firefox-mv3` into a stock Firefox over WebDriver BiDi. The Safari rows are
+described under [Tested in Safari](#tested-in-safari). The remaining two addons-linter warnings
+are React DOM's own `innerHTML` code path for `dangerouslySetInnerHTML`, which this codebase
+does not use.
 
 ## Signing kernel
 
@@ -46,6 +52,12 @@ with the kernel's error after approval.
   broadcasts them. Nothing is sent to a Zunia server.
 - **Host access:** Firefox grants the content script's `https://*/*` match at install. If a
   user withdraws it in `about:addons`, Permissions, the provider stops appearing on sites.
+- **Connect requests:** Firefox has no IntersectionObserver v2, so the extension cannot tell
+  whether its in-page connect prompt is visible and unobstructed, and does not draw it.
+  Connect requests wait in the toolbar popup, like signing requests.
+- **Idle unloads:** Firefox unloads the background page about 30 seconds after its last event,
+  and fires `runtime.onSuspend` first. The wallet stays unlocked through that: the unlocked
+  session lives in `storage.session`, which outlives the page.
 - **Local testing:** `about:debugging#/runtime/this-firefox`, Load Temporary Add-on, then
   `manifest.json` in `.output/firefox-mv3`.
 - **AMO submission:** AMO asks for the source code and build steps because the build is
@@ -84,11 +96,49 @@ the Zunia Lab Apple developer team, set under Signing & Capabilities in Xcode.
 
 ### What differs in Safari
 
+- There is no IntersectionObserver v2, so, as in Firefox, connect requests go to the toolbar
+  popup instead of the in-page prompt.
 - There is no `idle` API, so auto-lock runs on its timer only, not on screen lock.
 - There is no notifications API, so the browser alerts switch is disabled with a note.
-- Safari on iOS has no windows API. When the toolbar popup cannot open, requests open in a
-  tab, which closes itself after the last answer. On iPhone the popup fills the sheet's
-  width instead of drawing the 360px card.
+- Safari on iOS has no windows API. When the toolbar popup cannot open, for example because
+  another popup is already open, requests open in a tab, which closes itself after the last
+  answer. On iPhone the popup fills the sheet's width instead of drawing the 360px card,
+  screens without the bottom bar size to their content so their buttons stay in view, and
+  inputs use 16px text so Safari does not zoom in when one gets focus.
+- In testing, `tabs.sendMessage` never reached a content script. The wallet sends a page's
+  events (`accountsChanged`, `chainChanged`, `disconnect`, lock state) over a port the
+  content script opens instead. Events are numbered and the last 100 are kept in
+  `storage.session`, so a content script that reconnects, after Safari stopped the worker or
+  when the tab comes back to the front, receives what it missed.
+- Safari on iOS stops an idle worker after about 8 seconds, even with a port open, and about
+  2 minutes after the last runtime message. While a request waits for an answer, and while a
+  page that uses the wallet is in front, the content script and the approval screen ping the
+  worker every 3 seconds.
+- Safari keeps website access in its own settings. It answers the wallet's request for the
+  chains' public endpoints (`https://*/*`) with a refusal and no prompt, so turning on live
+  balances says where to allow it instead: on iPhone and iPad, Settings, Apps, Safari,
+  Extensions, Zunia, Other Websites, Allow. The same settings decide which sites the extension
+  may run on, so a dApp only sees `window.zunia` on sites Safari allows it on.
+
+### Tested in Safari
+
+By hand on the iOS Simulator (iOS 26.4), with the Release build from `pnpm safari:build`, the
+SDK's example dApp and the zunia-e2e test wallet:
+
+- The dApp connects, from the toolbar popup and from the tab it falls back to, signs in (the
+  example's server verifies it), and gets an Amino signature it verifies.
+- Switching accounts, locking, unlocking and revoking the site in the wallet reach the open
+  page live. After a reload, a locked wallet is still reported as locked.
+- A request left open for minutes still gets its answer.
+- The provider appears on the four strict-CSP pages of the zunia-e2e suite, served by a copy
+  that prints the probe's result, and answers `getConnectedChains()` on each.
+- Live balances work once Other Websites is allowed; before that, the switch says where to
+  allow it.
+- The Swap screen raises no kernel notice, which it shows when the kernel cannot build
+  transactions. No transaction was broadcast, so the kernel row stays "partly".
+
+Not yet: macOS Safari (it needs "Allow unsigned extensions", a click in Safari's Developer
+Settings), Direct signing, a broadcast transaction, and a physical iPhone.
 
 ### Keeping the project in step
 

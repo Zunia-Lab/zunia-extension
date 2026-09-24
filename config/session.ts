@@ -16,9 +16,15 @@ export const SESSION_CONFIG = {
     defaultMs: 600_000,
     minMs: 60_000,
     maxMs: 3_600_000,
+    /** Holds by construction: the browser empties storage.session when it closes. */
     onBrowserClose: true,
     onDeviceLock: true,
     lockNowAction: true,
+    /**
+     * An unlocked wallet page reports input at most this often, and each report
+     * restarts the timer, so auto-lock counts time without input.
+     */
+    activityReportMs: 30_000,
     alarmName: "zunia-autolock",
   },
   password: {

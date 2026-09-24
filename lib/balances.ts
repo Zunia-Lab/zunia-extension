@@ -3,8 +3,8 @@
  *
  * Balances come straight from the public REST (LCD) endpoint the chain
  * registry lists for each chain. This is opt-in: the user has to grant the
- * optional host permission from Settings, otherwise every call short-circuits
- * and the UI shows an em dash instead of a number.
+ * optional host permission, otherwise every call short-circuits and the UI
+ * shows a placeholder instead of a number.
  */
 
 import {
@@ -72,6 +72,12 @@ export async function hasLiveBalancePermission(): Promise<boolean> {
   }
 }
 
+/**
+ * Call it before anything else is awaited in the click handler: Chrome and
+ * Firefox honor a permission request only straight from the user's gesture.
+ * Every browser answers at once, with no prompt, when the access is already
+ * granted.
+ */
 export async function requestLiveBalancePermission(): Promise<boolean> {
   try {
     return await browser.permissions.request({
@@ -80,6 +86,23 @@ export async function requestLiveBalancePermission(): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/**
+ * Why live balances stayed off after the request came back false. Safari
+ * answers false without a prompt: website access lives in its own settings,
+ * and the request succeeds once the user allows Zunia on other websites there.
+ */
+export function liveBalanceRefusalNote(): string {
+  if (import.meta.env.BROWSER !== "safari") {
+    return "The browser did not grant access, so balances stay off.";
+  }
+  const touch =
+    /iPhone|iPad|iPod/.test(navigator.userAgent) ||
+    (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
+  return touch
+    ? "Safari keeps this in Settings > Apps > Safari > Extensions > Zunia. Set Other Websites to Allow, then try again."
+    : "Safari keeps this in its own settings. Allow Zunia on other websites there, then try again.";
 }
 
 export async function dropLiveBalancePermission(): Promise<void> {

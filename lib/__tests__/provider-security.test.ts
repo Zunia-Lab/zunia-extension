@@ -314,6 +314,7 @@ describe("sender policy", () => {
 
   it("keeps content scripts and external pages away from the wallet", () => {
     expect(messageAllowed("content-script", "PROVIDER_REQUEST")).toBe(true);
+    expect(messageAllowed("content-script", "PING")).toBe(true);
     expect(messageAllowed("content-script", "UNLOCK")).toBe(false);
     expect(messageAllowed("content-script", "REVEAL_MNEMONIC")).toBe(false);
     expect(messageAllowed("connect-frame", "RESOLVE_APPROVAL")).toBe(true);

@@ -4,7 +4,8 @@
  * Content scripts run inside every web page's process. They are our code, but
  * a compromised renderer can speak with their voice, so the worker treats them
  * as the least trusted internal sender: they may forward provider calls and
- * nothing else. The in-page connect frame gets the handful of reads and the one
+ * ping the worker to keep it running, and nothing else.
+ * The in-page connect frame gets the handful of reads and the one
  * decision it needs. Only full extension pages (popup, approval window,
  * onboarding) reach the wallet itself.
  */
@@ -52,6 +53,7 @@ export function classifySender(sender: SenderLike, ctx: SenderContext): SenderKi
 
 const CONTENT_SCRIPT_MESSAGES: ReadonlySet<ExtensionMessageType> = new Set([
   "PROVIDER_REQUEST",
+  "PING",
 ]);
 
 const CONNECT_FRAME_MESSAGES: ReadonlySet<ExtensionMessageType> = new Set([

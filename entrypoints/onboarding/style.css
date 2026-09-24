@@ -27,3 +27,11 @@ body {
 #root {
   min-height: 100vh;
 }
+
+/* Safari on iPhone (public/boot.js sets the class) zooms in when a field under
+   16px takes focus, and stays zoomed. */
+html.zunia-phone input,
+html.zunia-phone textarea,
+html.zunia-phone select {
+  font-size: 16px;
+}

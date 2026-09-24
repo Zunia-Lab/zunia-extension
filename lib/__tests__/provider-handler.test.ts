@@ -174,9 +174,10 @@ describe("sign-in", () => {
       message,
     });
     resolveApproval(approval!.id, { approved: true });
-    await expect(pending).resolves.toMatchObject({
-      signed: { msgs: [{ type: "sign/MsgSignData" }] },
-      signature: { pub_key: { type: "tendermint/PubKeySecp256k1" } },
+    const signature = await pending;
+    expect(signature).toEqual({
+      pub_key: { type: "tendermint/PubKeySecp256k1", value: expect.any(String) },
+      signature: expect.any(String),
     });
   });
 

@@ -141,6 +141,23 @@ html.zunia-phone body {
   border-inline: 0;
 }
 
+/* The phone's sheet first opens showing only the top of the page, so a footer
+   pinned to the bottom of 600px (Approve, Reject, Continue) starts out of
+   sight. Screens without the tab bar take their content's height there, which
+   puts the footer right under the content. */
+html.zunia-phone #root > .zunia-fit {
+  height: auto;
+  min-height: 0;
+}
+
+/* Safari on iPhone zooms in when a field under 16px takes focus, and stays
+   zoomed, which pushes the screen past the right edge. */
+html.zunia-phone input,
+html.zunia-phone textarea,
+html.zunia-phone select {
+  font-size: 16px;
+}
+
 @media (prefers-reduced-motion: reduce) {
   body::before {
     filter: blur(12px);

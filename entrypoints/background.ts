@@ -14,6 +14,7 @@ import {
 } from "../lib/approval-ui";
 import { getAccountAddresses } from "../lib/account-addresses";
 import { approvalIdFromPortName } from "../lib/connect-overlay";
+import { EVENT_PORT, publishEvents, registerEventPort } from "../lib/event-port";
 import {
   isExternallyConnectableOrigin,
   type ExtensionMessage,
@@ -181,12 +182,20 @@ async function requireSigningPassword(password: unknown): Promise<void> {
   await verifyPassword(typeof password === "string" ? password : "");
 }
 
+/** Safari drops the worker's tabs.sendMessage, see lib/event-port.ts. */
+const EVENTS_OVER_PORT = import.meta.env.BROWSER === "safari";
+
 /**
  * Deliver each event to the tabs showing its site, and nowhere else. The
  * message names only that one origin, so no page learns which other sites
  * are connected.
  */
 async function deliverProviderEvents(events: OriginEvent[]): Promise<void> {
+  if (events.length === 0) return;
+  if (EVENTS_OVER_PORT) {
+    await publishEvents(events);
+    return;
+  }
   await Promise.all(
     events.map(async ({ origin, event, data }) => {
       const message = { type: "PROVIDER_EVENT", payload: { event, origin, data } };
@@ -761,6 +770,18 @@ function onPortConnect(port: ReturnType<typeof browser.runtime.connect>): void {
       return;
     }
     registerApprovalUiPort(port);
+    return;
+  }
+
+  if (port.name === EVENT_PORT) {
+    // Same audience as the tabs.sendMessage path: the top frame of a page, by
+    // the origin the browser reports for it.
+    const origin = providerOriginFromSender(sender);
+    if (!EVENTS_OVER_PORT || kind !== "content-script" || !origin || (sender.frameId ?? 0) !== 0) {
+      port.disconnect();
+      return;
+    }
+    registerEventPort(port, origin);
     return;
   }
 

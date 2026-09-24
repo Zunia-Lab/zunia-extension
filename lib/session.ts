@@ -443,21 +443,26 @@ export async function getStatus(): Promise<SessionStatus> {
 }
 
 export function registerSessionLifecycle(): void {
+  // The unlocked phrase lives in storage.session. Chrome keeps that area from
+  // content scripts by default; Safari does not say so, and during testing it
+  // passed a session change notice to a content script. Ask explicitly.
+  const session = browser.storage.session as typeof browser.storage.session & {
+    setAccessLevel?: (options: { accessLevel: "TRUSTED_CONTEXTS" }) => Promise<void>;
+  };
+  if (typeof session.setAccessLevel === "function") {
+    void session.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" }).catch(() => undefined);
+  }
+
   browser.alarms.onAlarm.addListener((alarm) => {
     if (alarm.name === SESSION_CONFIG.autoLock.alarmName) {
       void lockWallet();
     }
   });
 
-  // Chromium service worker suspend: wipe session if configured.
-  const runtime = browser.runtime as typeof browser.runtime & {
-    onSuspend?: { addListener: (cb: () => void) => void };
-  };
-  if (SESSION_CONFIG.autoLock.onBrowserClose && runtime.onSuspend) {
-    runtime.onSuspend.addListener(() => {
-      void lockWallet();
-    });
-  }
+  // Locking when the browser closes needs no listener: the browser empties
+  // storage.session then. runtime.onSuspend is not that moment. Firefox fires
+  // it whenever it unloads an idle background page, about 30 s after the last
+  // event, so locking there would lock the wallet while it is in use.
 
   if (SESSION_CONFIG.autoLock.onDeviceLock && browser.idle?.onStateChanged) {
     browser.idle.onStateChanged.addListener((state) => {
