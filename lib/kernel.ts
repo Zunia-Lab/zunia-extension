@@ -4,8 +4,8 @@
  * Runs real BIP-39 / BIP-32 / secp256k1 derivation and scrypt +
  * XChaCha20-Poly1305 keyring sealing entirely inside the background worker,
  * using audited primitives from @noble and @scure. `@zunialab/core` (the Rust
- * WASM kernel) is preferred when installed; this module is the JS equivalent
- * and the shipping default until that package is published.
+ * WASM kernel) ships in every build and is preferred; this module is what runs
+ * when it fails to load, and it refuses to build transactions.
  */
 
 import { secp256k1 } from "@noble/curves/secp256k1.js";
@@ -728,6 +728,13 @@ function adaptWasmKernel(
   };
 }
 
+/**
+ * Where the build places the kernel binary (the `build:publicAssets` hook in wxt.config.ts).
+ * A fixed extension URL, because the glue's default `new URL(..., import.meta.url)` does not
+ * survive bundling into a classic service worker or an event page.
+ */
+const KERNEL_WASM_PATH = "/zunia_core_bg.wasm";
+
 /** Every export the transaction surface needs. A partial module is treated as absent. */
 const REQUIRED_WASM_EXPORTS = [
   "initZuniaCore",
@@ -754,7 +761,7 @@ export function loadKernel(): Promise<ZuniaKernel> {
     kernelPromise = (async () => {
       let reason: string | undefined;
       try {
-        const mod = await import(/* @vite-ignore */ "@zunialab/core");
+        const mod = await import("@zunialab/core");
         const missing = REQUIRED_WASM_EXPORTS.filter(
           (name) => typeof (mod as Record<string, unknown>)[name] !== "function",
         );
@@ -765,7 +772,9 @@ export function loadKernel(): Promise<ZuniaKernel> {
           // instantiated at import time and every export would be undefined until this
           // resolves. Under MV3 this is also where a missing 'wasm-unsafe-eval' in the
           // manifest CSP surfaces.
-          await mod.initZuniaCore();
+          await mod.initZuniaCore({
+            module_or_path: browser.runtime.getURL(KERNEL_WASM_PATH as never),
+          });
           const kernel = adaptWasmKernel(
             mod,
             createLocalKernel(),

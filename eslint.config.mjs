@@ -62,6 +62,12 @@ const eslintConfig = defineConfig([
   },
 
   {
+    // Copied verbatim into the build and loaded by extension pages.
+    files: ["public/**/*.js"],
+    languageOptions: { globals: globals.browser },
+  },
+
+  {
     // Build-time scripts run under node, not the extension sandbox.
     files: ["scripts/**/*.mjs", "verify-vec.mjs", "*.config.ts", "*.config.mjs"],
     languageOptions: { globals: globals.node },

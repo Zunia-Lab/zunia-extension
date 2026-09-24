@@ -8,43 +8,105 @@ on:
 permissions:
   contents: read
 
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 9
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm typecheck
-      - run: pnpm lint
-      - run: pnpm test
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
+jobs:
   build:
     runs-on: ubuntu-latest
-    needs: test
-    strategy:
-      fail-fast: false
-      matrix:
-        browser: [chrome, firefox, edge]
+    timeout-minutes: 30
     steps:
+      # package.json links the @zunialab packages to sibling checkouts until they are
+      # published, so CI reproduces the local layout: this repo next to zunia-core,
+      # zunia-ui and zunia-sdk, each built from its default branch.
       - uses: actions/checkout@v4
+        with:
+          path: zunia-extension
+      - uses: actions/checkout@v4
+        with:
+          repository: Zunia-Lab/zunia-core
+          path: zunia-core
+      - uses: actions/checkout@v4
+        with:
+          repository: Zunia-Lab/zunia-ui
+          path: zunia-ui
+      - uses: actions/checkout@v4
+        with:
+          repository: Zunia-Lab/zunia-sdk
+          path: zunia-sdk
+
+      # rust-toolchain.toml in zunia-core pins the compiler and the wasm32 target.
+      - name: Rust toolchain
+        working-directory: zunia-core
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: zunia-core
+      # The CLI must match the wasm-bindgen crate exactly; build-wasm.sh refuses anything else.
+      - name: wasm-bindgen version from Cargo.lock
+        id: bindgen
+        working-directory: zunia-core
+        run: |
+          version="$(awk '/^name = "wasm-bindgen"$/ { getline; gsub(/[",]/, "", $3); print $3; exit }' Cargo.lock)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen@${{ steps.bindgen.outputs.version }}
+      - name: Build @zunialab/core
+        run: bash zunia-core/scripts/build-wasm.sh
+
       - uses: pnpm/action-setup@v4
         with:
-          version: 9
+          package_json_file: zunia-extension/package.json
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm build:${{ matrix.browser }}
+          cache-dependency-path: |
+            zunia-extension/pnpm-lock.yaml
+            zunia-ui/pnpm-lock.yaml
+            zunia-sdk/pnpm-lock.yaml
+      - name: Build @zunialab/tokens and @zunialab/ui
+        working-directory: zunia-ui
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm --filter @zunialab/tokens build
+          pnpm --filter @zunialab/ui build
+      - name: Build @zunialab/interchain
+        working-directory: zunia-sdk
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm --filter @zunialab/interchain build
+
+      - name: Install
+        working-directory: zunia-extension
+        run: pnpm install --frozen-lockfile
+      - name: Typecheck
+        working-directory: zunia-extension
+        run: pnpm typecheck
+      - name: Lint
+        working-directory: zunia-extension
+        run: pnpm lint
+      - name: Unit tests
+        working-directory: zunia-extension
+        run: pnpm test
+      - name: Build Chrome, Edge, Firefox and Safari
+        working-directory: zunia-extension
+        run: pnpm build
+      - name: Check the builds
+        working-directory: zunia-extension
+        run: pnpm check:build chrome edge firefox safari
+      - name: Lint the Firefox build (addons-linter)
+        working-directory: zunia-extension
+        run: pnpm lint:firefox
+
       - uses: actions/upload-artifact@v4
         with:
-          name: zunia-${{ matrix.browser }}
-          path: .output/${{ matrix.browser }}-*/
+          name: zunia-extension-builds
+          path: |
+            zunia-extension/.output/chrome-mv3/
+            zunia-extension/.output/edge-mv3/
+            zunia-extension/.output/firefox-mv3/
+            zunia-extension/.output/safari-mv3/
           retention-days: 7

@@ -1,8 +1,9 @@
+import type { IncomingMessage, ServerResponse } from "node:http";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "wxt";
 import tailwindcss from "@tailwindcss/vite";
-import type { Connect } from "vite";
 import { CONNECT_CONFIG } from "./config/connect";
 import {
   HOST_PERMISSIONS,
@@ -13,9 +14,27 @@ import {
 const rootDir = path.dirname(fileURLToPath(import.meta.url));
 /** Linked workspace packages live outside this repo; Vite must be allowed to read them in dev. */
 const uiPackagesDir = path.resolve(rootDir, "../zunia-ui/packages");
+const localRequire = createRequire(import.meta.url);
 
 export default defineConfig({
   modules: ["@wxt-dev/module-react"],
+  /**
+   * MV3 everywhere. WXT would otherwise build Firefox and Safari as MV2, which
+   * drops optional_host_permissions and diverges from the Chromium build.
+   */
+  manifestVersion: 3,
+  hooks: {
+    /**
+     * The signing kernel's binary, copied out of @zunialab/core on every build
+     * so it is never committed stale. lib/kernel.ts fetches it by this path.
+     */
+    "build:publicAssets": (_wxt, files) => {
+      files.push({
+        absoluteSrc: localRequire.resolve("@zunialab/core/wasm"),
+        relativeDest: "zunia_core_bg.wasm",
+      });
+    },
+  },
   /**
    * Keep a dedicated Chromium profile across `pnpm dev:*` runs. Without this,
    * web-ext creates a temp profile every launch and the sealed vault in
@@ -36,16 +55,35 @@ export default defineConfig({
     plugins: [
       tailwindcss(),
       {
+        // The kernel glue's fallback `new URL('zunia_core_bg.wasm',
+        // import.meta.url)` makes Vite emit the 600 KB binary again as a hashed
+        // asset, and inline it as base64 into the worker, which is built in
+        // library mode. lib/kernel.ts always passes the URL of the copy the
+        // build:publicAssets hook makes, so the fallback is dead code here.
+        // scripts/check-build.mjs fails the build if a second copy reappears.
+        name: "zunia-kernel-wasm-single-copy",
+        enforce: "pre",
+        transform(code, id) {
+          if (!id.replace(/\\/g, "/").endsWith("/zunia_core.js")) return null;
+          const fallback = "new URL('zunia_core_bg.wasm', import.meta.url)";
+          if (!code.includes(fallback)) return null;
+          return code.replace(
+            fallback,
+            '(() => { throw new Error("@zunialab/core: pass module_or_path, the extension loads the kernel from a fixed URL"); })()',
+          );
+        },
+      },
+      {
         // Chrome Local Network Access (142+) blocks chrome-extension:// pages
         // from loading Vite HMR modules on localhost unless the preflight gets
         // Access-Control-Allow-Private-Network. Without this, onboarding/popup
         // render as a blank white page in unpackaged dev.
         name: "zunia-dev-local-network-access",
         configureServer(server) {
-          const middleware: Connect.NextHandleFunction = (
-            req,
-            res,
-            next,
+          const middleware = (
+            req: IncomingMessage,
+            res: ServerResponse,
+            next: () => void,
           ) => {
             res.setHeader("Access-Control-Allow-Origin", "*");
             res.setHeader(
@@ -88,7 +126,7 @@ export default defineConfig({
       },
     },
   }),
-  manifest: {
+  manifest: ({ browser }) => ({
     name: "Zunia",
     description:
       "Multi-chain Cosmos wallet. Browser extension for Chrome, Firefox, Edge, and Safari.",
@@ -117,9 +155,18 @@ export default defineConfig({
      */
     host_permissions: [...HOST_PERMISSIONS],
     optional_host_permissions: [...OPTIONAL_HOST_PERMISSIONS],
-    externally_connectable: {
-      matches: [...CONNECT_CONFIG.externallyConnectableMatches],
-    },
+    /**
+     * Chromium only. Firefox has no externally_connectable, and Safari's
+     * support differs, so first-party pages talk to the wallet through
+     * window.zunia there like every other site.
+     */
+    ...(browser === "firefox" || browser === "safari"
+      ? {}
+      : {
+          externally_connectable: {
+            matches: [...CONNECT_CONFIG.externallyConnectableMatches],
+          },
+        }),
     web_accessible_resources: [
       {
         resources: ["injected.js", "content-scripts/injected.js"],
@@ -158,19 +205,41 @@ export default defineConfig({
        * rendered with `referrerPolicy="no-referrer"` so the request carries
        * nothing about this extension.
        *
+       * `'wasm-unsafe-eval'` lets the worker compile the signing kernel, which
+       * is bundled with the extension. It permits WebAssembly compilation and
+       * nothing else: `eval` and `new Function` stay blocked.
+       *
        * `frame-ancestors` admits the pages the connect prompt is drawn on and
        * nothing else. It applies to every extension page, but only
        * connect.html is web accessible, so it is the only page a site can
        * actually load in a frame.
        */
       extension_pages:
-        "script-src 'self'; object-src 'self'; frame-ancestors 'self' https: http://localhost:* http://127.0.0.1:*; img-src 'self' data: https:;",
+        "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; frame-ancestors 'self' https: http://localhost:* http://127.0.0.1:*; img-src 'self' data: https:;",
     },
-    browser_specific_settings: {
-      gecko: {
-        id: "extension@zunialab.com",
-        strict_min_version: "120.0",
-      },
-    },
-  },
+    ...(browser === "firefox"
+      ? {
+          browser_specific_settings: {
+            gecko: {
+              id: "extension@zunialab.com",
+              /**
+               * Firefox's built-in data consent starts at 140 (an ESR). Below it
+               * an extension that transmits data must draw its own consent screen.
+               */
+              strict_min_version: "140.0",
+              /**
+               * Addresses go to the chain endpoints balances are read from, and
+               * signed transactions to the node that broadcasts them. Nothing is
+               * sent to a Zunia server.
+               */
+              data_collection_permissions: {
+                required: ["financialAndPaymentInfo"],
+              },
+            },
+            /** The same consent prompt reached Firefox for Android in 142. */
+            gecko_android: { strict_min_version: "142.0" },
+          },
+        }
+      : {}),
+  }),
 });

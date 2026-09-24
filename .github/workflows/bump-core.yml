@@ -16,43 +16,60 @@ permissions:
 jobs:
   bump:
     runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ github.event.client_payload.version || inputs.version }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: zunia-extension
+      # The other @zunialab packages are still linked to sibling checkouts, and pnpm
+      # reads them while it rewrites the lockfile.
+      - uses: actions/checkout@v4
+        with:
+          repository: Zunia-Lab/zunia-ui
+          path: zunia-ui
+      - uses: actions/checkout@v4
+        with:
+          repository: Zunia-Lab/zunia-sdk
+          path: zunia-sdk
       - uses: pnpm/action-setup@v4
         with:
-          version: 9
+          package_json_file: zunia-extension/package.json
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: pnpm
 
       - name: Bump dependency
-        env:
-          VERSION: ${{ github.event.client_payload.version || inputs.version }}
+        working-directory: zunia-extension
         run: |
           set -euo pipefail
-          test -n "${VERSION:-}"
-          pnpm install
-          pnpm add "@zunialab/core@^${VERSION}" || {
-            echo "Package not on registry yet; writing override pin for review"
-            node -e "
-              const fs=require('fs');
-              const p=JSON.parse(fs.readFileSync('package.json','utf8'));
-              p.dependencies=p.dependencies||{};
-              p.dependencies['@zunialab/core']='^' + process.env.VERSION;
-              fs.writeFileSync('package.json', JSON.stringify(p,null,2)+'\n');
-            "
-          }
+          if ! [[ "${VERSION:-}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Expected a version like 1.2.3, got '${VERSION:-}'."
+            exit 1
+          fi
+          # Until the kernel is published, package.json links the zunia-core checkout,
+          # which already follows every release. There is nothing to pin yet.
+          if ! npm view "@zunialab/core@${VERSION}" version >/dev/null 2>&1; then
+            echo "::notice::@zunialab/core@${VERSION} is not on npm; the extension keeps building the kernel from zunia-core."
+            exit 0
+          fi
+          node -e '
+            const fs = require("fs");
+            const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+            pkg.dependencies["@zunialab/core"] = "^" + process.env.VERSION;
+            if (pkg.pnpm && pkg.pnpm.overrides) delete pkg.pnpm.overrides["@zunialab/core"];
+            fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
+          '
+          pnpm install --lockfile-only --ignore-scripts
+          branch="deps/zunia-core-${VERSION}"
           git config user.name "zunia-release-bot"
           git config user.email "release@zunialab.com"
-          branch="deps/zunia-core-${VERSION}"
           git checkout -b "$branch"
-          git add package.json pnpm-lock.yaml || true
-          git commit -m "chore: bump @zunialab/core to ${VERSION}" || echo "no changes"
+          git add package.json pnpm-lock.yaml
+          git commit -m "Bump @zunialab/core to ${VERSION}."
           git push -u origin "$branch"
           gh pr create \
-            --title "chore: bump @zunialab/core to ${VERSION}" \
+            --title "Bump @zunialab/core to ${VERSION}" \
             --body "Opened by the zunia-core release dispatch (ADR-0005). Review the changelog before merging; crypto bumps are never auto-merged." \
-            --base main || true
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+            --base main

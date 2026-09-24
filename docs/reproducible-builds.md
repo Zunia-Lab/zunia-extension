@@ -18,9 +18,12 @@ Anyone can check out a signed git tag of `zunia-extension`, run a documented com
 ```bash
 git fetch --tags
 git checkout vX.Y.Z   # signed tag
+# Build the sibling packages first, as in the README (zunia-core, zunia-ui, zunia-sdk).
 pnpm install --frozen-lockfile
-pnpm build            # or the documented pack script
-# Compare dist artifact hash to SHA256SUMS on the GitHub Release
+pnpm build
+pnpm check:build
+pnpm zip:chrome && pnpm zip:edge && pnpm zip:firefox
+# Compare the archive hashes to SHA256SUMS on the GitHub Release
 shasum -a 256 .output/*.zip
 ```
 
