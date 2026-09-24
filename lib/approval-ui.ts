@@ -50,18 +50,43 @@ async function openNow(): Promise<void> {
   } catch {
     // No focused window or no gesture: fall through to a window.
   }
-  const url = browser.runtime.getURL("popup.html" as never);
+  const url = `${browser.runtime.getURL("popup.html" as never)}?approve=1`;
+  // Safari on iOS and iPadOS has no windows API, so the queue opens in a tab,
+  // which the page closes itself once the last request is answered.
+  if (typeof browser.windows?.create !== "function") {
+    await browser.tabs.create({ url, active: true });
+    return;
+  }
   // windows.create sizes the OUTER frame, so the title bar and borders come out
   // of the height given here: asking for 600 leaves roughly 565 of viewport and
   // pushes the approval footer off-screen. Ask for the chrome back. The exact
   // overhead differs per platform, so popup/style.css also lets the document
   // adapt down instead of relying on this number being right everywhere.
   await browser.windows.create({
-    url: `${url}?approve=1`,
+    url,
     type: "popup",
     width: 360,
     height: 640,
   });
+}
+
+/**
+ * Close the window or tab that {@link openApprovalUi} opened, from the page
+ * inside it. Browsers only promise that `window.close()` closes what a script
+ * opened, so the page removes its own tab first, which also closes a popup
+ * window, and falls back to `window.close()`.
+ */
+export async function closeApprovalSurface(): Promise<void> {
+  try {
+    const tab = await browser.tabs.getCurrent();
+    if (tab?.id !== undefined) {
+      await browser.tabs.remove(tab.id);
+      return;
+    }
+  } catch {
+    // No tabs API in this context.
+  }
+  window.close();
 }
 
 /**

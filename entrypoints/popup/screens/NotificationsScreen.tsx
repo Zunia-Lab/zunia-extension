@@ -21,7 +21,7 @@ import {
   type Notice,
   type NoticeKind,
 } from "../hooks/useNotifications";
-import { BROWSER_ALERTS_NOTE, useBrowserAlerts } from "../hooks/useBrowserAlerts";
+import { useBrowserAlerts } from "../hooks/useBrowserAlerts";
 import { usePrefs } from "../state/Prefs";
 import type { PopupRoute } from "../routes";
 import {
@@ -179,8 +179,9 @@ export function NotificationsScreen({
         <SettingsGroup label="Alerts">
           <SettingsToggle
             title="Browser alerts"
-            description={alerts.error ?? BROWSER_ALERTS_NOTE}
+            description={alerts.description}
             checked={alerts.checked}
+            disabled={alerts.disabled}
             onCheckedChange={(next) => void alerts.toggle(next)}
           />
         </SettingsGroup>

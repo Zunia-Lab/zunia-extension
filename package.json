@@ -22,6 +22,8 @@
     "zip:edge": "wxt zip -b edge",
     "zip:safari": "wxt zip -b safari",
     "check:build": "node scripts/check-build.mjs",
+    "safari:build": "pnpm build:safari && node scripts/safari.mjs build",
+    "safari:open": "open safari/Zunia/Zunia.xcodeproj",
     "lint:firefox": "pnpm dlx web-ext@10.7.0 lint --source-dir .output/firefox-mv3",
     "chains:generate": "node scripts/generate-chain-catalog.mjs",
     "typecheck": "tsc --noEmit",

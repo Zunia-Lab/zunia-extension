@@ -127,6 +127,20 @@ body::before {
   }
 }
 
+/* Safari on iPhone (public/boot.js sets the class): the popup is a full-width
+   sheet and approvals open in a tab, so fill the width instead of centring the
+   card. Scoped to the phone: on iPad and macOS the popup is a popover, where
+   the 360px card is the intended size. */
+html.zunia-phone,
+html.zunia-phone body,
+html.zunia-phone #root {
+  width: 100%;
+}
+
+html.zunia-phone body {
+  border-inline: 0;
+}
+
 @media (prefers-reduced-motion: reduce) {
   body::before {
     filter: blur(12px);

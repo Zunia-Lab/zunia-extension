@@ -7,8 +7,11 @@ import {
 } from "../../../lib/browser-alerts";
 import { usePrefs } from "../state/Prefs";
 
-export const BROWSER_ALERTS_NOTE =
+const BROWSER_ALERTS_NOTE =
   "A notification when a cross-chain transfer or swap settles, even with Zunia closed.";
+
+/** Safari gives extensions no notifications API, so the Safari build does not ask for it. */
+const ALERTS_SUPPORTED = import.meta.env.BROWSER !== "safari";
 
 /**
  * The browser alerts switch: on only while the setting is on and the browser
@@ -17,15 +20,16 @@ export const BROWSER_ALERTS_NOTE =
  */
 export function useBrowserAlerts(): {
   checked: boolean;
+  disabled: boolean;
+  description: string;
   toggle: (next: boolean) => Promise<void>;
-  error: string | null;
 } {
   const { settings, update } = usePrefs();
   const [granted, setGranted] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    void hasNotificationPermission().then(setGranted);
+    if (ALERTS_SUPPORTED) void hasNotificationPermission().then(setGranted);
   }, []);
 
   const toggle = useCallback(
@@ -51,5 +55,18 @@ export function useBrowserAlerts(): {
     [update],
   );
 
-  return { checked: settings.browserAlerts && granted, toggle, error };
+  if (!ALERTS_SUPPORTED) {
+    return {
+      checked: false,
+      disabled: true,
+      description: "Safari does not let extensions show notifications.",
+      toggle,
+    };
+  }
+  return {
+    checked: settings.browserAlerts && granted,
+    disabled: false,
+    description: error ?? BROWSER_ALERTS_NOTE,
+    toggle,
+  };
 }

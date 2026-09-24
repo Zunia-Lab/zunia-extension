@@ -1,0 +1,1041 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		E7AA61323065246400C275F5 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7AA61313065246400C275F5 /* AppDelegate.swift */; };
+		E7AA61343065246400C275F5 /* SceneDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7AA61333065246400C275F5 /* SceneDelegate.swift */; };
+		E7AA61373065246400C275F5 /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = E7AA61353065246400C275F5 /* LaunchScreen.storyboard */; };
+		E7AA613A3065246400C275F5 /* Main.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = E7AA61383065246400C275F5 /* Main.storyboard */; };
+		E7AA61433065246400C275F5 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7AA61423065246400C275F5 /* AppDelegate.swift */; };
+		E7AA61463065246400C275F5 /* Main.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = E7AA61443065246400C275F5 /* Main.storyboard */; };
+		E7AA614D3065246400C275F5 /* Zunia Extension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = E7AA614C3065246400C275F5 /* Zunia Extension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		E7AA61573065246400C275F5 /* Zunia Extension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = E7AA61563065246400C275F5 /* Zunia Extension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		E7AA615C3065246400C275F5 /* Main.html in Resources */ = {isa = PBXBuildFile; fileRef = E7AA61213065246200C275F5 /* Main.html */; };
+		E7AA615D3065246400C275F5 /* Main.html in Resources */ = {isa = PBXBuildFile; fileRef = E7AA61213065246200C275F5 /* Main.html */; };
+		E7AA615E3065246400C275F5 /* Icon.png in Resources */ = {isa = PBXBuildFile; fileRef = E7AA61233065246200C275F5 /* Icon.png */; };
+		E7AA615F3065246400C275F5 /* Icon.png in Resources */ = {isa = PBXBuildFile; fileRef = E7AA61233065246200C275F5 /* Icon.png */; };
+		E7AA61603065246400C275F5 /* Style.css in Resources */ = {isa = PBXBuildFile; fileRef = E7AA61243065246200C275F5 /* Style.css */; };
+		E7AA61613065246400C275F5 /* Style.css in Resources */ = {isa = PBXBuildFile; fileRef = E7AA61243065246200C275F5 /* Style.css */; };
+		E7AA61623065246400C275F5 /* Script.js in Resources */ = {isa = PBXBuildFile; fileRef = E7AA61253065246200C275F5 /* Script.js */; };
+		E7AA61633065246400C275F5 /* Script.js in Resources */ = {isa = PBXBuildFile; fileRef = E7AA61253065246200C275F5 /* Script.js */; };
+		E7AA61643065246400C275F5 /* ViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7AA61263065246200C275F5 /* ViewController.swift */; };
+		E7AA61653065246400C275F5 /* ViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7AA61263065246200C275F5 /* ViewController.swift */; };
+		E7AA61663065246400C275F5 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = E7AA61273065246400C275F5 /* Assets.xcassets */; };
+		E7AA61673065246400C275F5 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = E7AA61273065246400C275F5 /* Assets.xcassets */; };
+		E7AA61683065246400C275F5 /* SafariWebExtensionHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7AA61293065246400C275F5 /* SafariWebExtensionHandler.swift */; };
+		E7AA61693065246400C275F5 /* SafariWebExtensionHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7AA61293065246400C275F5 /* SafariWebExtensionHandler.swift */; };
+		E7AA61893065246500C275F5 /* boot.js in Resources */ = {isa = PBXBuildFile; fileRef = E7AA617B3065246500C275F5 /* boot.js */; };
+		E7AA618A3065246500C275F5 /* background.js in Resources */ = {isa = PBXBuildFile; fileRef = E7AA617C3065246500C275F5 /* background.js */; };
+		E7AA618B3065246500C275F5 /* popup.html in Resources */ = {isa = PBXBuildFile; fileRef = E7AA617D3065246500C275F5 /* popup.html */; };
+		E7AA618C3065246500C275F5 /* brand in Resources */ = {isa = PBXBuildFile; fileRef = E7AA617E3065246500C275F5 /* brand */; };
+		E7AA618D3065246500C275F5 /* chunks in Resources */ = {isa = PBXBuildFile; fileRef = E7AA617F3065246500C275F5 /* chunks */; };
+		E7AA618E3065246500C275F5 /* zunia_core_bg.wasm in Resources */ = {isa = PBXBuildFile; fileRef = E7AA61803065246500C275F5 /* zunia_core_bg.wasm */; };
+		E7AA618F3065246500C275F5 /* content-scripts in Resources */ = {isa = PBXBuildFile; fileRef = E7AA61813065246500C275F5 /* content-scripts */; };
+		E7AA61903065246500C275F5 /* injected.js in Resources */ = {isa = PBXBuildFile; fileRef = E7AA61823065246500C275F5 /* injected.js */; };
+		E7AA61913065246500C275F5 /* manifest.json in Resources */ = {isa = PBXBuildFile; fileRef = E7AA61833065246500C275F5 /* manifest.json */; };
+		E7AA61923065246500C275F5 /* icon in Resources */ = {isa = PBXBuildFile; fileRef = E7AA61843065246500C275F5 /* icon */; };
+		E7AA61933065246500C275F5 /* chains in Resources */ = {isa = PBXBuildFile; fileRef = E7AA61853065246500C275F5 /* chains */; };
+		E7AA61943065246500C275F5 /* assets in Resources */ = {isa = PBXBuildFile; fileRef = E7AA61863065246500C275F5 /* assets */; };
+		E7AA61953065246500C275F5 /* connect.html in Resources */ = {isa = PBXBuildFile; fileRef = E7AA61873065246500C275F5 /* connect.html */; };
+		E7AA61963065246500C275F5 /* onboarding.html in Resources */ = {isa = PBXBuildFile; fileRef = E7AA61883065246500C275F5 /* onboarding.html */; };
+		E7AA61973065246500C275F5 /* boot.js in Resources */ = {isa = PBXBuildFile; fileRef = E7AA617B3065246500C275F5 /* boot.js */; };
+		E7AA61983065246500C275F5 /* background.js in Resources */ = {isa = PBXBuildFile; fileRef = E7AA617C3065246500C275F5 /* background.js */; };
+		E7AA61993065246500C275F5 /* popup.html in Resources */ = {isa = PBXBuildFile; fileRef = E7AA617D3065246500C275F5 /* popup.html */; };
+		E7AA619A3065246500C275F5 /* brand in Resources */ = {isa = PBXBuildFile; fileRef = E7AA617E3065246500C275F5 /* brand */; };
+		E7AA619B3065246500C275F5 /* chunks in Resources */ = {isa = PBXBuildFile; fileRef = E7AA617F3065246500C275F5 /* chunks */; };
+		E7AA619C3065246500C275F5 /* zunia_core_bg.wasm in Resources */ = {isa = PBXBuildFile; fileRef = E7AA61803065246500C275F5 /* zunia_core_bg.wasm */; };
+		E7AA619D3065246500C275F5 /* content-scripts in Resources */ = {isa = PBXBuildFile; fileRef = E7AA61813065246500C275F5 /* content-scripts */; };
+		E7AA619E3065246500C275F5 /* injected.js in Resources */ = {isa = PBXBuildFile; fileRef = E7AA61823065246500C275F5 /* injected.js */; };
+		E7AA619F3065246500C275F5 /* manifest.json in Resources */ = {isa = PBXBuildFile; fileRef = E7AA61833065246500C275F5 /* manifest.json */; };
+		E7AA61A03065246500C275F5 /* icon in Resources */ = {isa = PBXBuildFile; fileRef = E7AA61843065246500C275F5 /* icon */; };
+		E7AA61A13065246500C275F5 /* chains in Resources */ = {isa = PBXBuildFile; fileRef = E7AA61853065246500C275F5 /* chains */; };
+		E7AA61A23065246500C275F5 /* assets in Resources */ = {isa = PBXBuildFile; fileRef = E7AA61863065246500C275F5 /* assets */; };
+		E7AA61A33065246500C275F5 /* connect.html in Resources */ = {isa = PBXBuildFile; fileRef = E7AA61873065246500C275F5 /* connect.html */; };
+		E7AA61A43065246500C275F5 /* onboarding.html in Resources */ = {isa = PBXBuildFile; fileRef = E7AA61883065246500C275F5 /* onboarding.html */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		E7AA614E3065246400C275F5 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = E7AA611B3065246200C275F5 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = E7AA614B3065246400C275F5;
+			remoteInfo = "Zunia Extension (iOS)";
+		};
+		E7AA61583065246400C275F5 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = E7AA611B3065246200C275F5 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = E7AA61553065246400C275F5;
+			remoteInfo = "Zunia Extension (macOS)";
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		E7AA616F3065246400C275F5 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				E7AA614D3065246400C275F5 /* Zunia Extension.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E7AA61763065246400C275F5 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				E7AA61573065246400C275F5 /* Zunia Extension.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		E7AA61223065246200C275F5 /* Base */ = {isa = PBXFileReference; lastKnownFileType = text.html; name = Base; path = Base.lproj/Main.html; sourceTree = "<group>"; };
+		E7AA61233065246200C275F5 /* Icon.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = Icon.png; sourceTree = "<group>"; };
+		E7AA61243065246200C275F5 /* Style.css */ = {isa = PBXFileReference; lastKnownFileType = text.css; path = Style.css; sourceTree = "<group>"; };
+		E7AA61253065246200C275F5 /* Script.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = Script.js; sourceTree = "<group>"; };
+		E7AA61263065246200C275F5 /* ViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewController.swift; sourceTree = "<group>"; };
+		E7AA61273065246400C275F5 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		E7AA61293065246400C275F5 /* SafariWebExtensionHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SafariWebExtensionHandler.swift; sourceTree = "<group>"; };
+		E7AA612E3065246400C275F5 /* Zunia.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Zunia.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		E7AA61313065246400C275F5 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		E7AA61333065246400C275F5 /* SceneDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneDelegate.swift; sourceTree = "<group>"; };
+		E7AA61363065246400C275F5 /* Base */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; name = Base; path = Base.lproj/LaunchScreen.storyboard; sourceTree = "<group>"; };
+		E7AA61393065246400C275F5 /* Base */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; name = Base; path = Base.lproj/Main.storyboard; sourceTree = "<group>"; };
+		E7AA613B3065246400C275F5 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		E7AA61403065246400C275F5 /* Zunia.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Zunia.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		E7AA61423065246400C275F5 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		E7AA61453065246400C275F5 /* Base */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; name = Base; path = Base.lproj/Main.storyboard; sourceTree = "<group>"; };
+		E7AA61473065246400C275F5 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		E7AA614C3065246400C275F5 /* Zunia Extension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = "Zunia Extension.appex"; sourceTree = BUILT_PRODUCTS_DIR; };
+		E7AA61513065246400C275F5 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		E7AA61563065246400C275F5 /* Zunia Extension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = "Zunia Extension.appex"; sourceTree = BUILT_PRODUCTS_DIR; };
+		E7AA615B3065246400C275F5 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		E7AA617B3065246500C275F5 /* boot.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; name = boot.js; path = "../../../.output/safari-mv3/boot.js"; sourceTree = "<group>"; };
+		E7AA617C3065246500C275F5 /* background.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; name = background.js; path = "../../../.output/safari-mv3/background.js"; sourceTree = "<group>"; };
+		E7AA617D3065246500C275F5 /* popup.html */ = {isa = PBXFileReference; lastKnownFileType = text.html; name = popup.html; path = "../../../.output/safari-mv3/popup.html"; sourceTree = "<group>"; };
+		E7AA617E3065246500C275F5 /* brand */ = {isa = PBXFileReference; lastKnownFileType = folder; name = brand; path = "../../../.output/safari-mv3/brand"; sourceTree = "<group>"; };
+		E7AA617F3065246500C275F5 /* chunks */ = {isa = PBXFileReference; lastKnownFileType = folder; name = chunks; path = "../../../.output/safari-mv3/chunks"; sourceTree = "<group>"; };
+		E7AA61803065246500C275F5 /* zunia_core_bg.wasm */ = {isa = PBXFileReference; lastKnownFileType = file; name = zunia_core_bg.wasm; path = "../../../.output/safari-mv3/zunia_core_bg.wasm"; sourceTree = "<group>"; };
+		E7AA61813065246500C275F5 /* content-scripts */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "content-scripts"; path = "../../../.output/safari-mv3/content-scripts"; sourceTree = "<group>"; };
+		E7AA61823065246500C275F5 /* injected.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; name = injected.js; path = "../../../.output/safari-mv3/injected.js"; sourceTree = "<group>"; };
+		E7AA61833065246500C275F5 /* manifest.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; name = manifest.json; path = "../../../.output/safari-mv3/manifest.json"; sourceTree = "<group>"; };
+		E7AA61843065246500C275F5 /* icon */ = {isa = PBXFileReference; lastKnownFileType = folder; name = icon; path = "../../../.output/safari-mv3/icon"; sourceTree = "<group>"; };
+		E7AA61853065246500C275F5 /* chains */ = {isa = PBXFileReference; lastKnownFileType = folder; name = chains; path = "../../../.output/safari-mv3/chains"; sourceTree = "<group>"; };
+		E7AA61863065246500C275F5 /* assets */ = {isa = PBXFileReference; lastKnownFileType = folder; name = assets; path = "../../../.output/safari-mv3/assets"; sourceTree = "<group>"; };
+		E7AA61873065246500C275F5 /* connect.html */ = {isa = PBXFileReference; lastKnownFileType = text.html; name = connect.html; path = "../../../.output/safari-mv3/connect.html"; sourceTree = "<group>"; };
+		E7AA61883065246500C275F5 /* onboarding.html */ = {isa = PBXFileReference; lastKnownFileType = text.html; name = onboarding.html; path = "../../../.output/safari-mv3/onboarding.html"; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		E7AA612B3065246400C275F5 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E7AA613D3065246400C275F5 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E7AA61493065246400C275F5 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E7AA61533065246400C275F5 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		E7AA611A3065246200C275F5 = {
+			isa = PBXGroup;
+			children = (
+				E7AA611F3065246200C275F5 /* Shared (App) */,
+				E7AA61283065246400C275F5 /* Shared (Extension) */,
+				E7AA61303065246400C275F5 /* iOS (App) */,
+				E7AA61413065246400C275F5 /* macOS (App) */,
+				E7AA61503065246400C275F5 /* iOS (Extension) */,
+				E7AA615A3065246400C275F5 /* macOS (Extension) */,
+				E7AA612F3065246400C275F5 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		E7AA611F3065246200C275F5 /* Shared (App) */ = {
+			isa = PBXGroup;
+			children = (
+				E7AA61263065246200C275F5 /* ViewController.swift */,
+				E7AA61273065246400C275F5 /* Assets.xcassets */,
+				E7AA61203065246200C275F5 /* Resources */,
+			);
+			path = "Shared (App)";
+			sourceTree = "<group>";
+		};
+		E7AA61203065246200C275F5 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				E7AA61213065246200C275F5 /* Main.html */,
+				E7AA61233065246200C275F5 /* Icon.png */,
+				E7AA61243065246200C275F5 /* Style.css */,
+				E7AA61253065246200C275F5 /* Script.js */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+		E7AA61283065246400C275F5 /* Shared (Extension) */ = {
+			isa = PBXGroup;
+			children = (
+				E7AA617A3065246500C275F5 /* Resources */,
+				E7AA61293065246400C275F5 /* SafariWebExtensionHandler.swift */,
+			);
+			path = "Shared (Extension)";
+			sourceTree = "<group>";
+		};
+		E7AA612F3065246400C275F5 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				E7AA612E3065246400C275F5 /* Zunia.app */,
+				E7AA61403065246400C275F5 /* Zunia.app */,
+				E7AA614C3065246400C275F5 /* Zunia Extension.appex */,
+				E7AA61563065246400C275F5 /* Zunia Extension.appex */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		E7AA61303065246400C275F5 /* iOS (App) */ = {
+			isa = PBXGroup;
+			children = (
+				E7AA61313065246400C275F5 /* AppDelegate.swift */,
+				E7AA61333065246400C275F5 /* SceneDelegate.swift */,
+				E7AA61353065246400C275F5 /* LaunchScreen.storyboard */,
+				E7AA61383065246400C275F5 /* Main.storyboard */,
+				E7AA613B3065246400C275F5 /* Info.plist */,
+			);
+			path = "iOS (App)";
+			sourceTree = "<group>";
+		};
+		E7AA61413065246400C275F5 /* macOS (App) */ = {
+			isa = PBXGroup;
+			children = (
+				E7AA61423065246400C275F5 /* AppDelegate.swift */,
+				E7AA61443065246400C275F5 /* Main.storyboard */,
+				E7AA61473065246400C275F5 /* Info.plist */,
+			);
+			path = "macOS (App)";
+			sourceTree = "<group>";
+		};
+		E7AA61503065246400C275F5 /* iOS (Extension) */ = {
+			isa = PBXGroup;
+			children = (
+				E7AA61513065246400C275F5 /* Info.plist */,
+			);
+			path = "iOS (Extension)";
+			sourceTree = "<group>";
+		};
+		E7AA615A3065246400C275F5 /* macOS (Extension) */ = {
+			isa = PBXGroup;
+			children = (
+				E7AA615B3065246400C275F5 /* Info.plist */,
+			);
+			path = "macOS (Extension)";
+			sourceTree = "<group>";
+		};
+		E7AA617A3065246500C275F5 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				E7AA617B3065246500C275F5 /* boot.js */,
+				E7AA617C3065246500C275F5 /* background.js */,
+				E7AA617D3065246500C275F5 /* popup.html */,
+				E7AA617E3065246500C275F5 /* brand */,
+				E7AA617F3065246500C275F5 /* chunks */,
+				E7AA61803065246500C275F5 /* zunia_core_bg.wasm */,
+				E7AA61813065246500C275F5 /* content-scripts */,
+				E7AA61823065246500C275F5 /* injected.js */,
+				E7AA61833065246500C275F5 /* manifest.json */,
+				E7AA61843065246500C275F5 /* icon */,
+				E7AA61853065246500C275F5 /* chains */,
+				E7AA61863065246500C275F5 /* assets */,
+				E7AA61873065246500C275F5 /* connect.html */,
+				E7AA61883065246500C275F5 /* onboarding.html */,
+			);
+			name = Resources;
+			path = "Shared (Extension)";
+			sourceTree = SOURCE_ROOT;
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		E7AA612D3065246400C275F5 /* Zunia (iOS) */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E7AA61703065246400C275F5 /* Build configuration list for PBXNativeTarget "Zunia (iOS)" */;
+			buildPhases = (
+				E7AA612A3065246400C275F5 /* Sources */,
+				E7AA612B3065246400C275F5 /* Frameworks */,
+				E7AA612C3065246400C275F5 /* Resources */,
+				E7AA616F3065246400C275F5 /* Embed Foundation Extensions */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				E7AA614F3065246400C275F5 /* PBXTargetDependency */,
+			);
+			name = "Zunia (iOS)";
+			packageProductDependencies = (
+			);
+			productName = "Zunia (iOS)";
+			productReference = E7AA612E3065246400C275F5 /* Zunia.app */;
+			productType = "com.apple.product-type.application";
+		};
+		E7AA613F3065246400C275F5 /* Zunia (macOS) */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E7AA61773065246400C275F5 /* Build configuration list for PBXNativeTarget "Zunia (macOS)" */;
+			buildPhases = (
+				E7AA613C3065246400C275F5 /* Sources */,
+				E7AA613D3065246400C275F5 /* Frameworks */,
+				E7AA613E3065246400C275F5 /* Resources */,
+				E7AA61763065246400C275F5 /* Embed Foundation Extensions */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				E7AA61593065246400C275F5 /* PBXTargetDependency */,
+			);
+			name = "Zunia (macOS)";
+			packageProductDependencies = (
+			);
+			productName = "Zunia (macOS)";
+			productReference = E7AA61403065246400C275F5 /* Zunia.app */;
+			productType = "com.apple.product-type.application";
+		};
+		E7AA614B3065246400C275F5 /* Zunia Extension (iOS) */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E7AA616C3065246400C275F5 /* Build configuration list for PBXNativeTarget "Zunia Extension (iOS)" */;
+			buildPhases = (
+				E7AA61483065246400C275F5 /* Sources */,
+				E7AA61493065246400C275F5 /* Frameworks */,
+				E7AA614A3065246400C275F5 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = "Zunia Extension (iOS)";
+			packageProductDependencies = (
+			);
+			productName = "Zunia Extension (iOS)";
+			productReference = E7AA614C3065246400C275F5 /* Zunia Extension.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+		E7AA61553065246400C275F5 /* Zunia Extension (macOS) */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E7AA61733065246400C275F5 /* Build configuration list for PBXNativeTarget "Zunia Extension (macOS)" */;
+			buildPhases = (
+				E7AA61523065246400C275F5 /* Sources */,
+				E7AA61533065246400C275F5 /* Frameworks */,
+				E7AA61543065246400C275F5 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = "Zunia Extension (macOS)";
+			packageProductDependencies = (
+			);
+			productName = "Zunia Extension (macOS)";
+			productReference = E7AA61563065246400C275F5 /* Zunia Extension.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		E7AA611B3065246200C275F5 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2660;
+				LastUpgradeCheck = 2660;
+				TargetAttributes = {
+					E7AA612D3065246400C275F5 = {
+						CreatedOnToolsVersion = 26.6;
+					};
+					E7AA613F3065246400C275F5 = {
+						CreatedOnToolsVersion = 26.6;
+					};
+					E7AA614B3065246400C275F5 = {
+						CreatedOnToolsVersion = 26.6;
+					};
+					E7AA61553065246400C275F5 = {
+						CreatedOnToolsVersion = 26.6;
+					};
+				};
+			};
+			buildConfigurationList = E7AA611E3065246200C275F5 /* Build configuration list for PBXProject "Zunia" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = E7AA611A3065246200C275F5;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = E7AA612F3065246400C275F5 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				E7AA612D3065246400C275F5 /* Zunia (iOS) */,
+				E7AA613F3065246400C275F5 /* Zunia (macOS) */,
+				E7AA614B3065246400C275F5 /* Zunia Extension (iOS) */,
+				E7AA61553065246400C275F5 /* Zunia Extension (macOS) */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		E7AA612C3065246400C275F5 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E7AA615E3065246400C275F5 /* Icon.png in Resources */,
+				E7AA61373065246400C275F5 /* LaunchScreen.storyboard in Resources */,
+				E7AA615C3065246400C275F5 /* Main.html in Resources */,
+				E7AA61623065246400C275F5 /* Script.js in Resources */,
+				E7AA61663065246400C275F5 /* Assets.xcassets in Resources */,
+				E7AA613A3065246400C275F5 /* Main.storyboard in Resources */,
+				E7AA61603065246400C275F5 /* Style.css in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E7AA613E3065246400C275F5 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E7AA615F3065246400C275F5 /* Icon.png in Resources */,
+				E7AA61613065246400C275F5 /* Style.css in Resources */,
+				E7AA61463065246400C275F5 /* Main.storyboard in Resources */,
+				E7AA61633065246400C275F5 /* Script.js in Resources */,
+				E7AA61673065246400C275F5 /* Assets.xcassets in Resources */,
+				E7AA615D3065246400C275F5 /* Main.html in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E7AA614A3065246400C275F5 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E7AA619B3065246500C275F5 /* chunks in Resources */,
+				E7AA61A03065246500C275F5 /* icon in Resources */,
+				E7AA619D3065246500C275F5 /* content-scripts in Resources */,
+				E7AA619C3065246500C275F5 /* zunia_core_bg.wasm in Resources */,
+				E7AA61A33065246500C275F5 /* connect.html in Resources */,
+				E7AA619A3065246500C275F5 /* brand in Resources */,
+				E7AA619F3065246500C275F5 /* manifest.json in Resources */,
+				E7AA61A43065246500C275F5 /* onboarding.html in Resources */,
+				E7AA619E3065246500C275F5 /* injected.js in Resources */,
+				E7AA61983065246500C275F5 /* background.js in Resources */,
+				E7AA61993065246500C275F5 /* popup.html in Resources */,
+				E7AA61A23065246500C275F5 /* assets in Resources */,
+				E7AA61A13065246500C275F5 /* chains in Resources */,
+				E7AA61973065246500C275F5 /* boot.js in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E7AA61543065246400C275F5 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E7AA618D3065246500C275F5 /* chunks in Resources */,
+				E7AA61923065246500C275F5 /* icon in Resources */,
+				E7AA618F3065246500C275F5 /* content-scripts in Resources */,
+				E7AA618E3065246500C275F5 /* zunia_core_bg.wasm in Resources */,
+				E7AA61953065246500C275F5 /* connect.html in Resources */,
+				E7AA618C3065246500C275F5 /* brand in Resources */,
+				E7AA61913065246500C275F5 /* manifest.json in Resources */,
+				E7AA61963065246500C275F5 /* onboarding.html in Resources */,
+				E7AA61903065246500C275F5 /* injected.js in Resources */,
+				E7AA618A3065246500C275F5 /* background.js in Resources */,
+				E7AA618B3065246500C275F5 /* popup.html in Resources */,
+				E7AA61943065246500C275F5 /* assets in Resources */,
+				E7AA61933065246500C275F5 /* chains in Resources */,
+				E7AA61893065246500C275F5 /* boot.js in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		E7AA612A3065246400C275F5 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E7AA61643065246400C275F5 /* ViewController.swift in Sources */,
+				E7AA61323065246400C275F5 /* AppDelegate.swift in Sources */,
+				E7AA61343065246400C275F5 /* SceneDelegate.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E7AA613C3065246400C275F5 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E7AA61653065246400C275F5 /* ViewController.swift in Sources */,
+				E7AA61433065246400C275F5 /* AppDelegate.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E7AA61483065246400C275F5 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E7AA61683065246400C275F5 /* SafariWebExtensionHandler.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E7AA61523065246400C275F5 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E7AA61693065246400C275F5 /* SafariWebExtensionHandler.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		E7AA614F3065246400C275F5 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = E7AA614B3065246400C275F5 /* Zunia Extension (iOS) */;
+			targetProxy = E7AA614E3065246400C275F5 /* PBXContainerItemProxy */;
+		};
+		E7AA61593065246400C275F5 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = E7AA61553065246400C275F5 /* Zunia Extension (macOS) */;
+			targetProxy = E7AA61583065246400C275F5 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin PBXVariantGroup section */
+		E7AA61213065246200C275F5 /* Main.html */ = {
+			isa = PBXVariantGroup;
+			children = (
+				E7AA61223065246200C275F5 /* Base */,
+			);
+			name = Main.html;
+			sourceTree = "<group>";
+		};
+		E7AA61353065246400C275F5 /* LaunchScreen.storyboard */ = {
+			isa = PBXVariantGroup;
+			children = (
+				E7AA61363065246400C275F5 /* Base */,
+			);
+			name = LaunchScreen.storyboard;
+			sourceTree = "<group>";
+		};
+		E7AA61383065246400C275F5 /* Main.storyboard */ = {
+			isa = PBXVariantGroup;
+			children = (
+				E7AA61393065246400C275F5 /* Base */,
+			);
+			name = Main.storyboard;
+			sourceTree = "<group>";
+		};
+		E7AA61443065246400C275F5 /* Main.storyboard */ = {
+			isa = PBXVariantGroup;
+			children = (
+				E7AA61453065246400C275F5 /* Base */,
+			);
+			name = Main.storyboard;
+			sourceTree = "<group>";
+		};
+/* End PBXVariantGroup section */
+
+/* Begin XCBuildConfiguration section */
+		E7AA616A3065246400C275F5 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		E7AA616B3065246400C275F5 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SWIFT_COMPILATION_MODE = wholemodule;
+			};
+			name = Release;
+		};
+		E7AA616D3065246400C275F5 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "iOS (Extension)/Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "Zunia Extension";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				OTHER_LDFLAGS = (
+					"-framework",
+					SafariServices,
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.zunialab.Zunia.Extension;
+				PRODUCT_NAME = "Zunia Extension";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		E7AA616E3065246400C275F5 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "iOS (Extension)/Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "Zunia Extension";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				OTHER_LDFLAGS = (
+					"-framework",
+					SafariServices,
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.zunialab.Zunia.Extension;
+				PRODUCT_NAME = "Zunia Extension";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		E7AA61713065246400C275F5 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "iOS (App)/Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = Zunia;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchStoryboardName = LaunchScreen;
+				INFOPLIST_KEY_UIMainStoryboardFile = Main;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				OTHER_LDFLAGS = (
+					"-framework",
+					SafariServices,
+					"-framework",
+					WebKit,
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.zunialab.Zunia;
+				PRODUCT_NAME = Zunia;
+				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		E7AA61723065246400C275F5 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "iOS (App)/Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = Zunia;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchStoryboardName = LaunchScreen;
+				INFOPLIST_KEY_UIMainStoryboardFile = Main;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				OTHER_LDFLAGS = (
+					"-framework",
+					SafariServices,
+					"-framework",
+					WebKit,
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.zunialab.Zunia;
+				PRODUCT_NAME = Zunia;
+				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		E7AA61743065246400C275F5 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_USER_SELECTED_FILES = readonly;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "macOS (Extension)/Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "Zunia Extension";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@executable_path/../../../../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MARKETING_VERSION = 0.1.0;
+				OTHER_LDFLAGS = (
+					"-framework",
+					SafariServices,
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.zunialab.Zunia.Extension;
+				PRODUCT_NAME = "Zunia Extension";
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		E7AA61753065246400C275F5 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_USER_SELECTED_FILES = readonly;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "macOS (Extension)/Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "Zunia Extension";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@executable_path/../../../../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MARKETING_VERSION = 0.1.0;
+				OTHER_LDFLAGS = (
+					"-framework",
+					SafariServices,
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.zunialab.Zunia.Extension;
+				PRODUCT_NAME = "Zunia Extension";
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		E7AA61783065246400C275F5 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
+				ENABLE_USER_SELECTED_FILES = readonly;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "macOS (App)/Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = Zunia;
+				INFOPLIST_KEY_NSMainStoryboardFile = Main;
+				INFOPLIST_KEY_NSPrincipalClass = NSApplication;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MARKETING_VERSION = 0.1.0;
+				OTHER_LDFLAGS = (
+					"-framework",
+					SafariServices,
+					"-framework",
+					WebKit,
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.zunialab.Zunia;
+				PRODUCT_NAME = Zunia;
+				REGISTER_APP_GROUPS = YES;
+				SDKROOT = macosx;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		E7AA61793065246400C275F5 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
+				ENABLE_USER_SELECTED_FILES = readonly;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "macOS (App)/Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = Zunia;
+				INFOPLIST_KEY_NSMainStoryboardFile = Main;
+				INFOPLIST_KEY_NSPrincipalClass = NSApplication;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MARKETING_VERSION = 0.1.0;
+				OTHER_LDFLAGS = (
+					"-framework",
+					SafariServices,
+					"-framework",
+					WebKit,
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.zunialab.Zunia;
+				PRODUCT_NAME = Zunia;
+				REGISTER_APP_GROUPS = YES;
+				SDKROOT = macosx;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		E7AA611E3065246200C275F5 /* Build configuration list for PBXProject "Zunia" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E7AA616A3065246400C275F5 /* Debug */,
+				E7AA616B3065246400C275F5 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		E7AA616C3065246400C275F5 /* Build configuration list for PBXNativeTarget "Zunia Extension (iOS)" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E7AA616D3065246400C275F5 /* Debug */,
+				E7AA616E3065246400C275F5 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		E7AA61703065246400C275F5 /* Build configuration list for PBXNativeTarget "Zunia (iOS)" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E7AA61713065246400C275F5 /* Debug */,
+				E7AA61723065246400C275F5 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		E7AA61733065246400C275F5 /* Build configuration list for PBXNativeTarget "Zunia Extension (macOS)" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E7AA61743065246400C275F5 /* Debug */,
+				E7AA61753065246400C275F5 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		E7AA61773065246400C275F5 /* Build configuration list for PBXNativeTarget "Zunia (macOS)" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E7AA61783065246400C275F5 /* Debug */,
+				E7AA61793065246400C275F5 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = E7AA611B3065246200C275F5 /* Project object */;
+}

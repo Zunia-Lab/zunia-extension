@@ -16,7 +16,6 @@ import "./style.css";
 export default defineContentScript({
   matches: [...CONNECT_CONFIG.contentScriptMatches],
   runAt: "document_start",
-  world: "ISOLATED",
   main() {
     const pageOrigin = window.location.origin;
     const nonce = crypto.randomUUID();

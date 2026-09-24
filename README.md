@@ -33,7 +33,7 @@ Every target is Manifest V3.
 | Chrome, Brave, Opera | Service worker | `pnpm build:chrome` | `.output/chrome-mv3` | Automated: WASM kernel loads, provider injects under strict page CSPs |
 | Edge | Service worker | `pnpm build:edge` | `.output/edge-mv3` | Same Chromium build as Chrome |
 | Firefox 140+ (desktop) | Event page | `pnpm build:firefox` | `.output/firefox-mv3` | Automated: WASM kernel loads, provider injects under strict page CSPs, addons-linter reports no errors |
-| Safari (macOS, iOS) | Service worker | `pnpm build:safari`, then Xcode | `.output/safari-mv3` | Web extension build only |
+| Safari (macOS, iOS) | Service worker | `pnpm safari:build` | `.output/safari-mv3`, Xcode project in `safari/` | CI builds the macOS and iOS Simulator apps; not yet exercised inside Safari |
 
 Firefox 140 is the floor because that is where Firefox shows its own data consent prompt,
 which the manifest's `data_collection_permissions` relies on. Firefox for Android is not
@@ -84,6 +84,8 @@ kept in session storage.
 | `pnpm build` | Production builds for Chrome, Edge, Firefox and Safari |
 | `pnpm check:build` | Checks the production builds (MV3, CSP, one kernel binary, permissions, per-browser keys) |
 | `pnpm lint:firefox` | Mozilla's addons-linter on the Firefox build |
+| `pnpm safari:build` | Safari build, then the macOS and iOS Simulator apps (macOS and Xcode only) |
+| `pnpm safari:open` | Open the Safari app project in Xcode |
 | `pnpm typecheck` | TypeScript |
 | `pnpm lint` | ESLint |
 | `pnpm test` | Unit tests (Vitest) |

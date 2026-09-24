@@ -7,3 +7,8 @@ dist/
 .env.local
 .env.*.local
 !.env.example
+
+# Xcode per-user state for the Safari app
+xcuserdata/
+*.xcuserstate
+DerivedData/

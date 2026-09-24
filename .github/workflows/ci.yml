@@ -110,3 +110,24 @@ jobs:
             zunia-extension/.output/firefox-mv3/
             zunia-extension/.output/safari-mv3/
           retention-days: 7
+
+  # The Xcode project wraps the Safari build from the job above, so this job only needs
+  # that artifact and Xcode: an ad hoc signed macOS app and an unsigned iOS Simulator app.
+  safari:
+    needs: build
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: zunia-extension
+      - uses: actions/download-artifact@v4
+        with:
+          name: zunia-extension-builds
+          path: zunia-extension/.output
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Build the Safari app for macOS and the iOS Simulator
+        working-directory: zunia-extension
+        run: node scripts/safari.mjs build

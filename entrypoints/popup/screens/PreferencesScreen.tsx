@@ -20,7 +20,7 @@ import {
   SettingsToggle,
   SettingsValue,
 } from "../components/SettingsList";
-import { BROWSER_ALERTS_NOTE, useBrowserAlerts } from "../hooks/useBrowserAlerts";
+import { useBrowserAlerts } from "../hooks/useBrowserAlerts";
 import { usePrefs } from "../state/Prefs";
 
 export function PreferencesScreen({ onBack }: { onBack: () => void }) {
@@ -124,8 +124,9 @@ export function PreferencesScreen({ onBack }: { onBack: () => void }) {
           />
           <SettingsToggle
             title="Browser alerts"
-            description={alerts.error ?? BROWSER_ALERTS_NOTE}
+            description={alerts.description}
             checked={alerts.checked}
+            disabled={alerts.disabled}
             onCheckedChange={(next) => void alerts.toggle(next)}
           />
         </SettingsGroup>

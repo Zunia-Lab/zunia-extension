@@ -9,6 +9,7 @@ import {
   ThemeProvider,
 } from "@zunialab/ui";
 import type { AddressBookEntry } from "../../lib/address-book";
+import { closeApprovalSurface } from "../../lib/approval-ui";
 import { sendToBackground } from "../../lib/popup-client";
 import { hasLiveBalancePermission } from "../../lib/balances";
 import { useExtensionState } from "./hooks/useExtensionState";
@@ -676,9 +677,9 @@ function AppBody({ state }: { state: ExtensionState }) {
             void refresh();
             // More requests queued: stay here and show the next one.
             if (approvals.some((item) => item.id !== answeredId)) return;
-            // A window opened only to answer requests closes with the last one.
+            // A window or tab opened only to answer requests closes with the last one.
             if (initialRouteFromUrl() === "approve") {
-              window.close();
+              void closeApprovalSurface();
               return;
             }
             // Opened on purpose: go back to where it was opened from. Shown

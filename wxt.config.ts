@@ -145,9 +145,14 @@ export default defineConfig({
         128: "icon/128.png",
       },
     },
-    permissions: ["storage", "alarms", "idle"],
+    /**
+     * Safari has neither the idle nor the notifications API for extensions:
+     * auto-lock there runs on its timer alone, and browser alerts are off.
+     */
+    permissions:
+      browser === "safari" ? ["storage", "alarms"] : ["storage", "alarms", "idle"],
     /** Asked for when the user turns on browser alerts, never at install. */
-    optional_permissions: ["notifications"],
+    ...(browser === "safari" ? {} : { optional_permissions: ["notifications"] }),
     /**
      * Narrow host_permissions: extension-owned API hosts only.
      * dApp RPC / CosmJS traffic runs in the page context (or via

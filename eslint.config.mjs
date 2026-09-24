@@ -13,6 +13,8 @@ const eslintConfig = defineConfig([
     // wxt build output and generated types.
     ".output/**",
     ".wxt/**",
+    // The Safari container app. Its page runs in a WKWebView that Swift drives.
+    "safari/**",
   ]),
 
   js.configs.recommended,
