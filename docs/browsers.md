@@ -120,6 +120,11 @@ Run this on each browser before a store submission:
       notice and its confirm button is enabled.
 - [ ] Connect a dApp, approve, sign an Amino and a Direct transaction.
 - [ ] Switch account: the connected page receives `accountsChanged`, others do not.
-- [ ] Revoke the site in Connected sites: the page receives `disconnect`.
+- [ ] Revoke one chain, then the site, in Connected sites: the page receives `disconnect`
+      with the chain and `chainChanged` with what is left, then `disconnect` with `null`.
+- [ ] Lock the wallet and reload the connected page: `getConnectedChains()` returns its
+      chains and no window opens.
+- [ ] Sign in from a dApp: the "Sign in to <site>" screen appears. A sign-in message
+      naming another site is refused without opening anything.
 - [ ] Send, stake and vote from the wallet itself.
 - [ ] Brave: repeat the connect test with Shields up.

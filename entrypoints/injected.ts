@@ -12,7 +12,19 @@ type RpcResponse = {
   id: string;
   result?: unknown;
   error?: string;
+  code?: string;
 };
+
+/** What a failed call rejects with: the wallet's message and a stable `code`. */
+class ZuniaProviderError extends Error {
+  readonly code: string;
+
+  constructor(message: string, code: string | undefined) {
+    super(message);
+    this.name = "ZuniaProviderError";
+    this.code = code ?? "INTERNAL";
+  }
+}
 
 type EventHandler = (data: unknown) => void;
 
@@ -67,7 +79,7 @@ export default defineUnlistedScript(() => {
   let port: MessagePort | null = null;
   const pending = new Map<
     string,
-    { resolve: (v: unknown) => void; reject: (e: Error) => void }
+    { resolve: (v: unknown) => void; reject: (e: ZuniaProviderError) => void }
   >();
   const listeners = new Map<string, Set<EventHandler>>();
   let keplrAliasOn = false;
@@ -92,7 +104,7 @@ export default defineUnlistedScript(() => {
 
   const portReady = new Promise<void>((resolve, reject) => {
     const timeout = window.setTimeout(() => {
-      reject(new Error("Zunia provider handshake timed out"));
+      reject(new ZuniaProviderError("Zunia provider handshake timed out", "INTERNAL"));
     }, 5_000);
 
     const onMessage = (event: MessageEvent) => {
@@ -110,6 +122,7 @@ export default defineUnlistedScript(() => {
         const msg = portEvent.data;
         if (msg?.type === PAGE_CHANNEL.event && msg.event) {
           if (msg.event === "accountsChanged") {
+            emit("accountsChanged", msg.data);
             emit("keplr_keystorechange", msg.data);
             emit("accountChanged", msg.data);
             dispatchWindowEvent("keystorechange");
@@ -125,7 +138,10 @@ export default defineUnlistedScript(() => {
             emit("locked", msg.data);
             window.dispatchEvent(new Event("zunia_locked"));
           }
-          if (msg.event === "chainChanged") emit("chainChanged", msg.data);
+          if (msg.event === "chainChanged") {
+            emit("chainChanged", msg.data);
+            window.dispatchEvent(new CustomEvent("zunia_chainchanged", { detail: msg.data }));
+          }
           if (msg.event === "settingsChanged") {
             applyKeplrAlias(
               Boolean(
@@ -140,7 +156,7 @@ export default defineUnlistedScript(() => {
         const waiter = pending.get(msg.id);
         if (!waiter) return;
         pending.delete(msg.id);
-        if (msg.error) waiter.reject(new Error(msg.error));
+        if (msg.error) waiter.reject(new ZuniaProviderError(msg.error, msg.code));
         else waiter.resolve(msg.result);
       };
       resolve();
@@ -155,7 +171,7 @@ export default defineUnlistedScript(() => {
 
   async function request(method: string, args: unknown[] = []): Promise<unknown> {
     await portReady;
-    if (!port) throw new Error("Provider port not ready");
+    if (!port) throw new ZuniaProviderError("Provider port not ready", "INTERNAL");
     const id = crypto.randomUUID();
     const payload: RpcRequest = { id, method, args };
     return new Promise((resolve, reject) => {
@@ -249,6 +265,8 @@ export default defineUnlistedScript(() => {
     ) => Promise<unknown>;
     getAccounts: (chainId?: string) => Promise<unknown>;
     getChainInfos: () => Promise<unknown>;
+    getConnectedChains: () => Promise<string[]>;
+    isLocked: () => Promise<boolean>;
     on: typeof on;
     off: typeof off;
   } = {
@@ -258,6 +276,8 @@ export default defineUnlistedScript(() => {
     enable: async (chainIds) => {
       await request("enable", [chainIds]);
     },
+    getConnectedChains: async () => (await request("getConnectedChains", [])) as string[],
+    isLocked: async () => (await request("isLocked", [])) as boolean,
     getKey: async (chainId) => {
       const key = (await request("getKey", [chainId])) as Omit<
         ZuniaKey,

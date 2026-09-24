@@ -1,4 +1,5 @@
 import { CONNECT_CONFIG } from "../config/connect";
+import type { ProviderErrorCode } from "./provider-errors";
 
 /** Allowed origins for chrome.runtime external messages. */
 export function isExternallyConnectableOrigin(origin: string): boolean {
@@ -132,6 +133,7 @@ export interface ExtensionResponse {
   ok: boolean;
   data?: unknown;
   error?: string;
+  code?: ProviderErrorCode;
 }
 
 export const PAGE_CHANNEL = {

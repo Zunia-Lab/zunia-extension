@@ -8,7 +8,7 @@ import {
 } from "./approvals";
 import { approvalUiOpen, openApprovalUi } from "./approval-ui";
 import { findCatalogEntry } from "./chain-catalog";
-import { draftFromSuggestedChain } from "./chain-draft";
+import { ChainDraftError, draftFromSuggestedChain } from "./chain-draft";
 import { BUILTIN_CHAINS, chainJsonFor, toChainInfo, type ChainInfo } from "./chains";
 import {
   hydrateCustomChains,
@@ -41,13 +41,16 @@ import {
 } from "./fee-tiers";
 import { assessOrigin } from "./origin-risk";
 import {
+  connectedChains,
   grantPermission,
   hasPermission,
   revokeChain,
   revokePermission,
   touchPermission,
 } from "./permissions";
+import { ProviderError } from "./provider-errors";
 import {
+  ProviderGuardError,
   aminoSignDocChainId,
   assertSameChain,
   assertSigner,
@@ -56,6 +59,12 @@ import {
   encodeDirectSignDoc,
   normalizeDirectSignDoc,
 } from "./provider-guards";
+import {
+  assertSignInBinding,
+  looksLikeSignIn,
+  parseSignInMessage,
+  type SignInMessage,
+} from "./sign-in";
 import {
   getAccounts,
   getActiveAccountIndex,
@@ -85,66 +94,72 @@ export type ProviderMethod =
   | "sendTx"
   | "experimentalSuggestChain"
   | "getChainInfos"
-  | "getChainInfosWithoutEndpoints";
+  | "getChainInfosWithoutEndpoints"
+  | "getConnectedChains"
+  | "isLocked";
+
+function invalidParams(message: string): ProviderError {
+  return new ProviderError("INVALID_PARAMS", message);
+}
 
 function dataToBytes(data: unknown): Uint8Array {
   if (typeof data === "string") return new TextEncoder().encode(data);
   return bytesFromWire(data, "data");
 }
 
-function previewText(dataBytes: Uint8Array): string {
+/** The bytes as text when they are valid UTF-8, else null. */
+function utf8Text(dataBytes: Uint8Array): string | null {
   try {
-    const text = new TextDecoder().decode(dataBytes);
-    /* eslint-disable-next-line no-control-regex --
-       Tab, LF and CR are deliberately inside the "this is human-readable text"
-       class: an ADR-36 message may legitimately contain them. Anything else
-       non-printable must fall through to the hex preview, which is exactly what
-       matching against control characters here decides. */
-    if (/^[\x09\x0a\x0d\x20-\x7e]*$/.test(text)) {
-      return text.length > 280 ? `${text.slice(0, 277)}…` : text;
-    }
+    return new TextDecoder("utf-8", { fatal: true }).decode(dataBytes);
   } catch {
-    // Fall through to hex.
+    return null;
+  }
+}
+
+function previewText(dataBytes: Uint8Array): string {
+  const text = utf8Text(dataBytes);
+  /* eslint-disable-next-line no-control-regex --
+     Tab, LF and CR are deliberately inside the "this is human-readable text"
+     class: an ADR-36 message may legitimately contain them. Anything else
+     non-printable must fall through to the hex preview, which is exactly what
+     matching against control characters here decides. */
+  if (text !== null && /^[\x09\x0a\x0d\x20-\x7e]*$/.test(text)) {
+    return text.length > 280 ? `${text.slice(0, 277)}…` : text;
   }
   const hex = bytesToHex(dataBytes);
   return hex.length > 96 ? `0x${hex.slice(0, 96)}…` : `0x${hex}`;
 }
 
-function parseSignatureBytes(raw: unknown): Uint8Array {
+function wireBytesOf(raw: unknown, label: string): Uint8Array {
   if (raw instanceof Uint8Array) return raw;
   if (Array.isArray(raw)) return Uint8Array.from(raw);
-  if (typeof raw !== "string") throw new Error("Invalid signature");
+  if (typeof raw !== "string") throw invalidParams(`Invalid ${label}`);
   const value = raw.trim();
   if (/^(0x)?[0-9a-fA-F]+$/.test(value) && value.replace(/^0x/, "").length % 2 === 0) {
     return hexToBytes(value);
   }
-  return fromBase64(value);
-}
-
-function parsePubKeyBytes(raw: unknown): Uint8Array {
-  if (raw instanceof Uint8Array) return raw;
-  if (Array.isArray(raw)) return Uint8Array.from(raw);
-  if (typeof raw !== "string") throw new Error("Invalid pub_key");
-  const value = raw.trim();
-  if (/^(0x)?[0-9a-fA-F]+$/.test(value) && value.replace(/^0x/, "").length % 2 === 0) {
-    return hexToBytes(value);
+  try {
+    return fromBase64(value);
+  } catch {
+    throw invalidParams(`Invalid ${label}`);
   }
-  return fromBase64(value);
 }
 
 /**
- * Thrown when a provider method is part of the API surface but the capability
- * behind it does not exist yet. Only `Error.message` survives the hop through
- * the background, content script and page, so the message carries the whole
- * explanation; `code` is for callers inside the extension.
+ * The sign-in a message carries, checked against the request, or null for a
+ * plain message. Anything that reads like a sign-in but does not pass is
+ * refused here, before any window opens.
  */
-export class ProviderUnsupportedError extends Error {
-  readonly code = "UNSUPPORTED" as const;
-
-  constructor(message: string) {
-    super(message);
-    this.name = "ProviderUnsupportedError";
-  }
+function signInFor(
+  dataBytes: Uint8Array,
+  binding: { origin: string; chainId: string; signer: string },
+): { message: SignInMessage; text: string } | null {
+  if (!looksLikeSignIn(new TextDecoder().decode(dataBytes))) return null;
+  const text = utf8Text(dataBytes);
+  if (text === null) throw invalidParams("The sign-in message is not valid UTF-8");
+  const message = parseSignInMessage(text);
+  assertSignInBinding(message, binding);
+  return { message, text };
 }
 
 /**
@@ -207,7 +222,7 @@ function waitForUnlock(): Promise<void> {
       browser.storage.onChanged.removeListener(onChanged);
       unlockWait = null;
       cancelUnlock = null;
-      if (error) reject(new Error(error));
+      if (error) reject(new ProviderError("LOCKED", error));
       else resolve();
     }
     cancelUnlock = finish;
@@ -227,7 +242,7 @@ async function unlockedMnemonic(): Promise<string> {
     await waitForUnlock();
     mnemonic = await getSessionMnemonic();
   }
-  if (!mnemonic) throw new Error("Wallet is locked");
+  if (!mnemonic) throw new ProviderError("LOCKED", "Wallet is locked");
   await touchSession();
   return mnemonic;
 }
@@ -241,21 +256,24 @@ async function ensureCatalog(): Promise<void> {
 }
 
 function requireChainId(value: unknown): string {
-  if (typeof value !== "string" || !value.trim()) throw new Error("chainId required");
+  if (typeof value !== "string" || !value.trim()) throw invalidParams("chainId required");
   return value;
 }
 
 async function requireKnownChain(chainId: string): Promise<void> {
   await ensureCatalog();
   if (!findCatalogEntry(chainId)) {
-    throw new Error(
+    throw new ProviderError(
+      "UNKNOWN_CHAIN",
       `Zunia does not know the chain ${chainId}. Add it with experimentalSuggestChain first.`,
     );
   }
 }
 
 async function requirePermission(origin: string, chainId: string): Promise<void> {
-  if (!(await hasPermission(origin, [chainId]))) throw new Error("Not authorized");
+  if (!(await hasPermission(origin, [chainId]))) {
+    throw new ProviderError("NOT_CONNECTED", "Not authorized");
+  }
 }
 
 interface ActiveKey {
@@ -293,7 +311,7 @@ async function approveInPopup(request: NewApproval): Promise<{ feeTier?: unknown
   const { result } = enqueueApprovalWithId({ ...request, host: "popup" });
   void openApprovalUi();
   const answer = (await result) as { approved?: boolean; feeTier?: unknown } | undefined;
-  if (!answer?.approved) throw new Error("Request rejected");
+  if (!answer?.approved) throw new ProviderError("USER_REJECTED", "Request rejected");
   return answer;
 }
 
@@ -315,10 +333,12 @@ async function keyAfterApproval(
   expectedIndex: number,
 ): Promise<{ mnemonic: string; key: ActiveKey }> {
   const mnemonic = await getSessionMnemonic();
-  if (!mnemonic) throw new Error("Wallet locked before signing");
+  if (!mnemonic) throw new ProviderError("LOCKED", "Wallet locked before signing");
   const key = await activeKey(mnemonic, chainId);
   if (key.index !== expectedIndex) {
-    throw new Error("The active account changed while the request was open. Ask the site to try again.");
+    throw invalidParams(
+      "The active account changed while the request was open. Ask the site to try again.",
+    );
   }
   assertSigner(signer, key.derived.bech32Address);
   return { mnemonic, key };
@@ -377,19 +397,36 @@ async function publicChainInfos(): Promise<PublicChainInfo[]> {
   return [...map.values()];
 }
 
-export async function handleProviderRequest(input: {
+interface ProviderRequest {
   origin: string;
   method: ProviderMethod;
   args: unknown[];
   /** Tab the request came from, when it came through a content script. */
   tabId?: number;
-}): Promise<unknown> {
+}
+
+/**
+ * Runs one provider call. Every failure leaves as a {@link ProviderError}
+ * (or carries a `code`), so the page can tell a refusal from a bad argument.
+ */
+export async function handleProviderRequest(input: ProviderRequest): Promise<unknown> {
+  try {
+    return await dispatchProviderRequest(input);
+  } catch (err) {
+    if (err instanceof ProviderGuardError || err instanceof ChainDraftError) {
+      throw invalidParams(err.message);
+    }
+    throw err;
+  }
+}
+
+async function dispatchProviderRequest(input: ProviderRequest): Promise<unknown> {
   const { origin, method, args, tabId } = input;
 
   switch (method) {
     case "enable": {
       const chainIds = normalizeChainIds(args[0]);
-      if (chainIds.length === 0) throw new Error("chainId required");
+      if (chainIds.length === 0) throw invalidParams("chainId required");
       for (const chainId of chainIds) await requireKnownChain(chainId);
 
       const wasLocked = !(await isUnlocked());
@@ -430,9 +467,25 @@ export async function handleProviderRequest(input: {
       }
 
       const approved = (await result) as { approved?: boolean } | undefined;
-      if (!approved?.approved) throw new Error("Request rejected");
+      if (!approved?.approved) throw new ProviderError("USER_REJECTED", "Request rejected");
       await grantPermission(origin, chainIds);
       return null;
+    }
+
+    case "getConnectedChains": {
+      // Read-only and silent: this is how a page restores its session on
+      // reload without opening the unlock window.
+      const chainIds = await connectedChains(origin);
+      if (chainIds.length > 0) noteUse(origin);
+      return chainIds;
+    }
+
+    case "isLocked": {
+      // Only a connected site hears whether the user is at the wallet.
+      if ((await connectedChains(origin)).length === 0) {
+        throw new ProviderError("NOT_CONNECTED", "Not authorized");
+      }
+      return !(await isUnlocked());
     }
 
     case "disable": {
@@ -492,7 +545,7 @@ export async function handleProviderRequest(input: {
 
       const summary = await decodeAminoSignDoc(chainId, signDoc);
       if (summary.requiresBlindSigning) {
-        throw new Error("Blind signing disabled for unknown messages");
+        throw new ProviderError("UNSUPPORTED", "Blind signing disabled for unknown messages");
       }
       const feeChoice = feeChoiceFor(chainId, aminoFeeOf(signDoc), options);
       const answer = await approveInPopup({
@@ -561,7 +614,7 @@ export async function handleProviderRequest(input: {
 
       const summary = await decodeDirectSignBytes(chainId, signBytes);
       if (summary.requiresBlindSigning) {
-        throw new Error("Blind signing disabled for unknown messages");
+        throw new ProviderError("UNSUPPORTED", "Blind signing disabled for unknown messages");
       }
       const feeChoice = feeChoiceFor(chainId, authInfoFee(doc.authInfoBytes), options);
       const answer = await approveInPopup({
@@ -618,15 +671,14 @@ export async function handleProviderRequest(input: {
       const chainId = requireChainId(args[0]);
       const signer = args[1];
       const data = args[2];
-      if (typeof signer !== "string" || !signer) throw new Error("signer required");
-      if (data == null) throw new Error("data required");
+      if (typeof signer !== "string" || !signer) throw invalidParams("signer required");
+      if (data == null) throw invalidParams("data required");
       await requirePermission(origin, chainId);
       const dataBytes = dataToBytes(data);
       if (!adr36PayloadIsSafe(dataBytes)) {
-        throw new Error(
-          "ADR-36 data looks like a transaction sign doc; refusing to sign",
-        );
+        throw invalidParams("ADR-36 data looks like a transaction sign doc; refusing to sign");
       }
+      const signIn = signInFor(dataBytes, { origin, chainId, signer });
       const mnemonic = await unlockedMnemonic();
       const before = await activeKey(mnemonic, chainId);
       assertSigner(signer, before.derived.bech32Address);
@@ -636,11 +688,12 @@ export async function handleProviderRequest(input: {
         origin,
         chainIds: [chainId],
         tabId,
-        title: `Sign message on ${chainId}`,
+        title: signIn ? `Sign in to ${signIn.message.domain}` : `Sign message on ${chainId}`,
         detail: {
           signer,
           preview: previewText(dataBytes),
           encoding: typeof data === "string" ? "utf8" : "bytes",
+          ...(signIn ? { signIn: signIn.message, message: signIn.text } : {}),
         },
         warnings: originWarnings(origin),
       });
@@ -677,7 +730,7 @@ export async function handleProviderRequest(input: {
         | string
         | undefined;
       if (!signer || data == null || signatureArg == null) {
-        throw new Error("chainId, signer, data, and signature required");
+        throw invalidParams("chainId, signer, data, and signature required");
       }
       await requirePermission(origin, chainId);
 
@@ -688,16 +741,16 @@ export async function handleProviderRequest(input: {
       let sigBytes: Uint8Array;
       if (typeof signatureArg === "string") {
         const mnemonic = await getSessionMnemonic();
-        if (!mnemonic) throw new Error("Wallet is locked");
+        if (!mnemonic) throw new ProviderError("LOCKED", "Wallet is locked");
         const key = await activeKey(mnemonic, chainId);
         pubKeyBytes = key.derived.pubKey;
-        sigBytes = parseSignatureBytes(signatureArg);
+        sigBytes = wireBytesOf(signatureArg, "signature");
       } else {
         if (!signatureArg.pub_key?.value || !signatureArg.signature) {
-          throw new Error("signature.pub_key.value and signature.signature required");
+          throw invalidParams("signature.pub_key.value and signature.signature required");
         }
-        pubKeyBytes = parsePubKeyBytes(signatureArg.pub_key.value);
-        sigBytes = parseSignatureBytes(signatureArg.signature);
+        pubKeyBytes = wireBytesOf(signatureArg.pub_key.value, "pub_key");
+        sigBytes = wireBytesOf(signatureArg.signature, "signature");
       }
 
       return verifyAdr36(signer, dataBytes, pubKeyBytes, sigBytes);
@@ -707,7 +760,8 @@ export async function handleProviderRequest(input: {
       // Wallet-originated txs broadcast via LCD from the popup; dApp sendTx
       // stays unsupported so the extension never holds a dApp-supplied payload
       // as the broadcaster of record.
-      throw new ProviderUnsupportedError(
+      throw new ProviderError(
+        "UNSUPPORTED",
         "Zunia does not broadcast dApp transactions. Request a signature with " +
           "signAmino or signDirect and broadcast it from the dApp.",
       );
@@ -739,7 +793,7 @@ export async function handleProviderRequest(input: {
       return publicChainInfos();
 
     default:
-      throw new Error(`Method not implemented: ${method}`);
+      throw new ProviderError("UNSUPPORTED", `Method not implemented: ${String(method)}`);
   }
 }
 

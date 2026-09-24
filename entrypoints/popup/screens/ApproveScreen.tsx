@@ -17,6 +17,7 @@ import { formatCoin } from "../../../lib/coin-display";
 import type { FeeChoice, FeeTier } from "../../../lib/fee-tiers";
 import { assessOrigin } from "../../../lib/origin-risk";
 import type { SessionStatus } from "../../../lib/session";
+import type { SignInMessage } from "../../../lib/sign-in";
 import type { SignSafetySummary } from "../../../lib/signing";
 import { findCatalogEntry } from "../../../lib/chain-catalog";
 import { sendToBackground } from "../../../lib/popup-client";
@@ -25,6 +26,20 @@ import { IconCheck, IconGlobe, IconShield } from "./icons";
 function summaryFrom(approval: ApprovalRequest): SignSafetySummary | null {
   const detail = approval.detail as { summary?: SignSafetySummary } | undefined;
   return detail?.summary ?? null;
+}
+
+/** A message signature the worker already matched to this site, chain and account. */
+function signInFrom(approval: ApprovalRequest): { signIn: SignInMessage; message: string } | null {
+  if (approval.kind !== "signArbitrary") return null;
+  const detail = approval.detail as { signIn?: SignInMessage; message?: string } | undefined;
+  return detail?.signIn ? { signIn: detail.signIn, message: detail.message ?? "" } : null;
+}
+
+function expiryLabel(iso: string): string {
+  const minutes = Math.round((Date.parse(iso) - Date.now()) / 60_000);
+  if (minutes < 1) return "In less than a minute";
+  if (minutes < 60) return `In ${minutes} min`;
+  return new Date(iso).toLocaleString();
 }
 
 function hostOf(origin: string): string {
@@ -64,6 +79,9 @@ const KIND_EFFECT: Partial<Record<ApprovalRequest["kind"], string>> = {
   suggestChain:
     "Approving adds this network to your wallet. Nothing is signed and no funds move.",
 };
+
+const SIGN_IN_EFFECT =
+  "Signing proves to this site that you control this address. It is not a transaction: nothing is sent and no funds move.";
 
 function useSecondsLeft(expiresAt: number | undefined): number | null {
   const [now, setNow] = useState(() => Date.now());
@@ -105,14 +123,14 @@ function formatCountdown(seconds: number): string {
 function OriginHeader({
   origin,
   chainIds,
-  kind,
+  label,
   queued,
   secondsLeft,
   suspicious,
 }: {
   origin: string;
   chainIds: string[];
-  kind: ApprovalRequest["kind"];
+  label: string;
   queued: number;
   secondsLeft: number | null;
   suspicious: boolean;
@@ -120,7 +138,7 @@ function OriginHeader({
   return (
     <div className="flex flex-col gap-3 border-b border-[var(--z-line)] px-4 pb-3 pt-3">
       <div className="flex items-center gap-2">
-        <SectionLabel>{KIND_LABEL[kind]}</SectionLabel>
+        <SectionLabel>{label}</SectionLabel>
         <span className="ml-auto flex items-center gap-1.5">
           {secondsLeft !== null ? (
             <span
@@ -160,6 +178,40 @@ function OriginHeader({
           </span>
         </span>
       </div>
+    </div>
+  );
+}
+
+function SignInDetails({ signIn, message }: { signIn: SignInMessage; message: string }) {
+  return (
+    <div className="flex flex-col gap-2.5">
+      <p className="flex items-center gap-1.5 text-[11.5px] leading-snug text-fg-muted">
+        <IconCheck width={14} height={14} className="shrink-0 text-[var(--z-success-fg)]" />
+        This request names the site you are on, this network and this account.
+      </p>
+      {signIn.statement ? (
+        <p className="rounded-[14px] border border-[var(--z-line)] bg-[var(--z-glass)] px-3 py-2.5 text-[12.5px] leading-snug text-fg">
+          {signIn.statement}
+        </p>
+      ) : null}
+      <div className="flex flex-col gap-2.5 rounded-[14px] border border-[var(--z-line)] px-3 py-3">
+        <KeyValueRow label="Site" value={signIn.domain} />
+        <KeyValueRow
+          label="Network"
+          value={findCatalogEntry(signIn.chainId)?.chainName ?? signIn.chainId}
+        />
+        {signIn.expirationTime ? (
+          <KeyValueRow label="Expires" value={expiryLabel(signIn.expirationTime)} />
+        ) : null}
+      </div>
+      <details className="rounded-[14px] border border-[var(--z-line)] px-3 py-2.5">
+        <summary className="cursor-pointer font-mono text-[9.5px] uppercase tracking-[0.08em] text-fg-dim">
+          Full message
+        </summary>
+        <pre className="mt-2 max-h-[180px] overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-fg">
+          {message}
+        </pre>
+      </details>
     </div>
   );
 }
@@ -266,7 +318,8 @@ export function ApproveScreen({
   // it cannot be approved rather than offer a button that broadcasts nothing.
   const unsupported = current.kind === "sendTx";
   const blocked = Boolean(summary?.requiresBlindSigning);
-  const effect = KIND_EFFECT[current.kind];
+  const signIn = signInFrom(current);
+  const effect = signIn ? SIGN_IN_EFFECT : KIND_EFFECT[current.kind];
   const needsPassword = requirePassword && SIGNING_KINDS.has(current.kind);
   const signer = (current.detail as { signer?: unknown } | undefined)?.signer;
   const draft = (current.detail as { draft?: CustomChainDraft } | undefined)?.draft;
@@ -292,10 +345,7 @@ export function ApproveScreen({
   async function reject() {
     setBusy("reject");
     try {
-      await sendToBackground("REJECT_APPROVAL", {
-        id: current!.id,
-        reason: "User rejected",
-      });
+      await sendToBackground("REJECT_APPROVAL", { id: current!.id });
     } catch {
       // Already gone from the queue (expired, or the tab closed): nothing left to reject.
     }
@@ -308,7 +358,7 @@ export function ApproveScreen({
         <OriginHeader
           origin={current.origin}
           chainIds={current.chainIds}
-          kind={current.kind}
+          label={signIn ? "Sign-in request" : KIND_LABEL[current.kind]}
           queued={approvals.length}
           secondsLeft={secondsLeft}
           suspicious={suspicious}
@@ -366,7 +416,7 @@ export function ApproveScreen({
                 }
                 onClick={() => void approve()}
               >
-                {needsPassword ? "Sign" : "Approve"}
+                {signIn ? "Sign in" : needsPassword ? "Sign" : "Approve"}
               </Button>
             </div>
           </div>
@@ -464,7 +514,9 @@ export function ApproveScreen({
           </ol>
         ) : null}
 
-        {current.kind === "signArbitrary" ? (
+        {signIn ? <SignInDetails signIn={signIn.signIn} message={signIn.message} /> : null}
+
+        {current.kind === "signArbitrary" && !signIn ? (
           <div className="rounded-[14px] border border-[var(--z-line)] bg-[var(--z-glass)] px-3 py-2.5">
             <div className="font-mono text-[9.5px] uppercase tracking-[0.08em] text-fg-dim">
               Message

@@ -63,6 +63,8 @@ export const CONNECT_CONFIG = {
   cosmosMethods: [
     "enable",
     "disable",
+    "getConnectedChains",
+    "isLocked",
     "getKey",
     "getAccounts",
     "getOfflineSigner",

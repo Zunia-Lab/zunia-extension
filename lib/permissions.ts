@@ -75,15 +75,26 @@ function touchedGrant(
   };
 }
 
-export async function loadPermissions(): Promise<PermissionStore> {
-  const result = await browser.storage.local.get(STORAGE_KEYS.permissions);
-  const stored = result[STORAGE_KEYS.permissions] as Record<string, unknown> | undefined;
+/** A stored permission value, or a storage change's old or new value, as grants. */
+export function permissionStoreFrom(stored: unknown): PermissionStore {
   const store: PermissionStore = {};
-  for (const [origin, raw] of Object.entries(stored ?? {})) {
+  if (!stored || typeof stored !== "object") return store;
+  for (const [origin, raw] of Object.entries(stored)) {
     const grant = normalizeGrant(origin, raw);
     if (grant) store[origin] = grant;
   }
   return store;
+}
+
+export async function loadPermissions(): Promise<PermissionStore> {
+  const result = await browser.storage.local.get(STORAGE_KEYS.permissions);
+  return permissionStoreFrom(result[STORAGE_KEYS.permissions]);
+}
+
+/** The chains a site may use right now, without touching the grant. */
+export async function connectedChains(origin: string): Promise<string[]> {
+  const grant = (await loadPermissions())[origin];
+  return grant && isGrantActive(grant) ? [...grant.chainIds] : [];
 }
 
 async function savePermissions(store: PermissionStore): Promise<void> {

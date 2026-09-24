@@ -106,6 +106,27 @@ const signer = window.zunia.getOfflineSigner("cosmoshub-4");
 const [account] = await signer.getAccounts();
 ```
 
+What the provider adds on top of the Keplr surface:
+
+- **Session restore.** `getConnectedChains()` returns the chains the calling site is
+  connected to and never opens a window; `isLocked()` answers connected sites only. A page
+  can restore its session on reload without triggering the unlock prompt.
+- **Targeted events.** `accountsChanged`, `chainChanged` (`{ chainIds }`, the full list),
+  `disconnect` (`{ chainIds }` for the chains lost, or `null`) and `locked` go only to tabs
+  of a connected site. A grant that expires disconnects the site on time. The
+  `zunia_keystorechange` and `keplr_keystorechange` window events still fire for
+  Keplr-style dApps.
+- **Error codes.** Every failure rejects with a `ZuniaProviderError` whose `code` is one of
+  `USER_REJECTED`, `NOT_CONNECTED`, `LOCKED`, `UNKNOWN_CHAIN`, `ORIGIN_MISMATCH`,
+  `UNSUPPORTED`, `INVALID_PARAMS` or `INTERNAL`. Messages keep Keplr's wording
+  ("Request rejected", "Not authorized").
+- **Sign-in.** A `signArbitrary` message in the CAIP-122 shape ("<domain> wants you to sign
+  in with your Cosmos account: ...") is read back before anything is shown. It is refused
+  outright when its domain or URI is not the requesting site, when it names another chain
+  or account, or when its dates are out of bounds; otherwise the user sees a dedicated
+  "Sign in to <site>" screen. `lib/__tests__/fixtures/sign-in-vectors.json` holds the
+  format's test vectors.
+
 Most dApps should use the SDK instead of the raw provider:
 [`@zunialab/sdk-web`](https://github.com/Zunia-Lab/zunia-sdk) handles detection, events and
 the QR fallback to the mobile app. The full API is documented at

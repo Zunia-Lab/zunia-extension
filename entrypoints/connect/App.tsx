@@ -649,10 +649,7 @@ function ConnectBody() {
     settling.current = true;
     setBusy(true);
     try {
-      await sendToBackground("REJECT_APPROVAL", {
-        id: APPROVAL_ID,
-        reason: "User rejected",
-      });
+      await sendToBackground("REJECT_APPROVAL", { id: APPROVAL_ID });
     } catch {
       // Already gone from the queue; tearing down still settles the dApp.
     }

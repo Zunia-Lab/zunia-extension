@@ -51,4 +51,6 @@ export const STORAGE_KEYS = {
   sessionMnemonic: "zunia.session.mnemonic",
   sessionUnlockedAt: "zunia.session.unlockedAt",
   sessionActiveAccount: "zunia.session.activeAccount",
+  /** Tab id to the origin of the page that made provider calls in it. */
+  providerTabs: "zunia.session.providerTabs",
 } as const;

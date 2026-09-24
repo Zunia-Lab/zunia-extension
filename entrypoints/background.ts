@@ -21,15 +21,29 @@ import {
 } from "../lib/messaging";
 import {
   listActiveGrants,
+  loadPermissions,
+  permissionStoreFrom,
   revokeAllPermissions,
   revokeChain,
   revokePermission,
+  type PermissionStore,
 } from "../lib/permissions";
+import { providerErrorCode } from "../lib/provider-errors";
+import {
+  grantChangeEvents,
+  nextGrantExpiry,
+  type OriginEvent,
+} from "../lib/provider-events";
 import {
   cancelUnlockWait,
   handleProviderRequest,
   type ProviderMethod,
 } from "../lib/provider-handler";
+import {
+  forgetProviderTab,
+  providerTabsFor,
+  rememberProviderTab,
+} from "../lib/provider-tabs";
 import {
   classifySender,
   messageAllowed,
@@ -41,6 +55,7 @@ import {
   createWallet,
   generateMnemonicPhrase,
   getAccounts,
+  getActiveAccountIndex,
   getChainAccounts,
   getPasswordThrottle,
   getStatus,
@@ -167,29 +182,45 @@ async function requireSigningPassword(password: unknown): Promise<void> {
 }
 
 /**
- * Tell pages about a wallet change. `origins` narrows delivery to those sites;
- * without it every page with the provider hears it, carrying no data, which is
- * how Keplr's `keplr_keystorechange` behaves.
+ * Deliver each event to the tabs showing its site, and nowhere else. The
+ * message names only that one origin, so no page learns which other sites
+ * are connected.
  */
-async function broadcastProviderEvent(
-  event: string,
-  origins?: string[],
-  data?: { chainIds: string[] },
-): Promise<void> {
-  let tabs: Array<{ id?: number }> = [];
-  try {
-    tabs = await browser.tabs.query({});
-  } catch {
+async function deliverProviderEvents(events: OriginEvent[]): Promise<void> {
+  await Promise.all(
+    events.map(async ({ origin, event, data }) => {
+      const message = { type: "PROVIDER_EVENT", payload: { event, origin, data } };
+      for (const tabId of await providerTabsFor(origin)) {
+        void browser.tabs.sendMessage(tabId, message, { frameId: 0 }).catch(() => undefined);
+      }
+    }),
+  );
+}
+
+/** A wallet-wide change (lock, unlock, account switch) goes to connected sites only. */
+async function deliverToConnectedSites(event: "accountsChanged" | "locked"): Promise<void> {
+  const grants = await listActiveGrants();
+  await deliverProviderEvents(grants.map(({ origin }) => ({ origin, event, data: null })));
+}
+
+const GRANT_EXPIRY_ALARM = "zunia:grant-expiry";
+
+async function scheduleGrantExpiry(store: PermissionStore): Promise<void> {
+  const next = nextGrantExpiry(store);
+  if (next === null) {
+    await browser.alarms.clear(GRANT_EXPIRY_ALARM);
     return;
   }
-  const message = { type: "PROVIDER_EVENT", payload: { event, origins, data } };
-  await Promise.all(
-    tabs.map((tab) =>
-      typeof tab.id === "number"
-        ? browser.tabs.sendMessage(tab.id, message).catch(() => undefined)
-        : undefined,
-    ),
-  );
+  await browser.alarms.create(GRANT_EXPIRY_ALARM, { when: Math.max(next, Date.now() + 1_000) });
+}
+
+/**
+ * Deletes grants that ran out. The store change is what tells each site it
+ * was disconnected, the same path a manual revoke takes.
+ */
+async function sweepExpiredGrants(): Promise<void> {
+  await listActiveGrants();
+  await scheduleGrantExpiry(await loadPermissions());
 }
 
 async function routeMessage(
@@ -343,7 +374,6 @@ async function routeMessage(
         }
         const payload = message.payload as { index: number };
         await setActiveAccount(payload.index);
-        void broadcastProviderEvent("accountsChanged");
         return { ok: true };
       }
 
@@ -354,10 +384,12 @@ async function routeMessage(
 
       case "RENAME_ACCOUNT": {
         const payload = message.payload as { index: number; name: string };
-        return {
-          ok: true,
-          data: await renameAccount(payload.index, payload.name),
-        };
+        const accounts = await renameAccount(payload.index, payload.name);
+        // The name is part of what getKey returns.
+        if (payload.index === (await getActiveAccountIndex())) {
+          void deliverToConnectedSites("accountsChanged");
+        }
+        return { ok: true, data: accounts };
       }
 
       case "GET_BALANCES": {
@@ -558,21 +590,14 @@ async function routeMessage(
         const origin = textField(payload.origin);
         if (!origin) return { ok: false, error: "origin required" };
         const chainId = textField(payload.chainId);
-        // Either way the page hears it: a site that keeps other chains is
-        // told which ones it lost.
-        if (chainId) {
-          await revokeChain(origin, chainId);
-          void broadcastProviderEvent("disconnect", [origin], { chainIds: [chainId] });
-        } else {
-          await revokePermission(origin);
-          void broadcastProviderEvent("disconnect", [origin]);
-        }
+        // The page hears it through the permission store listener.
+        if (chainId) await revokeChain(origin, chainId);
+        else await revokePermission(origin);
         return { ok: true };
       }
 
       case "REVOKE_ALL_PERMISSIONS": {
         const origins = await revokeAllPermissions();
-        if (origins.length > 0) void broadcastProviderEvent("disconnect", origins);
         return { ok: true, data: { revoked: origins.length } };
       }
 
@@ -629,11 +654,12 @@ async function routeMessage(
       }
 
       case "REJECT_APPROVAL": {
-        const payload = message.payload as { id: string; reason?: string };
+        const payload = message.payload as { id: string };
         if (kind === "connect-frame" && !frameOwnsApproval(sender, payload.id)) {
           return { ok: false, error: "This frame cannot answer that request" };
         }
-        const ok = rejectApproval(payload.id, payload.reason);
+        // The page reads the reason, so no surface gets to write it.
+        const ok = rejectApproval(payload.id);
         return ok
           ? { ok: true }
           : { ok: false, error: "Approval not found" };
@@ -645,11 +671,14 @@ async function routeMessage(
           args: unknown[];
         };
         const origin = providerOriginFromSender(sender);
-        if (!origin) return { ok: false, error: "Missing origin" };
+        if (!origin) return { ok: false, error: "Missing origin", code: "ORIGIN_MISMATCH" };
         // The content script also names the origin. If it disagrees with the
         // browser, something is impersonating it.
         if (message.origin && message.origin !== origin) {
-          return { ok: false, error: "Origin mismatch" };
+          return { ok: false, error: "Origin mismatch", code: "ORIGIN_MISMATCH" };
+        }
+        if (typeof sender.tab?.id === "number" && (sender.frameId ?? 0) === 0) {
+          void rememberProviderTab(sender.tab.id, origin);
         }
         const data = await handleProviderRequest({
           origin,
@@ -713,6 +742,7 @@ async function routeMessage(
     return {
       ok: false,
       error: err instanceof Error ? err.message : String(err),
+      code: providerErrorCode(err),
     };
   }
 }
@@ -800,28 +830,53 @@ export default defineBackground(() => {
     cancelUnlockWait("The Zunia window was closed before unlocking");
   });
 
-  // Every lock path (button, auto-lock alarm, idle, screen lock) and every
-  // unlock ends up here, so pages hear about all of them exactly once. Locking
-  // sends its own event rather than accountsChanged: a Keplr dApp re-reads the
-  // key on keystorechange, and while locked that would open the unlock window
-  // once per connected site.
+  // Every lock path (button, auto-lock alarm, idle, screen lock), every unlock
+  // and every account switch (popup or connect prompt) ends up here, so
+  // connected sites hear about each exactly once. Locking sends its own event
+  // rather than accountsChanged: a Keplr dApp re-reads the key on
+  // keystorechange, and while locked that would open the unlock window once
+  // per connected site.
   browser.storage.onChanged.addListener((changes, area) => {
     if (area !== "session") return;
-    const change = changes[STORAGE_KEYS.sessionMnemonic];
-    if (!change) return;
-    const wasOpen = typeof change.oldValue === "string";
-    const isOpen = typeof change.newValue === "string";
-    if (wasOpen && !isOpen) void broadcastProviderEvent("locked");
-    else if (!wasOpen && isOpen) void broadcastProviderEvent("accountsChanged");
+    const lock = changes[STORAGE_KEYS.sessionMnemonic];
+    if (lock) {
+      const wasOpen = typeof lock.oldValue === "string";
+      const isOpen = typeof lock.newValue === "string";
+      if (wasOpen && !isOpen) void deliverToConnectedSites("locked");
+      else if (!wasOpen && isOpen) void deliverToConnectedSites("accountsChanged");
+      return;
+    }
+    const account = changes[STORAGE_KEYS.sessionActiveAccount];
+    if (
+      account &&
+      typeof account.newValue === "number" &&
+      account.newValue !== account.oldValue
+    ) {
+      void deliverToConnectedSites("accountsChanged");
+    }
   });
+
+  // Connecting, adding a chain, revoking in Settings, a site's own disable()
+  // and expiry all rewrite the store; the difference says who hears what.
+  browser.storage.onChanged.addListener((changes, area) => {
+    if (area !== "local") return;
+    const change = changes[STORAGE_KEYS.permissions];
+    if (!change) return;
+    const after = permissionStoreFrom(change.newValue);
+    void deliverProviderEvents(grantChangeEvents(permissionStoreFrom(change.oldValue), after));
+    void scheduleGrantExpiry(after).catch(() => undefined);
+  });
+  void sweepExpiredGrants().catch(() => undefined);
 
   browser.tabs.onRemoved.addListener((tabId) => {
     rejectApprovalsWhere((item) => item.tabId === tabId, "The requesting tab was closed");
+    void forgetProviderTab(tabId);
   });
 
-  // Routes signed in the popup keep being followed after it closes.
   browser.alarms.onAlarm.addListener((alarm) => {
+    // Routes signed in the popup keep being followed after it closes.
     if (alarm.name === TRANSFER_WATCH_ALARM) void runTransferWatch().catch(() => undefined);
+    if (alarm.name === GRANT_EXPIRY_ALARM) void sweepExpiredGrants().catch(() => undefined);
   });
   browser.storage.onChanged.addListener((changes, area) => {
     if (area !== "local" || !changes[STORAGE_KEYS.pendingTransfers]) return;

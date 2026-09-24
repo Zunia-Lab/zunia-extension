@@ -2,9 +2,20 @@ import { CONNECT_CONFIG } from "../config/connect";
 import { createConnectOverlay } from "../lib/connect-overlay-view";
 import { PAGE_CHANNEL } from "../lib/messaging";
 import type { ExtensionMessage, ExtensionResponse } from "../lib/messaging";
+import { providerErrorCode, type ProviderErrorCode } from "../lib/provider-errors";
+import { pageEventFor } from "../lib/provider-events";
 import { getSettings } from "../lib/settings";
 import { STORAGE_KEYS } from "../lib/storage-keys";
 import "./style.css";
+
+class BridgeError extends Error {
+  constructor(
+    message: string,
+    readonly code: ProviderErrorCode,
+  ) {
+    super(message);
+  }
+}
 
 /**
  * Isolated-world content script:
@@ -47,7 +58,10 @@ export default defineContentScript({
         message,
       )) as ExtensionResponse;
       if (!response?.ok) {
-        throw new Error(response?.error ?? "Provider request failed");
+        throw new BridgeError(
+          response?.error ?? "Provider request failed",
+          providerErrorCode(response),
+        );
       }
       return response.data;
     }
@@ -79,6 +93,7 @@ export default defineContentScript({
             port?.postMessage({
               id: req.id,
               error: err instanceof Error ? err.message : String(err),
+              code: providerErrorCode(err),
             });
           });
       };
@@ -161,25 +176,9 @@ export default defineContentScript({
 
     /** Relay a wallet event to the page, if it is addressed to this origin. */
     function handleProviderEvent(payload: unknown): void {
-      const { event, origins, data } = (payload ?? {}) as {
-        event?: unknown;
-        origins?: unknown;
-        data?: unknown;
-      };
-      if (!port || typeof event !== "string") return;
-      if (event !== "accountsChanged" && event !== "disconnect" && event !== "locked") return;
-      if (Array.isArray(origins) && !origins.includes(pageOrigin)) return;
-      // A disconnect that names chains took only those; nothing else crosses.
-      const named = (data as { chainIds?: unknown } | null | undefined)?.chainIds;
-      const chainIds =
-        event === "disconnect" && Array.isArray(named)
-          ? named.filter((id): id is string => typeof id === "string").slice(0, 64)
-          : [];
-      port.postMessage({
-        type: PAGE_CHANNEL.event,
-        event,
-        data: chainIds.length > 0 ? { chainIds } : null,
-      });
+      const relayed = pageEventFor(payload, pageOrigin);
+      if (!port || !relayed) return;
+      port.postMessage({ type: PAGE_CHANNEL.event, ...relayed });
     }
 
     browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -202,28 +201,19 @@ export default defineContentScript({
     window.addEventListener("message", onWindowMessage);
     injectProvider();
 
-    // Content scripts cannot read storage.session, where the active account
-    // lives; the worker broadcasts account switches as PROVIDER_EVENT instead.
+    // Account and connection changes arrive from the worker as PROVIDER_EVENT,
+    // addressed to connected sites only. The alias setting is not about any
+    // site, so every page follows it here.
     browser.storage.onChanged.addListener((changes, area) => {
-      if (area !== "local") return;
-      if (!port) return;
-      if (changes[STORAGE_KEYS.settings]) {
-        const next = changes[STORAGE_KEYS.settings].newValue as
-          | { exposeKeplrAlias?: boolean }
-          | undefined;
-        port.postMessage({
-          type: PAGE_CHANNEL.event,
-          event: "settingsChanged",
-          data: { exposeKeplrAlias: Boolean(next?.exposeKeplrAlias) },
-        });
-      }
-      if (changes[STORAGE_KEYS.accounts]) {
-        port.postMessage({
-          type: PAGE_CHANNEL.event,
-          event: "accountsChanged",
-          data: null,
-        });
-      }
+      if (area !== "local" || !port || !changes[STORAGE_KEYS.settings]) return;
+      const next = changes[STORAGE_KEYS.settings].newValue as
+        | { exposeKeplrAlias?: boolean }
+        | undefined;
+      port.postMessage({
+        type: PAGE_CHANNEL.event,
+        event: "settingsChanged",
+        data: { exposeKeplrAlias: Boolean(next?.exposeKeplrAlias) },
+      });
     });
   },
 });

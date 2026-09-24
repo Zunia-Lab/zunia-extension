@@ -1,4 +1,5 @@
 import { SECURITY_CONFIG } from "../config/security";
+import { ProviderError, type ProviderErrorCode } from "./provider-errors";
 
 export type ApprovalKind =
   | "enable"
@@ -131,7 +132,10 @@ export function enqueueApprovalWithId(
   timers.set(
     id,
     setTimeout(
-      () => settle(id, { error: new Error("Request expired before it was answered") }),
+      () =>
+        settle(id, {
+          error: new ProviderError("USER_REJECTED", "Request expired before it was answered"),
+        }),
       SECURITY_CONFIG.approvals.ttlMs,
     ),
   );
@@ -188,22 +192,28 @@ export function resolveApproval(id: string, result: unknown): boolean {
   return settle(id, { value: result });
 }
 
-export function rejectApproval(id: string, reason = "User rejected"): boolean {
-  return settle(id, { error: new Error(reason) });
+/** The page reads the reason, so it keeps Keplr's wording by default. */
+export function rejectApproval(
+  id: string,
+  reason = "Request rejected",
+  code: ProviderErrorCode = "USER_REJECTED",
+): boolean {
+  return settle(id, { error: new ProviderError(code, reason) });
 }
 
 /** Reject every pending request the predicate selects. Returns how many were rejected. */
 export function rejectApprovalsWhere(
   predicate: (item: ApprovalRequest) => boolean,
   reason: string,
+  code: ProviderErrorCode = "USER_REJECTED",
 ): number {
   const ids = queue.filter(predicate).map((item) => item.id);
-  for (const id of ids) settle(id, { error: new Error(reason) });
+  for (const id of ids) settle(id, { error: new ProviderError(code, reason) });
   return ids.length;
 }
 
 export function clearApprovals(reason = "Wallet locked"): void {
-  rejectApprovalsWhere(() => true, reason);
+  rejectApprovalsWhere(() => true, reason, "LOCKED");
 }
 
 /** Test-only reset. */

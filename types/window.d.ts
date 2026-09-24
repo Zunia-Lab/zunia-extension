@@ -30,6 +30,31 @@ export interface ZuniaOfflineSigner {
   ): Promise<unknown>;
 }
 
+export type ZuniaProviderErrorCode =
+  | "USER_REJECTED"
+  | "NOT_CONNECTED"
+  | "LOCKED"
+  | "UNKNOWN_CHAIN"
+  | "ORIGIN_MISMATCH"
+  | "UNSUPPORTED"
+  | "INVALID_PARAMS"
+  | "INTERNAL";
+
+/** What every failed provider call rejects with. */
+export interface ZuniaProviderError extends Error {
+  readonly name: "ZuniaProviderError";
+  readonly code: ZuniaProviderErrorCode;
+}
+
+/**
+ * Events on `provider.on(...)`, delivered only to sites with a live grant:
+ * - accountsChanged: the active account changed or the wallet unlocked; call getKey again.
+ * - chainChanged: `{ chainIds }`, every chain the site may use now.
+ * - disconnect: `{ chainIds }` for the chains lost, or null when the grant ended.
+ * - locked: the wallet locked.
+ */
+export type ZuniaProviderEvent = "accountsChanged" | "chainChanged" | "disconnect" | "locked";
+
 /** Cosmos-compatible wallet provider exposed to dApps */
 export interface ZuniaProvider {
   readonly version: string;
@@ -37,6 +62,10 @@ export interface ZuniaProvider {
   readonly defaultOptions?: Record<string, unknown>;
   enable(chainIds: string | string[]): Promise<void>;
   disable?(chainIds?: string | string[]): Promise<void>;
+  /** Chains this site is connected to. Never opens a window; [] when not connected. */
+  getConnectedChains?(): Promise<string[]>;
+  /** Whether the wallet is locked. Connected sites only. */
+  isLocked?(): Promise<boolean>;
   getKey(chainId: string): Promise<ZuniaKey>;
   getAccounts?(chainId?: string): Promise<unknown>;
   getOfflineSigner(chainId: string): ZuniaOfflineSigner;
@@ -70,8 +99,8 @@ export interface ZuniaProvider {
     data: string | Uint8Array,
   ): Promise<unknown>;
   verifyArbitrary?(...args: unknown[]): Promise<boolean>;
-  on?(event: string, handler: (data: unknown) => void): void;
-  off?(event: string, handler: (data: unknown) => void): void;
+  on?(event: ZuniaProviderEvent | (string & {}), handler: (data: unknown) => void): void;
+  off?(event: ZuniaProviderEvent | (string & {}), handler: (data: unknown) => void): void;
 }
 
 declare global {
