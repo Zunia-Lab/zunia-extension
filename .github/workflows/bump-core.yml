@@ -33,7 +33,7 @@ jobs:
         with:
           repository: Zunia-Lab/zunia-sdk
           path: zunia-sdk
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           package_json_file: zunia-extension/package.json
       - uses: actions/setup-node@v4
