@@ -20,18 +20,18 @@ jobs:
       # package.json links the @zunialab packages to sibling checkouts until they are
       # published, so CI reproduces the local layout: this repo next to zunia-core,
       # zunia-ui and zunia-sdk, each built from its default branch.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           path: zunia-extension
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: Zunia-Lab/zunia-core
           path: zunia-core
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: Zunia-Lab/zunia-ui
           path: zunia-ui
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: Zunia-Lab/zunia-sdk
           path: zunia-sdk
@@ -118,7 +118,7 @@ jobs:
     runs-on: macos-26
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           path: zunia-extension
       - uses: actions/download-artifact@v4

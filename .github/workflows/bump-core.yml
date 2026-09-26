@@ -20,16 +20,16 @@ jobs:
       VERSION: ${{ github.event.client_payload.version || inputs.version }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           path: zunia-extension
       # The other @zunialab packages are still linked to sibling checkouts, and pnpm
       # reads them while it rewrites the lockfile.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: Zunia-Lab/zunia-ui
           path: zunia-ui
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: Zunia-Lab/zunia-sdk
           path: zunia-sdk
