@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import {
   Callout,
-  NFT_MEDIA_PRIVACY_NOTE,
   ScreenScaffold,
   Segmented,
 } from "@zunialab/ui";
@@ -111,11 +110,9 @@ export function PreferencesScreen({ onBack }: { onBack: () => void }) {
             onCheckedChange={(next) => void toggleLiveBalances(next)}
           />
           <SettingsToggle
-            title="NFT artwork"
+            title="Load artwork and off-chain details"
             description={
-              settings.liveBalances
-                ? NFT_MEDIA_PRIVACY_NOTE
-                : "Unavailable while live balances are off: artwork is a network read."
+              settings.liveBalances ? undefined : "Turn on live balances first."
             }
             checked={settings.nftMedia && settings.liveBalances}
             disabled={!settings.liveBalances}
@@ -129,11 +126,6 @@ export function PreferencesScreen({ onBack }: { onBack: () => void }) {
             onCheckedChange={(next) => void alerts.toggle(next)}
           />
         </SettingsGroup>
-
-        <Callout tone="neutral" title="Reads stay optional">
-          Live balances contact only the REST hosts listed in the chain
-          registry. You can turn them off here at any time.
-        </Callout>
       </div>
     </ScreenScaffold>
   );

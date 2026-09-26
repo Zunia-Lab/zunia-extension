@@ -41,7 +41,7 @@ function StepRail({
                 state === "done" &&
                   "bg-[var(--z-success-fill)] text-[var(--z-success)]",
                 state === "active" &&
-                  "bg-[image:var(--z-accent-gradient)] text-[var(--z-accent-fg)]",
+                  "bg-[image:var(--z-button-gradient)] text-[var(--z-button-fg)]",
                 state === "todo" &&
                   "border border-[var(--z-line)] text-fg-faint",
               )}

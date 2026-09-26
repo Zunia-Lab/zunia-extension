@@ -66,6 +66,11 @@ export function outcomeAlert(
             title: `${noun} did not go through`,
             message: `${record.label} was refused on the way. The tokens go back to your account on ${source}.`,
           };
+    case "failed":
+      return {
+        title: `${noun} failed`,
+        message: `${record.label} was rejected on ${source}. Nothing was transferred.`,
+      };
   }
 }
 

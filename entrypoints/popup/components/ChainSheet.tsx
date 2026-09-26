@@ -1,5 +1,5 @@
 import { useMemo, type ReactNode } from "react";
-import { Avatar, cn, focusRing } from "@zunialab/ui";
+import { TokenLogo, cn, focusRing } from "@zunialab/ui";
 import type { ChainAccountView } from "../hooks/useChainAccounts";
 import { usePickerMemory } from "../hooks/usePickerMemory";
 import { IconChevronDown } from "../screens/icons";
@@ -9,7 +9,10 @@ import { PickerSheet, type PickerItem } from "./PickerSheet";
 export interface ChainOption {
   chainId: string;
   iconUrl?: string;
-  entry: Pick<ChainAccountView["entry"], "chainName" | "coinDenom" | "bech32Prefix">;
+  entry: Pick<
+    ChainAccountView["entry"],
+    "chainName" | "coinDenom" | "bech32Prefix" | "inCosmosRegistry"
+  >;
 }
 
 /**
@@ -49,7 +52,15 @@ export function ChainSheet<T extends ChainOption>({
           label: chain.entry.chainName,
           sublabel: `${chain.entry.coinDenom} · ${chain.chainId}`,
           keywords: [chain.entry.coinDenom, chain.chainId, chain.entry.bech32Prefix],
-          icon: <Avatar src={chain.iconUrl} fallback={chain.entry.chainName} size={26} />,
+          icon: (
+            <TokenLogo
+              src={chain.iconUrl}
+              symbol={chain.entry.chainName}
+              size={26}
+              verified={chain.entry.inCosmosRegistry}
+              verifiedLabel="Listed in the Cosmos chain registry"
+            />
+          ),
           trailing: trailing?.(chain),
           disabled: Boolean(reason),
           disabledReason: reason,

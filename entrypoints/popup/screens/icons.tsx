@@ -9,6 +9,7 @@ function IconBase({
   children,
   width = ICON_MD,
   height = ICON_MD,
+  className,
   ...props
 }: SVGProps<SVGSVGElement> & { children: ReactNode }) {
   return (
@@ -22,6 +23,7 @@ function IconBase({
       strokeLinecap="round"
       strokeLinejoin="round"
       aria-hidden
+      className={["block", className].filter(Boolean).join(" ")}
       {...props}
     >
       {children}
@@ -117,6 +119,16 @@ export function IconSettings(props: SVGProps<SVGSVGElement>) {
     <IconBase {...props}>
       <circle cx="12" cy="12" r="3" />
       <path d="M20.2 14.2a1.6 1.6 0 0 0 .32 1.77l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.6 1.6 0 0 0-1.77-.32 1.6 1.6 0 0 0-.97 1.47V20a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-1.05-1.46 1.6 1.6 0 0 0-1.77.32l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.6 1.6 0 0 0 .32-1.77 1.6 1.6 0 0 0-1.47-.97H4a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.46-1.05 1.6 1.6 0 0 0-.32-1.77l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.6 1.6 0 0 0 1.77.32H10a1.6 1.6 0 0 0 .97-1.47V4a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 .97 1.46 1.6 1.6 0 0 0 1.77-.32l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.6 1.6 0 0 0-.32 1.77V10a1.6 1.6 0 0 0 1.47.97H20a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.46.97Z" />
+    </IconBase>
+  );
+}
+
+export function IconInfo(props: SVGProps<SVGSVGElement>) {
+  return (
+    <IconBase {...props}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 11v5" />
+      <path d="M12 8h.01" />
     </IconBase>
   );
 }
@@ -373,6 +385,28 @@ export function IconFlip(props: SVGProps<SVGSVGElement>) {
       <path d="m3 8 4-4 4 4" />
       <path d="M17 20V4" />
       <path d="m21 16-4 4-4-4" />
+    </IconBase>
+  );
+}
+
+/** Stacked layers: tokens grouped under a chain. */
+export function IconLayers(props: SVGProps<SVGSVGElement>) {
+  return (
+    <IconBase {...props}>
+      <path d="m12 3 9 4.5-9 4.5L3 7.5 12 3Z" />
+      <path d="m3 12 9 4.5L21 12" />
+      <path d="m3 16.5 9 4.5 9-4.5" />
+    </IconBase>
+  );
+}
+
+/** Flat rows: one token per line. */
+export function IconRows(props: SVGProps<SVGSVGElement>) {
+  return (
+    <IconBase {...props}>
+      <path d="M4 7h16" />
+      <path d="M4 12h16" />
+      <path d="M4 17h16" />
     </IconBase>
   );
 }

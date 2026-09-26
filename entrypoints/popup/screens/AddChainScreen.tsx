@@ -256,6 +256,7 @@ export function AddChainScreen({
                     symbol={chain.coinDenom}
                     iconUrl={catalogIconFor(chain)}
                     testnet={chain.network === "testnet"}
+                    verified={chain.inCosmosRegistry}
                     selected={enabled.includes(chain.chainId)}
                     control="switch"
                     onToggle={() => void toggleRegistryChain(chain.chainId)}

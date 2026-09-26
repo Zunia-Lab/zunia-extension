@@ -4,6 +4,23 @@ import { SESSION_CONFIG } from "../config/session";
 
 export type ThemePreference = "dark" | "light" | "system";
 
+/**
+ * How much of the NFT machinery the screen exposes.
+ *
+ * `simple` shows collections and nothing else: discovery is automatic, the
+ * scan report is one collapsed line and contract addresses never appear.
+ * `pro` exposes the parts a power user needs and a newcomer cannot act on -
+ * the saved contract list, the per-network scan report, and the switch that
+ * turns the chain-wide CW721 scan off.
+ */
+export type NftMode = "simple" | "pro";
+
+/** Home asset list: one row per token, or tokens nested under their chain. */
+export type AssetListMode = "grouped" | "separate";
+
+/** Gas price tier used for every wallet transaction. */
+export type FeeSpeedPref = "low" | "average" | "high";
+
 /** Fiat display currencies offered in Preferences. */
 export const CURRENCIES = ["USD", "EUR", "GBP", "JPY", "CHF"] as const;
 export type CurrencyCode = (typeof CURRENCIES)[number];
@@ -39,6 +56,27 @@ export interface ExtensionSettings {
    * is fetched.
    */
   nftMedia: boolean;
+  /**
+   * Simple or pro on the NFT screen. See {@link NftMode}.
+   *
+   * A preference rather than screen state so the choice survives closing the
+   * popup: a user who added contract addresses expects to still see them.
+   */
+  nftMode: NftMode;
+  /**
+   * Home Assets tab. `separate` is one row per denom; `grouped` nests tokens
+   * under the chain that holds them.
+   */
+  assetListMode: AssetListMode;
+  /**
+   * Walk the chain's own wasm code list looking for CW721 contracts.
+   *
+   * ON by default, because on a chain with a handful of codes it is the only
+   * path that finds a collection nobody configured. It is the expensive path -
+   * one request per wasm code on the first run of each chain - so pro mode can
+   * turn it off and rely on the saved contract list, which is instant.
+   */
+  nftAutoScan: boolean;
   /** Anonymous diagnostics - OFF by default. Persisted but not enforced yet. */
   diagnostics: boolean;
   /**
@@ -46,6 +84,20 @@ export interface ExtensionSettings {
    * counts while the browser grants the optional `notifications` permission.
    */
   browserAlerts: boolean;
+  /**
+   * Gas price tier for every signed transaction: low, mid (`average`), high.
+   * Used with {@link gasAdjustment} to price the fee the user sees.
+   */
+  feeSpeed: FeeSpeedPref;
+  /**
+   * Multiplier on simulated gas. Default 1.4. Range 1.0 to 2.0.
+   */
+  gasAdjustment: number;
+  /**
+   * Swap slippage tolerance, percent on the 0-100 scale the Osmosis
+   * swaprouter reads. Default 1. Range (0, 50].
+   */
+  swapSlippage: number;
 }
 
 /**
@@ -73,8 +125,14 @@ export const DEFAULT_SETTINGS: ExtensionSettings = {
   // Off: fetching a token_uri is a request to a stranger's server that only
   // happens for tokens this wallet holds, so it is the user's call to make.
   nftMedia: false,
+  nftMode: "simple",
+  assetListMode: "separate",
+  nftAutoScan: true,
   diagnostics: false,
   browserAlerts: true,
+  feeSpeed: "average",
+  gasAdjustment: 1.4,
+  swapSlippage: 1,
 };
 
 export async function getSettings(): Promise<ExtensionSettings> {
@@ -82,7 +140,30 @@ export async function getSettings(): Promise<ExtensionSettings> {
   const stored = result[STORAGE_KEYS.settings] as
     | Partial<ExtensionSettings>
     | undefined;
-  return { ...DEFAULT_SETTINGS, ...stored };
+  const next = { ...DEFAULT_SETTINGS, ...stored };
+  if (next.assetListMode !== "grouped" && next.assetListMode !== "separate") {
+    next.assetListMode = DEFAULT_SETTINGS.assetListMode;
+  }
+  if (next.feeSpeed !== "low" && next.feeSpeed !== "average" && next.feeSpeed !== "high") {
+    next.feeSpeed = DEFAULT_SETTINGS.feeSpeed;
+  }
+  if (
+    typeof next.gasAdjustment !== "number" ||
+    !Number.isFinite(next.gasAdjustment) ||
+    next.gasAdjustment < 1 ||
+    next.gasAdjustment > 2
+  ) {
+    next.gasAdjustment = DEFAULT_SETTINGS.gasAdjustment;
+  }
+  if (
+    typeof next.swapSlippage !== "number" ||
+    !Number.isFinite(next.swapSlippage) ||
+    next.swapSlippage <= 0 ||
+    next.swapSlippage > 50
+  ) {
+    next.swapSlippage = DEFAULT_SETTINGS.swapSlippage;
+  }
+  return next;
 }
 
 export async function setSettings(

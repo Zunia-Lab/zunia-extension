@@ -1,7 +1,7 @@
 import { useId, useState } from "react";
 import {
-  Avatar,
   Button,
+  TokenLogo,
   Callout,
   Dialog,
   DialogDescription,
@@ -49,6 +49,7 @@ export function ContactSheet({
   const [chainId, setChainId] = useState<string | undefined>(undefined);
   const [note, setNote] = useState("");
   const [picking, setPicking] = useState(false);
+  const [step, setStep] = useState<"network" | "form">("network");
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -65,16 +66,23 @@ export function ContactSheet({
       setNote(contact?.note ?? "");
       setConfirmDelete(false);
       setError(null);
+      setStep(contact?.chainId ? "form" : "network");
+      setPicking(!contact);
     }
   }
 
   const trimmed = address.trim();
   const problem = trimmed ? contactAddressProblem(trimmed, chainId, catalogPrefix) : null;
-  const canSave = Boolean(label.trim()) && Boolean(trimmed) && !problem && !busy;
+  const canSave =
+    Boolean(label.trim()) && Boolean(trimmed) && Boolean(chainId) && !problem && !busy;
   const network = chainId ? chains.find((chain) => chain.chainId === chainId) : undefined;
   const networkName = chainId ? (findCatalogEntry(chainId)?.chainName ?? chainId) : undefined;
 
   async function save() {
+    if (!chainId) {
+      setError("Pick a network before saving.");
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -83,7 +91,7 @@ export function ContactSheet({
           id: contact.id,
           label,
           address: trimmed,
-          chainId: chainId ?? null,
+          chainId,
           note: note.trim() || null,
         });
         toast("Contact updated", { meta: label.trim() });
@@ -91,7 +99,7 @@ export function ContactSheet({
         await sendToBackground("SAVE_ADDRESS_BOOK_ENTRY", {
           label,
           address: trimmed,
-          ...(chainId ? { chainId } : {}),
+          chainId,
           ...(note.trim() ? { note: note.trim() } : {}),
         });
         toast("Contact saved", { meta: label.trim() });
@@ -144,10 +152,22 @@ export function ContactSheet({
               {contact ? "Edit contact" : "New contact"}
             </DialogTitle>
             <DialogDescription id={descriptionId} className="mt-1 text-[11px]">
-              Pin a network when the address only works there, such as an exchange
-              deposit address. Send then offers it on that network only.
+              {step === "network"
+                ? "A contact belongs to one network. Pick it first so the address is checked against that prefix."
+                : `This address is saved for ${networkName ?? "the selected network"} only. Send offers it there.`}
             </DialogDescription>
 
+            {step === "network" ? (
+              <div className="mt-3 flex flex-col gap-3">
+                <PickerTrigger
+                  aria-label="Pick a network for this contact"
+                  title="Select a network"
+                  subtitle="Required before the address can be saved"
+                  expanded={picking}
+                  onClick={() => setPicking(true)}
+                />
+              </div>
+            ) : (
             <div className="mt-3 flex flex-col gap-3">
               <Input
                 label="Name"
@@ -175,29 +195,26 @@ export function ContactSheet({
                   Network
                 </span>
                 <PickerTrigger
-                  aria-label={`Network: ${networkName ?? "any network"}. Change`}
+                  aria-label={`Network: ${networkName ?? "pick a network"}. Change`}
                   icon={
                     networkName ? (
-                      <Avatar src={network?.iconUrl} fallback={networkName} size={24} />
+                      <TokenLogo
+                        src={network?.iconUrl}
+                        symbol={networkName}
+                        size={24}
+                        verified={
+                          network?.entry.inCosmosRegistry ??
+                          findCatalogEntry(chainId)?.inCosmosRegistry
+                        }
+                        verifiedLabel="Listed in the Cosmos chain registry"
+                      />
                     ) : undefined
                   }
-                  title={networkName ?? "Any network"}
-                  subtitle={networkName ? chainId : "Offered wherever the address prefix fits"}
+                  title={networkName ?? "Select a network"}
+                  subtitle={networkName ? chainId : "Required"}
                   expanded={picking}
                   onClick={() => setPicking(true)}
                 />
-                {chainId ? (
-                  <button
-                    type="button"
-                    onClick={() => setChainId(undefined)}
-                    className={cn(
-                      "self-start text-[10.5px] text-fg-muted underline underline-offset-2 hover:text-fg",
-                      focusRing,
-                    )}
-                  >
-                    Use on any network
-                  </button>
-                ) : null}
               </div>
               <Input
                 label="Note (optional)"
@@ -207,6 +224,7 @@ export function ContactSheet({
                 onChange={(event) => setNote(event.target.value)}
               />
             </div>
+            )}
 
             {error ? (
               <Callout tone="danger" className="mt-3">
@@ -241,6 +259,23 @@ export function ContactSheet({
                 </Button>
               </div>
             </div>
+          ) : step === "network" ? (
+            <div className="flex gap-2 border-t border-[var(--z-line)] px-4 py-3">
+              <Button size="sm" variant="secondary" onClick={onClose}>
+                Cancel
+              </Button>
+              <Button
+                size="sm"
+                className="flex-1"
+                disabled={!chainId}
+                onClick={() => {
+                  if (chainId) setStep("form");
+                  else setPicking(true);
+                }}
+              >
+                {chainId ? "Continue" : "Pick a network"}
+              </Button>
+            </div>
           ) : (
             <div className="flex gap-2 border-t border-[var(--z-line)] px-4 py-3">
               {contact ? (
@@ -253,8 +288,8 @@ export function ContactSheet({
                   Delete
                 </Button>
               ) : (
-                <Button size="sm" variant="secondary" onClick={onClose}>
-                  Cancel
+                <Button size="sm" variant="secondary" onClick={() => setStep("network")}>
+                  Back
                 </Button>
               )}
               <Button
@@ -279,6 +314,7 @@ export function ContactSheet({
           onSelect={(id) => {
             setChainId(id);
             setPicking(false);
+            setStep("form");
           }}
         />
       </SheetContent>

@@ -2,10 +2,16 @@ import {
   Button,
   ScreenScaffold,
   ValidatorDetail,
+  ValidatorLogo,
   truncateAddress,
 } from "@zunialab/ui";
-import type { ValidatorInfo } from "../../../lib/chain-queries";
-import { findCatalogEntry } from "../../../lib/chain-catalog";
+import {
+  validatorBondState,
+  validatorWebsite,
+  type ValidatorInfo,
+} from "../../../lib/chain-queries";
+import { catalogLogoSlugs, findCatalogEntry } from "../../../lib/chain-catalog";
+import { formatUnits } from "../../../lib/format";
 import { useToast } from "../state/Toasts";
 import { IconCopy } from "./icons";
 
@@ -23,6 +29,8 @@ export function ValidatorDetailScreen({
 }) {
   const toast = useToast();
   const chain = findCatalogEntry(validator.chainId);
+  const website = validatorWebsite(validator.website);
+  const bond = validatorBondState(validator);
 
   async function copyOperator() {
     try {
@@ -64,9 +72,34 @@ export function ValidatorDetailScreen({
         <ValidatorDetail
           name={validator.moniker}
           moniker={truncateAddress(validator.operatorAddress, 14, 8)}
+          avatar={
+            <ValidatorLogo
+              chainId={validator.chainId}
+              chainName={chain?.chainName}
+              logoSlugs={chain?.logoSlugs ?? catalogLogoSlugs(validator.chainId)}
+              operatorAddress={validator.operatorAddress}
+              identity={validator.identity}
+              logoUrl={validator.logoUrl}
+              moniker={validator.moniker}
+              size={48}
+            />
+          }
           commission={`${(validator.commission * 100).toFixed(2)}%`}
           votingPower={`${(validator.votingPower * 100).toFixed(2)}%`}
-          status={validator.jailed ? "jailed" : "bonded"}
+          bonded={
+            chain
+              ? `${formatUnits(validator.tokens, chain.coinDecimals, 2)} ${chain.coinDenom}`
+              : undefined
+          }
+          website={
+            website ? (
+              <a href={website} target="_blank" rel="noreferrer" className="text-accent">
+                {new URL(website).hostname.replace(/^www\./, "")}
+              </a>
+            ) : undefined
+          }
+          details={validator.details || undefined}
+          status={bond}
           actions={
             <Button
               variant="ghost"

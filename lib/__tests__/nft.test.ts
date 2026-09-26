@@ -45,6 +45,10 @@ describe("nftChainSupport", () => {
     expect(nftChainSupport("osmosis-1").reason).toBeNull();
   });
 
+  it("allows Safrochain testnet, which ships x/nft without a cosmwasm flag", () => {
+    expect(nftChainSupport("safro-testnet-1").supported).toBe(true);
+  });
+
   it("refuses a chain whose registry entry has no cosmwasm, and says which", () => {
     const support = nftChainSupport("cosmoshub-4");
     expect(support.supported).toBe(false);

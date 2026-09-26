@@ -46,6 +46,8 @@ html {
   overflow-y: auto;
   background: var(--z-bg);
   color: var(--z-fg);
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--z-fg) 28%, transparent) transparent;
 }
 
 body {

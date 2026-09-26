@@ -96,8 +96,9 @@ export interface PickerSection<T> {
 
 /**
  * What the picker lists. With a query, one ranked list of matches. Without,
- * Favorites and Recent first (in the order the user built them), then every
- * item. Ids no longer in `items` are skipped rather than shown as blanks.
+ * Favorites and Recent first (in the order the user built them), then All
+ * with those already-listed ids removed so a network is never repeated.
+ * Ids no longer in `items` are skipped rather than shown as blanks.
  */
 export function pickerSections<T extends Searchable>(
   items: readonly T[],
@@ -118,13 +119,20 @@ export function pickerSections<T extends Searchable>(
   const favorites = pick(options.favorites);
   const favoriteIds = new Set(favorites.map((item) => item.id));
   const recents = pick(options.recents).filter((item) => !favoriteIds.has(item.id));
+  const listed = new Set([
+    ...favorites.map((item) => item.id),
+    ...recents.map((item) => item.id),
+  ]);
+  const rest = items.filter((item) => !listed.has(item.id));
   const sections: PickerSection<T>[] = [];
   if (favorites.length) sections.push({ key: "favorites", title: "Favorites", items: favorites });
   if (recents.length) sections.push({ key: "recents", title: "Recent", items: recents });
-  sections.push({
-    key: "all",
-    title: sections.length ? (options.allTitle ?? "All") : "",
-    items: [...items],
-  });
+  if (rest.length) {
+    sections.push({
+      key: "all",
+      title: sections.length ? (options.allTitle ?? "All") : "",
+      items: rest,
+    });
+  }
   return sections;
 }

@@ -164,7 +164,7 @@ export function AddressBookScreen({
           <EmptyState
             icon={<IconBook width={16} height={16} />}
             title="No saved addresses"
-            description="Save the addresses you send to often. Send lists them by network, favorites and recent ones first."
+            description="Add a contact for a specific network. Send then offers it on that network only."
           />
         ) : null}
 

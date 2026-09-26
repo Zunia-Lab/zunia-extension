@@ -7,14 +7,23 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { Toast } from "@zunialab/ui";
+import { createPortal } from "react-dom";
+import { Toast, truncateAddress } from "@zunialab/ui";
+import { showBrowserAlert } from "../../../lib/browser-alerts";
 
-export type ToastTone = "success" | "danger" | "neutral";
+export type ToastTone = "success" | "danger" | "warning" | "neutral";
 
 export interface ToastOptions {
   tone?: ToastTone;
   /** Short detail on the right, for example a truncated hash. */
   meta?: string;
+  /** Second line. Auto-dismisses with the toast. */
+  detail?: string;
+  /**
+   * Also raise a browser notification when alerts are on.
+   * Defaults on for danger and warning.
+   */
+  alert?: boolean;
 }
 
 type ShowToast = (title: string, options?: ToastOptions) => void;
@@ -23,20 +32,26 @@ interface ToastEntry {
   id: number;
   title: string;
   meta?: string;
+  detail?: string;
   tone: ToastTone;
 }
 
 const MAX_TOASTS = 3;
-const TOAST_MS = 2400;
-const DANGER_TOAST_MS = 5000;
+const TOAST_MS = 2800;
+const DETAIL_TOAST_MS = 4800;
+const DANGER_TOAST_MS = 5600;
 
 const ToastContext = createContext<ShowToast>(() => {});
 
+function shouldAlert(tone: ToastTone, alert: boolean | undefined): boolean {
+  if (alert === true) return true;
+  if (alert === false) return false;
+  return tone === "danger" || tone === "warning";
+}
+
 /**
- * Short confirmations ("Address copied", "Transaction sent") stacked above the
- * bottom navigation. The container stays mounted as a polite live region so
- * screen readers announce each toast as it arrives; errors use the assertive
- * alert role instead.
+ * Short confirmations stacked above the bottom navigation. Portaled onto
+ * `document.body` so `overflow: hidden` on the popup shell cannot clip them.
  */
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<ToastEntry[]>([]);
@@ -58,13 +73,26 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       setToasts((list) =>
         [
           ...list.filter((toast) => toast.title !== title),
-          { id, title, meta: options.meta, tone },
+          { id, title, meta: options.meta, detail: options.detail, tone },
         ].slice(-MAX_TOASTS),
       );
+      const hold =
+        tone === "danger" || tone === "warning"
+          ? DANGER_TOAST_MS
+          : options.detail
+            ? DETAIL_TOAST_MS
+            : TOAST_MS;
       timers.current.set(
         id,
-        setTimeout(() => dismiss(id), tone === "danger" ? DANGER_TOAST_MS : TOAST_MS),
+        setTimeout(() => dismiss(id), hold),
       );
+      if (shouldAlert(tone, options.alert)) {
+        void showBrowserAlert(
+          `zunia-toast-${id}`,
+          title,
+          [options.detail, options.meta].filter(Boolean).join(" · ") || title,
+        );
+      }
     },
     [dismiss],
   );
@@ -77,22 +105,35 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
+  const stack =
+    typeof document === "undefined"
+      ? null
+      : createPortal(
+          <div
+            aria-live="polite"
+            className="pointer-events-none fixed inset-x-3 bottom-[76px] z-[200] flex flex-col items-stretch gap-2"
+          >
+            {toasts.map((toast) => (
+              <div
+                key={toast.id}
+                className="pointer-events-auto animate-[z-rise_var(--z-duration-base)_var(--z-ease)]"
+              >
+                <Toast
+                  title={toast.title}
+                  meta={toast.meta}
+                  detail={toast.detail}
+                  tone={toast.tone}
+                />
+              </div>
+            ))}
+          </div>,
+          document.body,
+        );
+
   return (
     <ToastContext.Provider value={show}>
       {children}
-      <div
-        aria-live="polite"
-        className="pointer-events-none fixed inset-x-3 bottom-[76px] z-[60] flex flex-col items-stretch gap-2"
-      >
-        {toasts.map((toast) => (
-          <div
-            key={toast.id}
-            className="animate-[z-rise_var(--z-duration-base)_var(--z-ease)]"
-          >
-            <Toast title={toast.title} meta={toast.meta} tone={toast.tone} />
-          </div>
-        ))}
-      </div>
+      {stack}
     </ToastContext.Provider>
   );
 }
@@ -100,4 +141,13 @@ export function ToastProvider({ children }: { children: ReactNode }) {
 /** Show a toast: `toast("Address copied")`, `toast("Could not send", { tone: "danger" })`. */
 export function useToast(): ShowToast {
   return useContext(ToastContext);
+}
+
+/** Broadcast accepted by the node. Not a page banner; inclusion is still pending. */
+export function notifyBroadcastAccepted(toast: ShowToast, txHash: string): void {
+  toast("Broadcast accepted", {
+    meta: truncateAddress(txHash, 10, 8),
+    detail: "Inclusion still depends on the network.",
+    alert: true,
+  });
 }

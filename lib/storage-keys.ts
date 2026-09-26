@@ -21,6 +21,15 @@ export const STORAGE_KEYS = {
   addressBook: "zunia.addressBook",
   /** Ids of notifications the user has already seen. */
   readNotifications: "zunia.readNotifications",
+  /**
+   * Notice ids already announced as a browser alert, plus whether the feed has
+   * ever been seeded. See `lib/notices.ts`: the seeded flag is what stops a
+   * first open from firing one alert per pre-existing notice, without also
+   * swallowing the first real one after the list is trimmed.
+   */
+  announcedNotices: "zunia.announcedNotices",
+  /** Arrivals a live socket reported, kept until history catches up. */
+  recentArrivals: "zunia.recentArrivals",
   /** Networks the user added by hand. */
   customChains: "zunia.customChains",
   /** Cache of IBC transfer channels the engine discovered or the user entered. */
@@ -43,6 +52,18 @@ export const STORAGE_KEYS = {
   nftContracts: "zunia.nftContracts",
   /** cw-ics721 bridge addresses the user pinned, keyed by chain id. */
   nftBridges: "zunia.nftBridges",
+  /**
+   * What the CW721 code scan learned about each chain's wasm codes.
+   *
+   * Two halves with two lifetimes. The verdict "code 42 answers the cw721
+   * `tokens` query" is permanent: wasm code is immutable once uploaded, so the
+   * interface of a code id never changes and the answer never has to be asked
+   * twice. The list of contract addresses instantiated from those codes does
+   * grow, so it carries a timestamp and is refreshed on a TTL or when the user
+   * hits reload. Without this cache the screen re-probes every wasm code on
+   * every open, which is around ninety requests per chain.
+   */
+  nftWasmScan: "zunia.nftWasmScan",
   /** Consecutive wrong passwords and when the next attempt is allowed. No secrets. */
   passwordThrottle: "zunia.passwordThrottle",
   /** Favorite and recent picks per picker kind (chain, token, contact ids). */

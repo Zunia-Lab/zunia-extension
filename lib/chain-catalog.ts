@@ -34,6 +34,19 @@ export interface CatalogEntry {
   iconPath?: string;
   /** Registry-hosted fallback. */
   iconUrl?: string;
+  /** Official cosmos/chain-registry `chain_name` when this chain_id is listed. */
+  registrySlug?: string;
+  /**
+   * True when `chainId` is in the official cosmos/chain-registry.
+   * Generated rows always set this. Custom chains leave it unset.
+   */
+  inCosmosRegistry?: boolean;
+  /**
+   * Cosmostation directory names plus registry identifiers, used to resolve
+   * validator moniker images. Built at catalog generate time so the logo
+   * resolver does not keep a hand-maintained chain-id map.
+   */
+  logoSlugs?: readonly string[];
 }
 
 export { CHAIN_CATALOG };
@@ -89,6 +102,13 @@ export function catalogIconFor(entry: CatalogEntry): string | undefined {
   return entry.iconPath ?? entry.iconUrl;
 }
 
+/** Cosmostation / registry directory names for validator moniker images. */
+export function catalogLogoSlugs(
+  chainId: string,
+): readonly string[] | undefined {
+  return findCatalogEntry(chainId)?.logoSlugs;
+}
+
 export function findCatalogEntry(chainId: string): CatalogEntry | undefined {
   return (
     customEntries.find((c) => c.chainId === chainId) ??
@@ -127,6 +147,7 @@ export function matchesChainQuery(
     entry.chainName.toLowerCase().includes(q) ||
     entry.chainId.toLowerCase().includes(q) ||
     entry.bech32Prefix.toLowerCase().includes(q) ||
-    entry.coinDenom.toLowerCase().includes(q)
+    entry.coinDenom.toLowerCase().includes(q) ||
+    (entry.registrySlug?.toLowerCase().includes(q) ?? false)
   );
 }

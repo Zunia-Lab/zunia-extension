@@ -8,7 +8,15 @@
  * editor, lives here so the screens cannot drift apart.
  */
 
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   Avatar,
   Button,
@@ -32,8 +40,13 @@ import type {
 import { TRANSFER_PORT, findRoutePaths, normalizeChannelId } from "@zunialab/interchain";
 
 import type { ChainBalance } from "../../../lib/balances";
-import { findCatalogEntry } from "../../../lib/chain-catalog";
-import { MAX_ROUTE_HOPS } from "../../../config/interchain";
+import {
+  allCatalogEntries,
+  catalogIconFor,
+  findCatalogEntry,
+} from "../../../lib/chain-catalog";
+/** Direct from→to only. Multi-hop via Hub is never auto-checked. */
+const PAIR_ROUTE_HOPS = 1;
 import {
   classifyChannelCheck,
   verdictAllowsUse,
@@ -53,6 +66,7 @@ import {
   pathHopViews,
   rememberManualChannel,
   validateChannel,
+  verifyChannelHop,
   type ManualChannel,
   type RouteHopView,
 } from "../../../lib/route-plan";
@@ -185,6 +199,56 @@ export function receivableAssets(
   return out;
 }
 
+/** Native tokens from the full chain registry, with logos when the catalog has them. */
+export function catalogNativeAssets(): AssetOption[] {
+  return allCatalogEntries().map((entry) => {
+    const icon = catalogIconFor(entry);
+    return {
+      key: `${entry.chainId}:${entry.coinMinimalDenom}`,
+      chainId: entry.chainId,
+      chainName: entry.chainName,
+      ...(icon ? { chainIconUrl: icon, iconUrl: icon } : {}),
+      denom: entry.coinMinimalDenom,
+      symbol: entry.coinDenom,
+      label: entry.coinDenom,
+      decimals: entry.coinDecimals,
+      amount: "0",
+      note: entry.chainName,
+    };
+  });
+}
+
+/**
+ * Merge registry natives into the receivable list.
+ *
+ * Existing rows keep their balances and pick up a missing logo from the
+ * catalog. Tokens on chains the wallet has not enabled still appear in search.
+ */
+export function withCatalogAssets(
+  receivable: readonly AssetOption[],
+  catalog: readonly AssetOption[],
+): AssetOption[] {
+  const byKey = new Map(catalog.map((row) => [row.key, row]));
+  const out = receivable.map((row) => {
+    const match = byKey.get(row.key);
+    if (!match) return row;
+    return {
+      ...row,
+      ...(!row.iconUrl && match.iconUrl ? { iconUrl: match.iconUrl } : {}),
+      ...(!row.chainIconUrl && match.chainIconUrl
+        ? { chainIconUrl: match.chainIconUrl }
+        : {}),
+    };
+  });
+  const seen = new Set(out.map((row) => row.key));
+  for (const row of catalog) {
+    if (seen.has(row.key)) continue;
+    seen.add(row.key);
+    out.push(row);
+  }
+  return out;
+}
+
 /** A balance row the reader could not name shows its raw denom as the ticker. */
 function isRawDenom(symbol: string): boolean {
   return symbol.startsWith("ibc/") || symbol.startsWith("factory/");
@@ -203,7 +267,9 @@ export function withOsmosisAssets(
   venueChainId: string,
 ): AssetOption[] {
   if (listed.length === 0) return [...receivable];
-  const chainName = findCatalogEntry(venueChainId)?.chainName ?? venueChainId;
+  const venueEntry = findCatalogEntry(venueChainId);
+  const chainName = venueEntry?.chainName ?? venueChainId;
+  const venueIcon = venueEntry ? catalogIconFor(venueEntry) : undefined;
   const byKey = new Map(listed.map((asset) => [`${venueChainId}:${asset.denom}`, asset]));
   const out = receivable.map((row) => {
     const match = byKey.get(row.key);
@@ -219,12 +285,11 @@ export function withOsmosisAssets(
   const seen = new Set(out.map((row) => row.key));
   for (const [key, asset] of byKey) {
     if (seen.has(key)) continue;
-    // No chain icon: every listed token would wear the Osmosis logo. The
-    // ticker's initials are the honest fallback.
     out.push({
       key,
       chainId: venueChainId,
       chainName,
+      ...(venueIcon ? { chainIconUrl: venueIcon } : {}),
       denom: asset.denom,
       symbol: asset.symbol,
       label: asset.symbol,
@@ -419,11 +484,23 @@ export function useResolveAddresses(): (
  * The channel graph, as Send sees it
  * -------------------------------------------------------------------------- */
 
-/** The best path the wallet already knows to one destination. */
+/** One path the wallet already knows to a destination. */
 export interface ChainReach {
   readonly hops: readonly RouteHopView[];
   /** True only when every channel on the path was confirmed open. */
   readonly verified: boolean;
+  /** Stable id: `from:channel>to` for each hop, joined. */
+  readonly key: string;
+}
+
+function reachFromPath(path: { links: Parameters<typeof pathHopViews>[0] }): ChainReach {
+  return {
+    hops: pathHopViews(path.links),
+    verified: path.links.every((link) => link.state === "open"),
+    key: path.links
+      .map((link) => `${link.sourceChainId}:${link.channelId}>${link.destChainId}`)
+      .join("|"),
+  };
 }
 
 /**
@@ -447,43 +524,73 @@ export function useChannelReach(sourceChainId: string, destChainIds: readonly st
     };
   }, [version]);
 
-  const reach = useMemo(() => {
-    const out = new Map<string, ChainReach>();
-    if (!directory || !sourceChainId) return out;
+  const { reach, paths } = useMemo(() => {
+    const best = new Map<string, ChainReach>();
+    const all = new Map<string, ChainReach[]>();
+    if (!directory || !sourceChainId) return { reach: best, paths: all };
     for (const destChainId of destChainIds) {
       if (destChainId === sourceChainId) continue;
-      const best = findRoutePaths(sourceChainId, destChainId, directory, {
-        maxHops: MAX_ROUTE_HOPS,
-        maxPaths: 1,
-      })[0];
-      if (!best) continue;
-      out.set(destChainId, {
-        hops: pathHopViews(best.links),
-        verified: best.links.every((link) => link.state === "open"),
-      });
+      const found = findRoutePaths(sourceChainId, destChainId, directory, {
+        maxHops: PAIR_ROUTE_HOPS,
+        maxPaths: 8,
+      }).map(reachFromPath);
+      if (found.length === 0) continue;
+      all.set(destChainId, found);
+      best.set(destChainId, found[0]!);
     }
-    return out;
+    return { reach: best, paths: all };
   }, [directory, sourceChainId, destChainIds]);
 
   return {
     reach,
+    paths,
     ready: directory !== null,
     version,
     reload: useCallback(() => setVersion((n) => n + 1), []),
   };
 }
 
-/** One discovery per pair per popup session; a failed one may run again. */
-const discoveryRuns = new Map<string, Promise<{ found: number; error: string | null }>>();
+/** One graph build per pair per popup session; a failed one may run again. */
+const discoveryRuns = new Map<
+  string,
+  Promise<{ found: number; error: string | null }>
+>();
 
-function discoverOnce(sourceChainId: string, destChainId: string) {
+function detectOnce(sourceChainId: string, destChainId: string) {
   const key = `${sourceChainId}>${destChainId}`;
   let run = discoveryRuns.get(key);
   if (!run) {
-    run = discoverChannels(sourceChainId, destChainId).then(
-      (rows) => ({ found: rows.length, error: null }),
-      (error: unknown) => ({ found: 0, error: describeInterchainError(error) }),
-    );
+    run = (async () => {
+      const found = await discoverChannels(sourceChainId, destChainId);
+      const directory = await channelDirectory();
+      const paths = findRoutePaths(sourceChainId, destChainId, directory, {
+        maxHops: PAIR_ROUTE_HOPS,
+        maxPaths: 8,
+      });
+      const pending = new Map<string, { from: string; to: string; channelId: string }>();
+      for (const path of paths) {
+        for (const link of path.links) {
+          if (link.state === "open") continue;
+          if (link.sourceChainId !== sourceChainId || link.destChainId !== destChainId) {
+            continue;
+          }
+          pending.set(`${link.sourceChainId}:${link.channelId}>${link.destChainId}`, {
+            from: link.sourceChainId,
+            to: link.destChainId,
+            channelId: link.channelId,
+          });
+        }
+      }
+      await Promise.all(
+        [...pending.values()].map((hop) =>
+          verifyChannelHop(hop.from, hop.to, hop.channelId).catch(() => false),
+        ),
+      );
+      return { found: found.length + paths.length + pending.size, error: null };
+    })().catch((error: unknown) => ({
+      found: 0,
+      error: describeInterchainError(error),
+    }));
     discoveryRuns.set(key, run);
     void run.then((result) => {
       if (result.error) discoveryRuns.delete(key);
@@ -493,11 +600,7 @@ function discoverOnce(sourceChainId: string, destChainId: string) {
 }
 
 /**
- * Look for open transfer channels between two chains, once, when `run` is set.
- *
- * This is the automatic half of channel selection: Send turns it on when the
- * cache has no confirmed direct channel to the destination. Whatever it finds
- * lands in the cache, and `onFound` tells the caller to reload and replan.
+ * Discover and confirm channels on the selected from→to pair only.
  */
 export function useAutoDiscovery(
   sourceChainId: string,
@@ -518,10 +621,10 @@ export function useAutoDiscovery(
   useEffect(() => {
     if (!key) return;
     let cancelled = false;
-    void discoverOnce(sourceChainId, destChainId).then((result) => {
+    void detectOnce(sourceChainId, destChainId).then((result) => {
       if (cancelled) return;
       setSettled({ key, ...result });
-      if (result.found > 0) onFound();
+      onFound();
     });
     return () => {
       cancelled = true;
@@ -978,6 +1081,70 @@ function HopChannelRow({
  * One row per leg of the route: the channel, whether Zunia picked it or the
  * user did, what checked it, and the Modify control that opens the editor.
  */
+function routeChoiceTitle(option: ChainReach): string {
+  if (option.hops.length === 1) {
+    const hop = option.hops[0]!;
+    return `Direct · ${hop.channelId}`;
+  }
+  const via = option.hops
+    .slice(0, -1)
+    .map((hop) => hop.counterpartyChainName ?? hop.counterpartyChainId ?? "…")
+    .join(", ");
+  return `${option.hops.length} hops via ${via}`;
+}
+
+function routeChoiceMeta(option: ChainReach): string {
+  const channels = option.hops.map((hop) => hop.channelId || "?").join(" → ");
+  return option.verified ? `${channels} · checked open` : `${channels} · checking`;
+}
+
+/** When more than one path exists, the user picks the one to plan and sign. */
+export function RouteChoiceList({
+  options,
+  selectedKey,
+  onSelect,
+}: {
+  options: readonly ChainReach[];
+  selectedKey: string;
+  onSelect: (key: string) => void;
+}) {
+  if (options.length <= 1) return null;
+  return (
+    <section>
+      <SectionLabel>Choose a route</SectionLabel>
+      <ul className="mt-1.5 flex flex-col gap-1.5">
+        {options.map((option) => {
+          const selected = option.key === selectedKey;
+          return (
+            <li key={option.key}>
+              <button
+                type="button"
+                aria-pressed={selected}
+                onClick={() => onSelect(option.key)}
+                className={cn(
+                  "flex w-full min-w-0 flex-col items-start rounded-[12px] border px-3 py-2 text-left",
+                  "transition-colors duration-[var(--z-duration-base)]",
+                  selected
+                    ? "border-accent bg-[var(--z-state-selected)]"
+                    : "border-[var(--z-line)] hover:border-[var(--z-line-strong)] hover:bg-[var(--z-state-hover)]",
+                  focusRing,
+                )}
+              >
+                <span className="text-[12.5px] font-medium text-fg">
+                  {routeChoiceTitle(option)}
+                </span>
+                <span className="mt-0.5 break-all font-mono text-[9.5px] text-fg-dim">
+                  {routeChoiceMeta(option)}
+                </span>
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
 export function HopChannelList({
   hops,
   manual,
@@ -1375,6 +1542,7 @@ export function AssetSide({
   placeholder,
   emptyLabel,
   renderLimit,
+  actions,
 }: {
   label: string;
   meta: string;
@@ -1387,6 +1555,8 @@ export function AssetSide({
   placeholder?: string;
   emptyLabel: string;
   renderLimit?: number;
+  /** Optional controls under the amount, e.g. 25 / 50 / MAX. */
+  actions?: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
   const amountId = useId();
@@ -1422,17 +1592,33 @@ export function AssetSide({
   return (
     <section
       className={cn(
-        "rounded-[13px] border border-[var(--z-line)] px-3 py-2.5",
+        "rounded-[16px] border border-[var(--z-line)] bg-[var(--z-glass)] px-3.5 py-3",
         !readOnly && fieldFocusWithin,
       )}
     >
       <div className="flex items-baseline justify-between gap-2">
-        <span className="font-mono text-[9px] uppercase tracking-[0.16em] text-fg-dim">
+        <span className="font-mono text-[9px] uppercase tracking-[0.16em] text-fg-muted">
           {label}
         </span>
-        <span className="truncate font-mono text-[9.5px] text-fg-dim">{meta}</span>
+        <span className="truncate font-mono text-[10px] tabular-nums text-fg-dim">{meta}</span>
       </div>
-      <div className="mt-2 flex items-center gap-2">
+      <div className="mt-2.5 flex items-center gap-2.5">
+        <label className="sr-only" htmlFor={amountId}>
+          {label} amount
+        </label>
+        <input
+          id={amountId}
+          inputMode="decimal"
+          placeholder={placeholder ?? "0"}
+          value={amount}
+          readOnly={readOnly}
+          onChange={(event) => onAmountChange?.(event.target.value)}
+          className={cn(
+            "min-w-0 flex-1 bg-transparent text-left text-[26px] font-semibold leading-none tracking-[-0.04em] tabular-nums outline-none",
+            readOnly ? "text-fg-muted" : "text-fg",
+            "placeholder:text-fg-faint",
+          )}
+        />
         <button
           type="button"
           aria-haspopup="dialog"
@@ -1441,8 +1627,8 @@ export function AssetSide({
           disabled={options.length === 0}
           onClick={() => setOpen(true)}
           className={cn(
-            "flex min-w-0 max-w-[140px] shrink-0 items-center gap-1.5 rounded-full border border-[var(--z-line)] py-1 pl-1 pr-2",
-            "transition-colors duration-[var(--z-duration-base)] hover:bg-[var(--z-state-hover)]",
+            "flex min-w-0 max-w-[148px] shrink-0 items-center gap-1.5 rounded-full border border-[var(--z-line)] bg-[var(--z-surface-raised)] py-1.5 pl-1.5 pr-2.5",
+            "transition-colors duration-[var(--z-duration-base)] hover:border-[var(--z-line-strong)] hover:bg-[var(--z-state-hover)]",
             "disabled:cursor-not-allowed disabled:opacity-50",
             focusRing,
           )}
@@ -1450,13 +1636,13 @@ export function AssetSide({
           <Avatar
             src={asset?.iconUrl ?? asset?.chainIconUrl}
             fallback={asset?.symbol ?? "?"}
-            size={22}
+            size={24}
           />
           <span className="min-w-0 text-left">
-            <span className="block truncate font-mono text-[10.5px] uppercase tracking-[0.06em] text-fg">
+            <span className="block truncate text-[12.5px] font-semibold leading-none tracking-tight text-fg">
               {asset?.symbol ?? emptyLabel}
             </span>
-            <span className="block truncate font-mono text-[8.5px] text-fg-dim">
+            <span className="mt-0.5 block truncate font-mono text-[9px] leading-none text-fg-dim">
               {asset?.chainName ?? "-"}
             </span>
           </span>
@@ -1479,23 +1665,8 @@ export function AssetSide({
             onSelect(key);
           }}
         />
-        <label className="sr-only" htmlFor={amountId}>
-          {label} amount
-        </label>
-        <input
-          id={amountId}
-          inputMode="decimal"
-          placeholder={placeholder ?? "0.00"}
-          value={amount}
-          readOnly={readOnly}
-          onChange={(event) => onAmountChange?.(event.target.value)}
-          className={cn(
-            "min-w-0 flex-1 bg-transparent text-right text-[22px] font-medium tracking-[-0.04em] tabular-nums outline-none",
-            readOnly ? "text-fg-muted" : "text-fg",
-            "placeholder:text-fg-faint",
-          )}
-        />
       </div>
+      {actions ? <div className="mt-2.5">{actions}</div> : null}
     </section>
   );
 }

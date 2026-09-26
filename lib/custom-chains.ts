@@ -34,6 +34,7 @@ function toEntry(draft: CustomChainDraft): CatalogEntry {
     },
     rpc: draft.rpc,
     rest: draft.rest,
+    inCosmosRegistry: false,
   };
 }
 

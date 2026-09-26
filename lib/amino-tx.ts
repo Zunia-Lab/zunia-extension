@@ -77,6 +77,21 @@ export function msgDelegate(params: {
   };
 }
 
+export function msgUndelegate(params: {
+  delegatorAddress: string;
+  validatorAddress: string;
+  amount: Coin;
+}): AminoMsg {
+  return {
+    type: "cosmos-sdk/MsgUndelegate",
+    value: {
+      delegator_address: params.delegatorAddress,
+      validator_address: params.validatorAddress,
+      amount: params.amount,
+    },
+  };
+}
+
 export function msgWithdrawReward(params: {
   delegatorAddress: string;
   validatorAddress: string;

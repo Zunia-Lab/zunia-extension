@@ -71,6 +71,12 @@ export type ExtensionMessageType =
   | "GET_ACTIVITY_FEED"
   /** One transaction with fees, messages and the IBC packets it sent. */
   | "GET_TX_DETAIL"
+  /**
+   * Mark notice rows read. Answered by the worker rather than written from the
+   * popup so the toolbar badge, which only the worker can set, is recomputed
+   * from the same feed in the same step.
+   */
+  | "MARK_NOTICES_READ"
   | "FIND_IBC_CHANNELS"
   | "VALIDATE_IBC_CHANNEL"
   | "LIST_ADDRESS_BOOK"

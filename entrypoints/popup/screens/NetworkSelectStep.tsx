@@ -153,6 +153,7 @@ export function NetworkSelectStep({
               symbol={chain.coinDenom}
               iconUrl={catalogIconFor(chain)}
               testnet={chain.network === "testnet"}
+              verified={chain.inCosmosRegistry}
               selected={selected.has(chain.chainId)}
               control={control}
               onToggle={() => onToggle(chain.chainId)}

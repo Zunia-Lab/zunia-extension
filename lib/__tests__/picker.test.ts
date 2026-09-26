@@ -40,7 +40,7 @@ describe("searchItems", () => {
 });
 
 describe("pickerSections", () => {
-  it("lists favorites, then recents without the favorites, then all", () => {
+  it("lists favorites, then recents without the favorites, then the rest once", () => {
     const sections = pickerSections(chains, {
       query: "",
       favorites: ["juno-1"],
@@ -49,7 +49,20 @@ describe("pickerSections", () => {
     expect(sections.map((s) => s.key)).toEqual(["favorites", "recents", "all"]);
     expect(sections[0]!.items.map((c) => c.id)).toEqual(["juno-1"]);
     expect(sections[1]!.items.map((c) => c.id)).toEqual(["osmosis-1"]);
-    expect(sections[2]!.items).toHaveLength(chains.length);
+    expect(sections[2]!.items.map((c) => c.id)).toEqual([
+      "cosmoshub-4",
+      "stargaze-1",
+      "neutron-1",
+    ]);
+  });
+
+  it("omits All when every network is already in Favorites or Recent", () => {
+    const sections = pickerSections(chains.slice(0, 2), {
+      query: "",
+      favorites: ["cosmoshub-4"],
+      recents: ["osmosis-1"],
+    });
+    expect(sections.map((s) => s.key)).toEqual(["favorites", "recents"]);
   });
 
   it("shows only the untitled full list when nothing is remembered", () => {

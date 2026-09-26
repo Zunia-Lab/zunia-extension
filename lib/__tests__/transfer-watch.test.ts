@@ -22,6 +22,7 @@ function route(overrides: Partial<TrackedRoute>): TrackedRoute {
     settled: false,
     recovery: null,
     notes: [],
+    sourceError: null,
     ...overrides,
   };
 }
@@ -72,6 +73,9 @@ describe("routeOutcome", () => {
     expect(
       routeOutcome(route({ settled: true, status: "acknowledged", failure: "swap-delivery-failed" })),
     ).toBe("recoverable");
+    expect(
+      routeOutcome(route({ settled: true, status: "failed", failure: "source-failed" })),
+    ).toBe("failed");
   });
 });
 

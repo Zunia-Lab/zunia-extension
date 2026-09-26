@@ -17,12 +17,15 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Button,
   Callout,
+  IconButton,
   KeyValueRow,
   PacketTracker,
   Pill,
+  TokenLogo,
   RoutePreview,
   ScreenScaffold,
   SectionLabel,
+  Skeleton,
   Spinner,
   SwapQuotePanel,
   cn,
@@ -35,7 +38,6 @@ import type { BuiltMsg, OsmosisSwapQuote } from "@zunialab/interchain";
 import type { ChainBalance } from "../../../lib/balances";
 import {
   explorerTxUrl,
-  HIGH_SLIPPAGE_PERCENT,
   MAX_SLIPPAGE_PERCENT,
   QUOTE_TTL_MS,
   SLIPPAGE_PRESETS,
@@ -48,7 +50,6 @@ import {
   type PendingTransfer,
 } from "../../../lib/pending-transfers";
 import {
-  INITIAL_SLIPPAGE_PERCENT,
   VENUE_CHAIN_ID,
   buildTransferMsgFromPlan,
   planSwap,
@@ -57,12 +58,22 @@ import {
   type RoutePlanView,
   type SwapPlanResult,
 } from "../../../lib/route-plan";
+import { findCatalogEntry } from "../../../lib/chain-catalog";
+import {
+  maxSendable,
+  prefFeeFor,
+  reservedFeeUnits,
+  RESERVE_GAS_LIMIT,
+} from "../../../lib/fee-prefs";
 import { sendToBackground } from "../../../lib/popup-client";
 import type { TxPreview } from "../../../lib/tx-kernel";
+import { GasFeePrefs } from "../components/GasFeePrefs";
+import { SwapPair } from "../components/SwapPair";
+import { SwapSettingsDialog } from "../components/SwapSettingsDialog";
+import { usePrices } from "../hooks/usePrices";
 import type { ChainAccountView } from "../hooks/useChainAccounts";
 import { usePrefs } from "../state/Prefs";
 import {
-  AssetSide,
   DisabledReason,
   HopChannelList,
   ResumeTrackingBanner,
@@ -80,12 +91,13 @@ import {
   useOsmosisAssets,
   usePendingTransfers,
   useSwapVenue,
+  catalogNativeAssets,
+  withCatalogAssets,
   withOsmosisAssets,
 } from "./interchain-ui";
-import { IconFlip } from "./icons";
+import { IconSettings } from "./icons";
 import { signingError, useSignedSend } from "../state/SigningPassword";
-
-const PERCENTS = [25, 50, 75, 100] as const;
+import { notifyBroadcastAccepted, useToast } from "../state/Toasts";
 
 type Phase = "form" | "confirm" | "sent";
 
@@ -182,7 +194,8 @@ export function SwapScreen({
   initialChainId?: string;
 }) {
   const signedSend = useSignedSend();
-  const { hidden, settings } = usePrefs();
+  const toast = useToast();
+  const { hidden, settings, fiat } = usePrefs();
   const liveReads = settings.liveBalances;
 
   const sources = useMemo(() => spendableAssets(chains, balances), [chains, balances]);
@@ -191,7 +204,12 @@ export function SwapScreen({
   const balancesLoaded = Object.keys(balances).length > 0;
   const osmosis = useOsmosisAssets(liveReads);
   const destinations = useMemo(
-    () => withOsmosisAssets(receivableAssets(chains, balances), osmosis.assets, VENUE_CHAIN_ID),
+    () =>
+      withOsmosisAssets(
+        withCatalogAssets(receivableAssets(chains, balances), catalogNativeAssets()),
+        osmosis.assets,
+        VENUE_CHAIN_ID,
+      ),
     [chains, balances, osmosis.assets],
   );
 
@@ -201,7 +219,7 @@ export function SwapScreen({
   const [fromKey, setFromKey] = useState<string | null>(null);
   const [toKey, setToKey] = useState<string | null>(null);
   const [amount, setAmount] = useState("");
-  const [slippage, setSlippage] = useState(INITIAL_SLIPPAGE_PERCENT);
+  const slippage = settings.swapSlippage;
   const [manual, setManual] = useState<ManualChannel[]>([]);
   // Bumped by the retry controls. Part of the plan key, because re-running the
   // same inputs must actually re-run them; a new array identity would not.
@@ -215,6 +233,10 @@ export function SwapScreen({
   const [tracked, setTracked] = useState<PendingTransfer | null>(null);
   /** Hash of a `{"recover":{}}` transaction, shown alongside the route it rescued. */
   const [recoverTxHash, setRecoverTxHash] = useState<string | null>(null);
+  const [routeOpen, setRouteOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [advanced, setAdvanced] = useState(false);
+  const expert = advanced;
 
   const kernel = useKernelSigning();
   const venue = useSwapVenue(liveReads);
@@ -234,11 +256,17 @@ export function SwapScreen({
     destinations[0];
   const sourceAccount = chains.find((chain) => chain.chainId === from?.chainId);
   const destAccount = chains.find((chain) => chain.chainId === to?.chainId);
+  const [catalogDestAddress, setCatalogDestAddress] = useState<string | null>(null);
 
   const amountUnits = from ? toBaseUnits(amount, from.decimals) : null;
   const available = from ? BigInt(from.amount) : null;
+  const feeReserve = from
+    ? reservedFeeUnits(from.chainId, from.denom, settings)
+    : 0n;
+  const spendable =
+    available !== null ? maxSendable(available, feeReserve) : null;
   const overBalance =
-    amountUnits !== null && available !== null && amountUnits > available;
+    amountUnits !== null && spendable !== null && amountUnits > spendable;
 
   /* ---------------------------------------------------------------- *
    * The wallet's own address on the venue chain
@@ -262,8 +290,46 @@ export function SwapScreen({
   const recoveryFailed = recovery !== null && recovery.address === null;
   // A token listed on Osmosis is delivered there, to this wallet's own Osmosis
   // address, whether or not Osmosis is one of the enabled chains.
+  useEffect(() => {
+    if (!to?.chainId || destAccount?.address) {
+      setCatalogDestAddress(destAccount?.address ?? null);
+      return;
+    }
+    let cancelled = false;
+    void resolveAddresses([to.chainId]).then((map) => {
+      if (!cancelled) setCatalogDestAddress(map[to.chainId] ?? null);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [to?.chainId, destAccount?.address, resolveAddresses]);
+
   const destAddress =
-    destAccount?.address ?? (to?.chainId === VENUE_CHAIN_ID ? recoveryAddress : null);
+    destAccount?.address ??
+    catalogDestAddress ??
+    (to?.chainId === VENUE_CHAIN_ID ? recoveryAddress : null);
+
+  const priceChainIds = useMemo(() => {
+    const ids = [from?.chainId, to?.chainId].filter(
+      (id): id is string => Boolean(id),
+    );
+    return [...new Set(ids)];
+  }, [from?.chainId, to?.chainId]);
+  const { prices } = usePrices(priceChainIds, liveReads);
+
+  function pricedFiat(
+    asset: typeof from,
+    displayAmount: string,
+  ): string | null {
+    if (!asset) return null;
+    const entry = findCatalogEntry(asset.chainId);
+    if (!entry || entry.coinMinimalDenom !== asset.denom) return null;
+    const spot = prices[asset.chainId];
+    if (!spot) return null;
+    const n = Number(displayAmount);
+    if (!displayAmount.trim() || !Number.isFinite(n)) return fiat(0);
+    return fiat(n * spot.price);
+  }
 
   /* ---------------------------------------------------------------- *
    * Planning
@@ -471,7 +537,9 @@ export function SwapScreen({
     if (!amount) return "Enter an amount to swap.";
     if (amountUnits === null) return "That amount is not a number this chain can hold.";
     if (amountUnits <= 0n) return "Enter an amount above zero.";
-    if (overBalance) return `More than the ${from.symbol} this wallet holds.`;
+    if (overBalance) {
+      return `More than the ${from.symbol} left after the network fee.`;
+    }
     if (!slippageOk) {
       return `Slippage must be between 0 and ${MAX_SLIPPAGE_PERCENT}%. Above that the tolerance stops protecting anything.`;
     }
@@ -529,6 +597,8 @@ export function SwapScreen({
           chainId: next.chainId,
           signerAddress: next.signerAddress,
           msgs: next.msgs,
+          feeSpeed: settings.feeSpeed,
+          gasAdjustment: settings.gasAdjustment,
         });
         setPreview(built);
         setPending(next);
@@ -539,7 +609,7 @@ export function SwapScreen({
         setBusy(false);
       }
     },
-    [],
+    [settings.feeSpeed, settings.gasAdjustment],
   );
 
   async function signPending() {
@@ -562,6 +632,7 @@ export function SwapScreen({
           chainId: pending.chainId,
           signerAddress: pending.signerAddress,
           msgs: pending.msgs,
+          memo: preview.preview.memo,
           fee: preview.fee,
           accountNumber: preview.accountNumber,
           sequence: preview.sequence,
@@ -573,6 +644,7 @@ export function SwapScreen({
         // replace the route being tracked, which still records what happened.
         setRecoverTxHash(broadcastResult.txhash);
         setPhase("sent");
+        notifyBroadcastAccepted(toast, broadcastResult.txhash);
       } else if (pending.plan) {
         const record: PendingTransfer = {
           kind: "swap",
@@ -593,9 +665,12 @@ export function SwapScreen({
         pendingRoutes.reload();
         setTracked(record);
         setPhase("sent");
+        notifyBroadcastAccepted(toast, broadcastResult.txhash);
       }
     } catch (caught) {
-      setError(signingError(caught));
+      const message = signingError(caught);
+      setError(message);
+      if (message) toast(message, { tone: "danger" });
     } finally {
       setBusy(false);
     }
@@ -642,9 +717,9 @@ export function SwapScreen({
     setManual([]);
   }
 
-  function applyPercent(pct: number) {
+  function applyMax() {
     if (available === null || !from) return;
-    const units = (available * BigInt(pct)) / 100n;
+    const units = maxSendable(available, feeReserve);
     setAmount(formatUnitsExact(units.toString(), from.decimals));
   }
 
@@ -671,7 +746,8 @@ export function SwapScreen({
   // action once the popup closes.
   const trackedHash = tracked?.txHash ?? null;
   const outcome = tracking.route ? routeOutcome(tracking.route) : null;
-  const finished = outcome === "delivered" || outcome === "refunded";
+  const finished =
+    outcome === "delivered" || outcome === "refunded" || outcome === "failed";
   useEffect(() => {
     if (!trackedHash || !finished) return;
     void removePendingTransfer(trackedHash);
@@ -729,6 +805,15 @@ export function SwapScreen({
     const swapPriceStale = pending.kind === "swap" && (!quote || quoteExpired || refreshing);
     const feeCoin = preview.fee.amount[0];
     const feeChain = chains.find((chain) => chain.chainId === pending.chainId);
+    const feeUnits = feeCoin ? BigInt(feeCoin.amount) : 0n;
+    const leftover =
+      available !== null && pending.kind === "swap" && amountUnits !== null
+        ? available - amountUnits
+        : null;
+    const feeShort =
+      Boolean(from && feeCoin && feeCoin.denom === from.denom) &&
+      leftover !== null &&
+      leftover < feeUnits;
     return (
       <ScreenScaffold
         title={pending.title}
@@ -751,61 +836,95 @@ export function SwapScreen({
             </Button>
             <Button
               className="flex-1"
-              disabled={busy || swapPriceStale}
+              disabled={busy || swapPriceStale || feeShort}
               onClick={() => void signPending()}
             >
               {busy
                 ? "Signing…"
-                : pending.kind === "swap" && quoteExpired
-                  ? "Price expired"
-                  : "Sign and send"}
+                : feeShort
+                  ? "Need fee room"
+                  : pending.kind === "swap" && quoteExpired
+                    ? "Price expired"
+                    : "Sign and send"}
             </Button>
           </div>
         }
       >
-        <div className="flex flex-col gap-3 pt-1">
+        <div className="flex flex-col gap-2 pt-1">
           {pending.kind === "swap" && from && to ? (
-            <section className="flex flex-col gap-1.5 rounded-[13px] border border-[var(--z-line)] px-3 py-3">
-              <KeyValueRow
-                label="You pay"
-                value={formatAsset(pending.amountBaseUnits, from.decimals, from.symbol) ?? NO_VALUE}
-              />
-              <KeyValueRow
-                label="You get about"
-                value={quoteView ? `${quoteView.outputAmount} ${quoteView.outputSymbol}` : NO_VALUE}
-              />
-              <KeyValueRow label="At least" value={quoteView?.minReceived ?? NO_VALUE} />
+            <section className="rounded-[14px] border border-[var(--z-line)] bg-[var(--z-glass)] px-3 py-2.5">
+              <p className="font-mono text-[9px] uppercase tracking-[0.12em] text-fg-dim">
+                For about
+              </p>
+              <div className="mt-1.5 flex items-center gap-2">
+                <TokenLogo src={from.iconUrl ?? from.chainIconUrl} symbol={from.symbol} size={28} />
+                <div className="min-w-0 flex-1">
+                  <p className="text-[15px] font-semibold leading-none tracking-[-0.02em] tabular-nums text-fg">
+                    {formatAsset(pending.amountBaseUnits, from.decimals, from.symbol) ?? NO_VALUE}
+                  </p>
+                  <p className="mt-0.5 truncate font-mono text-[9.5px] text-fg-dim">
+                    {from.chainName}
+                  </p>
+                </div>
+              </div>
+              <div className="my-1.5 h-px bg-[var(--z-line)]" />
+              <div className="flex items-center gap-2">
+                <TokenLogo src={to.iconUrl ?? to.chainIconUrl} symbol={to.symbol} size={28} />
+                <div className="min-w-0 flex-1">
+                  <p className="text-[15px] font-semibold leading-none tracking-[-0.02em] tabular-nums text-fg">
+                    {quoteView ? `${quoteView.outputAmount} ${quoteView.outputSymbol}` : NO_VALUE}
+                  </p>
+                  <p className="mt-0.5 truncate font-mono text-[9.5px] text-fg-dim">
+                    {to.chainName}
+                    {quoteView?.minReceived ? ` · at least ${quoteView.minReceived}` : ""}
+                  </p>
+                </div>
+              </div>
               {quoteSecondsLeft !== null ? (
-                <QuoteClock
-                  confirm
-                  secondsLeft={quote ? quoteSecondsLeft : 0}
-                  refreshing={refreshing}
-                  onRefresh={() => {
-                    setError(null);
-                    void refreshQuote();
-                  }}
-                />
+                <div className="mt-2">
+                  <QuoteClock
+                    confirm
+                    secondsLeft={quote ? quoteSecondsLeft : 0}
+                    refreshing={refreshing}
+                    onRefresh={() => {
+                      setError(null);
+                      void refreshQuote();
+                    }}
+                  />
+                </div>
               ) : null}
               {quoteError && !refreshing ? (
-                <p className="text-[10.5px] leading-snug text-[var(--z-warning)]">{quoteError}</p>
+                <p className="mt-1.5 text-[10px] leading-snug text-[var(--z-warning)]">{quoteError}</p>
               ) : null}
+            </section>
+          ) : pending.kind === "recover" ? (
+            <section className="rounded-[14px] border border-[var(--z-line)] bg-[var(--z-glass)] px-3 py-2.5">
+              <p className="font-mono text-[9px] uppercase tracking-[0.12em] text-fg-dim">
+                Recover
+              </p>
+              <p className="mt-1 text-[13px] font-semibold tracking-tight text-fg">
+                Claim stranded swap output
+              </p>
+              <p className="mt-0.5 text-[11px] leading-snug text-fg-muted">
+                Contract call on the venue chain, not another transfer.
+              </p>
             </section>
           ) : null}
 
-          <section className="rounded-[13px] border border-[var(--z-line)] px-3 py-3">
+          <section className="rounded-[12px] border border-[var(--z-line)] px-2.5 py-2">
             {preview.preview.summaries.map((line, index) => (
-              <p key={index} className="text-[11.5px] leading-snug text-fg">
+              <p key={index} className="text-[11px] leading-snug text-fg">
                 {line}
               </p>
             ))}
           </section>
 
           {memo ? (
-            <section className="rounded-[13px] border border-[var(--z-line)] px-3 py-3">
+            <section className="rounded-[12px] border border-[var(--z-line)] px-2.5 py-2">
               <SectionLabel>What the memo will do</SectionLabel>
-              <p className="mt-1.5 text-[11.5px] leading-snug text-fg">{memo.summary}</p>
+              <p className="mt-1 text-[11px] leading-snug text-fg">{memo.summary}</p>
               {memo.xcs ? (
-                <div className="mt-2 flex flex-col gap-1">
+                <div className="mt-1.5 flex flex-col gap-0.5">
                   <KeyValueRow
                     label="Contract"
                     value={truncateAddress(memo.xcs.contract, 10, 8)}
@@ -829,7 +948,7 @@ export function SwapScreen({
                 </div>
               ) : null}
               {memo.forward ? (
-                <p className="mt-2 text-[10.5px] leading-snug text-fg-muted">
+                <p className="mt-1.5 text-[10px] leading-snug text-fg-muted">
                   Forwards {memo.forward.hops.length}{" "}
                   {memo.forward.hops.length === 1 ? "hop" : "hops"} (
                   {memo.forward.hops.map((hop) => hop.channelId).join(", then ")}) and pays{" "}
@@ -837,46 +956,48 @@ export function SwapScreen({
                 </p>
               ) : null}
               {memo.warnings.map((warning) => (
-                <p key={warning} className="mt-1.5 text-[10.5px] text-[var(--z-warning)]">
+                <p key={warning} className="mt-1 text-[10px] text-[var(--z-warning)]">
                   {warning}
                 </p>
               ))}
             </section>
           ) : null}
 
-          <section className="flex flex-col gap-1.5 rounded-[13px] border border-[var(--z-line)] px-3 py-3">
-            <KeyValueRow
-              label="Network fee"
-              value={
-                feeCoin
-                  ? `${formatUnits(feeCoin.amount, feeChain?.entry.feeDecimals ?? 6)} ${feeChain?.entry.feeDenom ?? feeCoin.denom}`
-                  : "none"
-              }
+          <section className="rounded-[12px] border border-[var(--z-line)] px-2.5 py-2">
+            <GasFeePrefs
+              feeAmount={feeCoin?.amount}
+              feeDecimals={feeChain?.entry.feeDecimals ?? 6}
+              feeSymbol={feeChain?.entry.feeDenom ?? feeCoin?.denom ?? ""}
+              onChanged={() => {
+                if (!pending) return;
+                void openConfirm(pending);
+              }}
             />
-            <KeyValueRow label="Gas" value={preview.fee.gas_limit} />
-            <KeyValueRow
-              label="Sign bytes"
-              value={`${preview.preview.signBytesHash.slice(0, 12)}…`}
-            />
+            {preview.preview.memo ? (
+              <div className="mt-1.5">
+                <KeyValueRow label="Memo" value={preview.preview.memo} />
+              </div>
+            ) : null}
           </section>
 
+          {feeShort ? (
+            <Callout compact tone="danger" title="Not enough left for the fee">
+              Lower the amount or the gas speed. The chain takes the fee first,
+              then the swap.
+            </Callout>
+          ) : null}
+
           {preview.feeNote ? (
-            <Callout tone="warning" title="Fee is an estimate">
+            <Callout compact tone="warning" title="Fee is an estimate">
               {preview.feeNote}
             </Callout>
           ) : null}
 
           {error ? (
-            <Callout tone="danger" title="Could not sign">
+            <Callout compact tone="danger" title="Could not sign">
               {error}
             </Callout>
-          ) : (
-            <Callout tone="info" title="One signature, one chain">
-              You pay gas only on {feeChain?.entry.chainName ?? pending.chainId}. The swap
-              itself runs on Osmosis inside packet processing and is paid for by the
-              relayer, so you do not need OSMO.
-            </Callout>
-          )}
+          ) : null}
         </div>
       </ScreenScaffold>
     );
@@ -889,9 +1010,10 @@ export function SwapScreen({
   if (phase === "sent" && tracked) {
     const route = tracking.route;
     const recovery = route?.recovery ?? null;
+    const failed = outcome === "failed" || route?.failure === "source-failed";
     return (
       <ScreenScaffold
-        title="Swap in flight"
+        title={failed ? "Swap failed" : "Swap in flight"}
         footer={
           <Button
             className="w-full"
@@ -941,15 +1063,21 @@ export function SwapScreen({
             </Callout>
           ) : null}
           {error ? (
-            <Callout tone="danger" title="Recovery failed">
+            <Callout compact tone="danger" title="Recovery failed">
               {error}
             </Callout>
           ) : null}
-          <Callout tone="neutral" title="This keeps running without the popup">
-            The transfer proceeds on chain whether or not Zunia is open. Zunia follows
-            it for a day and lists it at the top of Activity until it arrives; the
-            transaction hash above is the only identifier you need in the meantime.
-          </Callout>
+          {failed ? (
+            <Callout compact tone="danger" title="Transaction failed">
+              {route?.sourceError ||
+                "The source chain rejected this swap. Nothing was transferred."}
+            </Callout>
+          ) : (
+            <Callout compact tone="neutral" title="Runs without the popup">
+              Zunia follows this for a day and lists it on Activity until it
+              arrives. The hash above is the identifier you need meanwhile.
+            </Callout>
+          )}
         </div>
       </ScreenScaffold>
     );
@@ -993,28 +1121,68 @@ export function SwapScreen({
         ]
       : [];
 
-  const feeLabel = sourceAccount
-    ? `paid in ${sourceAccount.entry.feeDenom} on ${sourceAccount.entry.chainName}`
+  const estimatedFee = from
+    ? prefFeeFor(from.chainId, RESERVE_GAS_LIMIT, settings)
     : null;
+  const feeText = estimatedFee
+    ? `${formatUnits(estimatedFee.amount.toString(), estimatedFee.decimals, 6)} ${estimatedFee.symbol}`
+    : null;
+  const poolFeeText =
+    typeof quoteView?.poolFee === "number" && Number.isFinite(quoteView.poolFee)
+      ? `${quoteView.poolFee.toFixed(quoteView.poolFee >= 1 ? 2 : 3)}%`
+      : null;
+  const feesLine = [feeText, poolFeeText].filter(Boolean).join(" + ") || "—";
+  const maxLabel =
+    from && spendable !== null
+      ? `${formatUnitsExact(spendable.toString(), from.decimals, 6)} ${from.symbol}`
+      : null;
+
+  const quoteFooter =
+    quote && quoteSecondsLeft !== null ? (
+      <QuoteClock
+        secondsLeft={quoteSecondsLeft}
+        refreshing={refreshing}
+        onRefresh={() => void refreshQuote()}
+      />
+    ) : null;
 
   return (
     <ScreenScaffold
-      title="Swap"
-      right={
-        <span className="font-mono text-[9px] uppercase tracking-[0.12em] text-fg-dim">
-          {planning ? "planning…" : `slippage ${slippage}%`}
-        </span>
+      header={
+        <header className="flex items-center gap-3 px-4 py-3">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-baseline gap-2">
+              <h1 className="text-[17px] font-semibold tracking-tight text-fg">
+                Swap
+              </h1>
+              <span className="truncate text-[11px] text-fg-dim">via Osmosis</span>
+            </div>
+          </div>
+          <IconButton
+            label="Swap settings"
+            variant="ghost"
+            size="sm"
+            className="h-8 w-8 text-fg-muted hover:text-fg"
+            onClick={() => setSettingsOpen(true)}
+          >
+            <IconSettings width={16} height={16} />
+          </IconButton>
+        </header>
       }
       footer={
         <div>
           <Button className="w-full" disabled={!ready || busy} onClick={() => void reviewSwap()}>
-            {busy ? "Checking the price…" : "Review swap"}
+            {busy
+              ? "Checking the price…"
+              : ready && quoteView
+                ? `Swap for ${quoteView.outputAmount} ${quoteView.outputSymbol}`
+                : "Swap"}
           </Button>
           <DisabledReason reason={ready ? null : blockedReason} />
         </div>
       }
     >
-      <div className="flex flex-col gap-2 pt-1">
+      <div className="flex flex-col gap-3 pt-1">
         <ResumeTrackingBanner
           rows={pendingRoutes.rows.filter((row) => row.kind === "swap")}
           onResume={(row) => {
@@ -1026,81 +1194,71 @@ export function SwapScreen({
           onDismiss={pendingRoutes.forget}
         />
 
-        <AssetSide
-          label="From"
-          meta={
-            hidden
-              ? "••••"
-              : from
-                ? `${formatUnits(from.amount, from.decimals)} available`
-                : NO_VALUE
-          }
-          asset={from}
-          options={sources}
-          onSelect={(key) => {
+        <SwapPair
+          from={from}
+          to={to}
+          fromOptions={sources}
+          toOptions={destinations}
+          amount={amount}
+          receiveAmount={quoteView ? quoteView.outputAmount : ""}
+          onAmountChange={setAmount}
+          onSelectFrom={(key) => {
             setFromKey(key);
             setAmount("");
             setManual([]);
           }}
-          amount={amount}
-          onAmountChange={setAmount}
-          emptyLabel="Nothing held"
-        />
-
-        <div className="flex gap-1.5">
-          {PERCENTS.map((pct) => (
-            <button
-              key={pct}
-              type="button"
-              disabled={available === null}
-              onClick={() => applyPercent(pct)}
-              className={cn(
-                "flex-1 rounded-full border border-[var(--z-line)] py-1 font-mono text-[9.5px] uppercase tracking-[0.08em] text-fg-muted",
-                "transition-colors duration-[var(--z-duration-base)] hover:border-[var(--z-line-strong)] hover:text-fg",
-                "disabled:cursor-not-allowed disabled:opacity-40",
-                focusRing,
-              )}
-            >
-              {pct === 100 ? "MAX" : `${pct}%`}
-            </button>
-          ))}
-        </div>
-
-        <div className="flex justify-center">
-          <button
-            type="button"
-            onClick={flipSides}
-            disabled={!flipTarget || !from}
-            aria-label={flipLabel}
-            title={flipLabel}
-            className={cn(
-              "-my-1 flex size-[26px] items-center justify-center rounded-full border border-[var(--z-line)] bg-[var(--z-surface-raised)] text-fg-dim",
-              "transition-colors duration-[var(--z-duration-base)] hover:border-[var(--z-line-strong)] hover:text-fg",
-              "disabled:cursor-not-allowed disabled:opacity-40",
-              focusRing,
-            )}
-          >
-            <IconFlip width={14} height={14} />
-          </button>
-        </div>
-
-        <AssetSide
-          label="To"
-          meta={to ? to.chainName : NO_VALUE}
-          asset={to}
-          options={destinations}
-          renderLimit={150}
-          onSelect={(key) => {
+          onSelectTo={(key) => {
             setToKey(key);
             setManual([]);
           }}
-          amount={
-            quoteView ? quoteView.outputAmount : amountUnits !== null ? NO_VALUE : ""
-          }
-          readOnly
-          placeholder={NO_VALUE}
-          emptyLabel="No network"
+          onFlip={flipSides}
+          flipLabel={flipLabel}
+          canFlip={Boolean(flipTarget && from)}
+          hidden={hidden}
+          fromFiat={hidden ? "••••" : pricedFiat(from, amount)}
+          toFiat={hidden ? "••••" : pricedFiat(to, quoteView?.outputAmount ?? "")}
+          maxLabel={maxLabel}
+          onMax={applyMax}
         />
+
+        <button
+          type="button"
+          onClick={() => setSettingsOpen(true)}
+          className={cn(
+            "flex w-full items-center justify-between gap-2 px-0.5 py-0.5 text-left",
+            focusRing,
+          )}
+        >
+          <span className="flex items-center gap-1.5 text-[12px] text-fg-muted">
+            Fees
+            <span
+              className={cn(
+                "size-1.5 rounded-full",
+                estimatedFee ? "bg-[var(--z-success)]" : "bg-[var(--z-line-strong)]",
+              )}
+              aria-hidden
+            />
+          </span>
+          <span className="font-mono text-[11px] tabular-nums text-fg">
+            {feesLine}
+          </span>
+        </button>
+
+        {quote && quoteSecondsLeft !== null ? (
+          <QuoteClock
+            secondsLeft={quoteSecondsLeft}
+            refreshing={refreshing}
+            onRefresh={() => void refreshQuote()}
+          />
+        ) : null}
+
+        <SwapSettingsDialog
+          open={settingsOpen}
+          onOpenChange={setSettingsOpen}
+          advanced={advanced}
+          onAdvancedChange={setAdvanced}
+        />
+
         {osmosis.error ? (
           <p className="text-[10.5px] leading-snug text-fg-muted">
             The Osmosis token list did not load ({osmosis.error}), so only your own tokens are
@@ -1108,124 +1266,145 @@ export function SwapScreen({
           </p>
         ) : null}
 
-        <SwapQuotePanel
-          compact
-          quote={quoteView}
-          gasChainName={sourceAccount?.entry.chainName ?? "the source chain"}
-          swapVenueName={venue.check?.venue?.label ?? "Osmosis"}
-          gasFeeLabel={feeLabel}
-          slippagePercent={slippage}
-          onSlippageChange={setSlippage}
-          slippagePresets={SLIPPAGE_PRESETS}
-          loading={planning && !quote}
-          error={quoteError ?? result?.error ?? null}
-          onRetry={() => setRetryToken((n) => n + 1)}
-          footer={
-            quote && quoteSecondsLeft !== null ? (
-              <QuoteClock
-                secondsLeft={quoteSecondsLeft}
-                refreshing={refreshing}
-                onRefresh={() => void refreshQuote()}
-              />
-            ) : null
-          }
-        />
-
-        {slippage > HIGH_SLIPPAGE_PERCENT ? (
-          <Callout tone="warning" title={`${slippage}% is a wide tolerance`}>
-            The contract will accept a price up to {slippage}% worse than the pool average
-            before it refuses. On a thin pool that is a real loss, not a rounding error.
-          </Callout>
+        {expert || quoteError || result?.error || (planning && !quote) ? (
+          <SwapQuotePanel
+            compact
+            variant={expert ? "expert" : "simple"}
+            title={null}
+            quote={quoteView}
+            slippagePercent={slippage}
+            slippagePresets={SLIPPAGE_PRESETS}
+            loading={planning && !quote}
+            error={quoteError ?? result?.error ?? null}
+            onRetry={() => setRetryToken((n) => n + 1)}
+            footer={expert ? quoteFooter : null}
+          />
         ) : null}
 
-        <RoutePreview
-          compact
-          hops={plan?.hops ?? []}
-          estimatedDurationSeconds={plan?.plan.estimatedDurationSeconds ?? null}
-          warnings={plan?.warnings ?? result?.warnings ?? []}
-          requiresPfm={plan?.plan.requiresPfm ?? false}
-          requiresIbcHooks={plan?.plan.requiresIbcHooks ?? false}
-          gasChainName={sourceAccount?.entry.chainName ?? ""}
-          swapVenueName={venue.check?.venue?.label ?? "Osmosis"}
-          loading={planning && !plan}
-          error={result?.error ?? null}
-          onRetry={() => setRetryToken((n) => n + 1)}
-          emptyTitle={liveReads ? "No route yet" : "Route planning is off"}
-          emptyDescription={
-            liveReads
-              ? "Pick both assets and an amount, and Zunia will plan the hops."
-              : "Turn on live balances in Settings → Preferences so Zunia can read channels."
-          }
-          footer={
-            plan ? (
-              <HopChannelList
-                hops={plan.hops}
-                manual={manual}
-                onPick={(channel) =>
-                  setManual((rows) => [
-                    ...rows.filter(
-                      (row) =>
-                        row.fromChainId !== channel.fromChainId ||
-                        row.toChainId !== channel.toChainId,
-                    ),
-                    channel,
-                  ])
-                }
-                onClear={(fromChainId, toChainId) =>
-                  setManual((rows) =>
-                    rows.filter(
-                      (row) =>
-                        row.fromChainId !== fromChainId || row.toChainId !== toChainId,
-                    ),
-                  )
-                }
-              />
-            ) : null
-          }
-        />
+        {expert ? (
+          <>
+            <button
+              type="button"
+              onClick={() => setRouteOpen((open) => !open)}
+              className={cn(
+                "flex w-full items-center justify-between rounded-[16px] border border-[var(--z-line)] bg-[var(--z-glass)] px-3.5 py-2.5 text-left",
+                "transition-colors duration-[var(--z-duration-base)] hover:bg-[var(--z-state-hover)]",
+                focusRing,
+              )}
+            >
+              <span className="min-w-0">
+                <span className="block text-[12.5px] font-medium text-fg">
+                  {planning
+                    ? "Finding a route…"
+                    : plan
+                      ? `Via ${venue.check?.venue?.label ?? "Osmosis"}`
+                      : "Route and channels"}
+                </span>
+                <span className="mt-0.5 block font-mono text-[9.5px] text-fg-dim">
+                  {plan
+                    ? `${plan.hops.length} hop${plan.hops.length === 1 ? "" : "s"} · best Osmosis route`
+                    : liveReads
+                      ? "Override hops if discovery misses a channel"
+                      : "Turn on live balances to plan hops"}
+                </span>
+              </span>
+              <span className="shrink-0 font-mono text-[9.5px] uppercase tracking-[0.08em] text-accent">
+                {routeOpen ? "Hide" : "Show"}
+              </span>
+            </button>
 
-        {/*
-          RoutePreview drops its footer in the empty state, and the empty state
-          is exactly when a user needs the channel editors: discovery failed, so
-          there is no route to attach them to. The legs a swap always needs are
-          known anyway, so they are offered here instead of a dead end.
-        */}
-        {!plan && fallbackHops.length > 0 ? (
-          <section>
-            <SectionLabel>Channels this swap needs</SectionLabel>
-            <p className="mb-1.5 mt-1 text-[10.5px] leading-snug text-fg-muted">
-              Nothing has confirmed a path yet. Pick or type the channel for each leg and
-              Zunia will plan again.
-            </p>
-            <HopChannelList
-              hops={fallbackHops}
-              manual={manual}
-                onPick={(channel) =>
-                  setManual((rows) => [
-                    ...rows.filter(
-                      (row) =>
-                        row.fromChainId !== channel.fromChainId ||
-                        row.toChainId !== channel.toChainId,
-                    ),
-                    channel,
-                  ])
-                }
-                onClear={(fromChainId, toChainId) =>
-                  setManual((rows) =>
-                    rows.filter(
-                      (row) =>
-                        row.fromChainId !== fromChainId || row.toChainId !== toChainId,
-                    ),
-                  )
-                }
-            />
-          </section>
+            {routeOpen ? (
+              <>
+                <RoutePreview
+                  compact
+                  hops={plan?.hops ?? []}
+                  estimatedDurationSeconds={plan?.plan.estimatedDurationSeconds ?? null}
+                  warnings={plan?.warnings ?? result?.warnings ?? []}
+                  requiresPfm={plan?.plan.requiresPfm ?? false}
+                  requiresIbcHooks={plan?.plan.requiresIbcHooks ?? false}
+                  swapVenueName={venue.check?.venue?.label ?? "Osmosis"}
+                  loading={planning && !plan}
+                  error={result?.error ?? null}
+                  onRetry={() => setRetryToken((n) => n + 1)}
+                  emptyTitle={liveReads ? "No route yet" : "Route planning is off"}
+                  emptyDescription={
+                    liveReads
+                      ? "Pick both assets and an amount, and Zunia will plan the hops."
+                      : "Turn on live balances in Settings, Preferences so Zunia can read channels."
+                  }
+                  footer={
+                    plan ? (
+                      <HopChannelList
+                        hops={plan.hops}
+                        manual={manual}
+                        onPick={(channel) =>
+                          setManual((rows) => [
+                            ...rows.filter(
+                              (row) =>
+                                row.fromChainId !== channel.fromChainId ||
+                                row.toChainId !== channel.toChainId,
+                            ),
+                            channel,
+                          ])
+                        }
+                        onClear={(fromChainId, toChainId) =>
+                          setManual((rows) =>
+                            rows.filter(
+                              (row) =>
+                                row.fromChainId !== fromChainId || row.toChainId !== toChainId,
+                            ),
+                          )
+                        }
+                      />
+                    ) : null
+                  }
+                />
+
+                {!plan && fallbackHops.length > 0 ? (
+                  <section>
+                    <SectionLabel>Channels this swap needs</SectionLabel>
+                    <p className="mb-1.5 mt-1 text-[10.5px] leading-snug text-fg-muted">
+                      Nothing has confirmed a path yet. Pick or type the channel for each
+                      leg and Zunia will plan again.
+                    </p>
+                    <HopChannelList
+                      hops={fallbackHops}
+                      manual={manual}
+                      onPick={(channel) =>
+                        setManual((rows) => [
+                          ...rows.filter(
+                            (row) =>
+                              row.fromChainId !== channel.fromChainId ||
+                              row.toChainId !== channel.toChainId,
+                          ),
+                          channel,
+                        ])
+                      }
+                      onClear={(fromChainId, toChainId) =>
+                        setManual((rows) =>
+                          rows.filter(
+                            (row) =>
+                              row.fromChainId !== fromChainId || row.toChainId !== toChainId,
+                          ),
+                        )
+                      }
+                    />
+                  </section>
+                ) : null}
+              </>
+            ) : null}
+          </>
         ) : null}
 
         {venue.loading ? (
-          <p className="flex items-center gap-1.5 font-mono text-[10px] text-fg-dim">
-            <Spinner className="size-3" /> Checking the crosschain-swaps contract…
-          </p>
+          <div
+            role="status"
+            aria-label="Checking the swap contract"
+            className="flex flex-col gap-1.5"
+          >
+            <Skeleton className="h-2 w-3/5" />
+            <Skeleton className="h-2 w-2/5" />
+          </div>
         ) : null}
 
         {venue.check?.reason ? (
@@ -1238,14 +1417,14 @@ export function SwapScreen({
             >
               Check again
             </button>
-            {venue.check.problem === "absent" || venue.check.problem === "unset" ? (
+            {expert && (venue.check.problem === "absent" || venue.check.problem === "unset") ? (
               <SwapContractOverride
                 current={venue.check.contractAddress}
                 onSaved={venue.recheck}
               />
             ) : null}
           </Callout>
-        ) : venue.check?.contractAddress ? (
+        ) : expert && routeOpen && venue.check?.contractAddress ? (
           <p className="font-mono text-[9px] leading-relaxed text-fg-dim">
             Verified {venue.check.label ?? "contract"}{" "}
             {truncateAddress(venue.check.contractAddress, 10, 8)} on {venue.check.chainId}

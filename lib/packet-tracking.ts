@@ -71,6 +71,8 @@ export interface TrackedRoute {
   } | null;
   /** Diagnostics from the walk. Developer-facing; never rendered raw. */
   readonly notes: readonly string[];
+  /** Source tx raw_log when the signed transaction itself failed. */
+  readonly sourceError: string | null;
 }
 
 function chainName(chainId: string): string {
@@ -139,6 +141,7 @@ function toView(trace: RouteTrace): TrackedRoute {
         }
       : null,
     notes: trace.notes,
+    sourceError: trace.sourceError ?? null,
   };
 }
 
@@ -195,7 +198,7 @@ export function describeTrackingError(error: unknown): string {
  * Outcomes
  * -------------------------------------------------------------------------- */
 
-export type RouteOutcome = "delivered" | "refunded" | "recoverable";
+export type RouteOutcome = "delivered" | "refunded" | "recoverable" | "failed";
 
 /**
  * The last hop has delivered, so the funds are on the destination chain. The
@@ -218,6 +221,7 @@ export function hasArrived(route: Pick<TrackedRoute, "failure" | "hops">): boole
 export function routeOutcome(route: TrackedRoute): RouteOutcome | null {
   if (hasArrived(route)) return "delivered";
   if (!route.settled) return null;
+  if (route.failure === "source-failed") return "failed";
   return route.failure === "swap-delivery-failed" ? "recoverable" : "refunded";
 }
 

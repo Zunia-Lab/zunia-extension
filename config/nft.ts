@@ -31,6 +31,48 @@ export const NFT_KNOWN_CONTRACTS: Readonly<Record<string, readonly string[]>> =
   {};
 
 /**
+ * Chains that expose Cosmos SDK `x/nft` (`query nft nfts --owner`) even when
+ * the registry row omits `cosmwasm`. Safrochain testnet is the one we ship
+ * with an empty feature list and a working nft module.
+ */
+export const NFT_SDK_MODULE_CHAINS: readonly string[] = [
+  "safrochain-1",
+  "safro-testnet-1",
+];
+
+/**
+ * Wasm codes classified in one scan of a chain, newest first.
+ *
+ * Newest first because a code uploaded recently is far more likely to be a
+ * live collection than wasmd code id 1. The window is deliberately small: the
+ * first run of a chain spends one request per code, and the verdict for each is
+ * then cached forever (see `STORAGE_KEYS.nftWasmScan`), so later runs only
+ * touch the codes that turned out to be CW721.
+ */
+export const NFT_WASM_SCAN_MAX_CODES = 40;
+
+/** CW721 contracts collected from that walk before we stop. */
+export const NFT_WASM_SCAN_MAX_CONTRACTS = 50;
+
+/**
+ * Contracts listed per CW721 code.
+ *
+ * One popular code id can have thousands of instances; a chain-wide scan that
+ * pulled all of them would spend the whole request budget inside one code and
+ * never reach the others.
+ */
+export const NFT_WASM_SCAN_MAX_CONTRACTS_PER_CODE = 25;
+
+/**
+ * How long the discovered CW721 contract list is reused before it is rebuilt.
+ *
+ * Only the addresses expire. A code's verdict does not: wasm is immutable, so
+ * "this code does not answer `tokens`" cannot stop being true. The reload
+ * button ignores this and rebuilds the list.
+ */
+export const NFT_WASM_SCAN_TTL_MS = 6 * 60 * 60_000;
+
+/**
  * Chain-specific NFT indexers, keyed by chain id.
  *
  * EMPTY. An indexer is the only way to promise a *complete* list, and
@@ -41,7 +83,49 @@ export const NFT_KNOWN_CONTRACTS: Readonly<Record<string, readonly string[]>> =
  * indexes transactions only and has no CW721 tables, so there is nothing to
  * wire up yet and the UI says so instead of implying completeness.
  */
-export const NFT_INDEXERS: Readonly<Record<string, NftIndexer>> = {};
+async function listStargazeContracts(
+  _chainId: string,
+  owner: string,
+  signal?: AbortSignal,
+): Promise<readonly string[]> {
+  const response = await fetch("https://graphql.mainnet.stargaze-apis.com/graphql", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      query:
+        "query($owner: String!) { tokens(ownerAddr: $owner, limit: 100) { tokens { collectionAddr } } }",
+      variables: { owner },
+    }),
+    ...(signal ? { signal } : {}),
+  });
+  if (!response.ok) {
+    throw new Error(`Stargaze indexer answered ${response.status}`);
+  }
+  const body = (await response.json()) as {
+    data?: { tokens?: { tokens?: Array<{ collectionAddr?: string }> } };
+    errors?: Array<{ message?: string }>;
+  };
+  if (body.errors?.[0]?.message) {
+    throw new Error(body.errors[0].message);
+  }
+  const seen = new Set<string>();
+  for (const row of body.data?.tokens?.tokens ?? []) {
+    if (row.collectionAddr) seen.add(row.collectionAddr);
+  }
+  return [...seen];
+}
+
+/**
+ * Chain-specific NFT indexers. Stargaze is the one public GraphQL list-by-owner
+ * we can call without a hosted Zunia service. Other CosmWasm chains still need
+ * a known or user-added contract, and the screen says so.
+ */
+export const NFT_INDEXERS: Readonly<Record<string, NftIndexer>> = {
+  "stargaze-1": {
+    name: "Stargaze",
+    listContracts: listStargazeContracts,
+  },
+};
 
 /**
  * cw-ics721 bridge contracts, keyed by the chain they are deployed on.

@@ -29,12 +29,19 @@ import {
   lcdEndpointsFromChain,
   simulate,
   validateMemo,
+  waitForTx,
+  classifyTxFailure,
   type BuiltMsg,
   type Coin,
   type FeeSpeed,
   type MemoInspection,
 } from "@zunialab/interchain";
 
+import {
+  expectedSequenceOf,
+  fetchAccountNumberSequence,
+  isSequenceMismatch,
+} from "./broadcast";
 import { findCatalogEntry } from "./chain-catalog";
 import { chainJsonFor } from "./chains";
 import { chainRegistry, lcdFor } from "./interchain";
@@ -45,6 +52,8 @@ import {
   type SigningPreview,
 } from "./kernel";
 import { getActiveAccountIndex, getSessionMnemonic, touchSession } from "./session";
+import { getSettings } from "./settings";
+import { resolveTxMemo } from "./tx-memo";
 
 /** Fee as the kernel wants it. `gas_limit` is a string: a u64 outruns a JSON number. */
 export interface KernelFeeJson {
@@ -90,9 +99,10 @@ export interface TxRequest {
   readonly chainId: string;
   readonly signerAddress: string;
   readonly msgs: readonly BuiltMsg[];
-  /** Transaction memo. ICS20 and PFM memos live on the message, not here. */
+  /** Transaction memo. Empty becomes a type-specific Zunia default. ICS20/PFM memos stay on the message. */
   readonly memo?: string;
   readonly feeSpeed?: FeeSpeed;
+  readonly gasAdjustment?: number;
 }
 
 /**
@@ -126,6 +136,46 @@ export interface TxPreview {
  * ships transactions that fail for reasons the user cannot see.
  */
 const FALLBACK_GAS_LIMIT = "400000";
+
+/**
+ * Live account number and sequence. Prefers the engine unwrap, then the
+ * extension's own auth read, so a wrapper the first parser missed cannot
+ * become sequence 0 on an account that has already signed.
+ */
+async function resolveSignerAccount(
+  lcd: ReturnType<typeof lcdFor>,
+  chainId: string,
+  address: string,
+) {
+  const [engine, fallback] = await Promise.all([
+    getAccount(lcd, chainId, address).catch(() => null),
+    fetchAccountNumberSequence(chainId, address).catch(() => null),
+  ]);
+  const accountNumber =
+    nonZero(engine?.accountNumber) ??
+    nonZero(fallback?.accountNumber) ??
+    engine?.accountNumber ??
+    fallback?.accountNumber ??
+    "0";
+  // Sequence only increases. When two parsers disagree, the higher value is
+  // the one the chain will accept next.
+  const sequence = higherUint(engine?.sequence, fallback?.sequence);
+  return {
+    accountNumber,
+    sequence,
+    pubKey: engine?.pubKey ?? null,
+  };
+}
+
+function nonZero(value: string | undefined): string | null {
+  return value && value !== "0" ? value : null;
+}
+
+function higherUint(a?: string, b?: string): string {
+  const left = a && /^\d+$/.test(a) ? BigInt(a) : 0n;
+  const right = b && /^\d+$/.test(b) ? BigInt(b) : 0n;
+  return String(left >= right ? left : right);
+}
 
 function packetMemoOf(msgs: readonly BuiltMsg[]): MemoInspection | null {
   const first = msgs[0];
@@ -166,14 +216,18 @@ export async function previewTx(request: TxRequest): Promise<TxPreview> {
   const publicKeyHex = bytesToHex(derived.pubKey);
 
   const lcd = lcdFor(chain);
-  const account = await getAccount(lcd, request.chainId, request.signerAddress);
+  const account = await resolveSignerAccount(
+    lcd,
+    request.chainId,
+    request.signerAddress,
+  );
   const ethKeyType =
     derived.algo === "eth_secp256k1" ||
     isEthSecp256k1PubKey(account.pubKey) ||
     findCatalogEntry(request.chainId)?.coinType === 60;
 
   const msgsJson = JSON.stringify(request.msgs);
-  const memo = request.memo ?? "";
+  const memo = resolveTxMemo(request.memo, request.msgs);
 
   let fee: KernelFeeJson;
   let feeNote: string | null = null;
@@ -190,10 +244,15 @@ export async function previewTx(request: TxRequest): Promise<TxPreview> {
     );
     const post = createLcdPostClient({ client: lcd, endpoints: lcdEndpointsFromChain(chain) });
     const gasUsed = await simulate(post, request.chainId, hexToBase64(simulateTx));
-    const estimate = estimateFee(gasUsed, chain, request.feeSpeed ?? "average");
+    const prefs = await getSettings();
+    const speed = request.feeSpeed ?? prefs.feeSpeed;
+    const gasAdjustment = request.gasAdjustment ?? prefs.gasAdjustment;
+    const estimate = estimateFee(gasUsed, chain, speed, { gasAdjustment });
     fee = { amount: estimate.amount, gas_limit: estimate.gasLimit };
   } catch (error) {
-    const gasPrice = chain.gasPriceStep?.[request.feeSpeed ?? "average"];
+    const prefs = await getSettings();
+    const speed = request.feeSpeed ?? prefs.feeSpeed;
+    const gasPrice = chain.gasPriceStep?.[speed];
     if (gasPrice === undefined) {
       // No simulation and no published gas price means any fee we put in is
       // invented. Refuse rather than sign something the chain will reject.
@@ -201,8 +260,8 @@ export async function previewTx(request: TxRequest): Promise<TxPreview> {
         `${chain.chainName} would not simulate this transaction and publishes no gas price, so Zunia cannot work out a fee.`,
       );
     }
-    const estimate = estimateFee(FALLBACK_GAS_LIMIT, chain, request.feeSpeed ?? "average", {
-      gasAdjustment: 1,
+    const estimate = estimateFee(FALLBACK_GAS_LIMIT, chain, speed, {
+      gasAdjustment: request.gasAdjustment ?? prefs.gasAdjustment,
     });
     fee = { amount: estimate.amount, gas_limit: estimate.gasLimit };
     feeNote = `${chain.chainName} would not simulate this transaction (${
@@ -289,11 +348,11 @@ export async function signAndBroadcastTx(
 
   const msgsJson = JSON.stringify(request.msgs);
   const feeJson = JSON.stringify(request.fee);
-  const memo = request.memo ?? "";
+  const memo = resolveTxMemo(request.memo, request.msgs);
   const ethKeyType =
     derived.algo === "eth_secp256k1" || findCatalogEntry(request.chainId)?.coinType === 60;
 
-  const recomputed = kernel.previewTx(
+  const previewed = kernel.previewTx(
     request.chainId,
     msgsJson,
     feeJson,
@@ -304,36 +363,77 @@ export async function signAndBroadcastTx(
     ethKeyType,
     "direct",
   );
-  if (recomputed.signBytesHash !== request.expectSignBytesHash) {
+  if (previewed.signBytesHash !== request.expectSignBytesHash) {
     throw new Error(
       "The transaction changed between the approval screen and signing. Nothing was signed; start again.",
     );
   }
 
-  const txRawHex = kernel.signTx(
-    mnemonic,
-    "",
-    chainJson,
-    accountIndex,
-    request.chainId,
-    msgsJson,
-    feeJson,
-    memo,
-    request.accountNumber,
-    request.sequence,
-    "direct",
-  );
-
-  await touchSession();
   const lcd = lcdFor(chain);
   const post = createLcdPostClient({ client: lcd, endpoints: lcdEndpointsFromChain(chain) });
-  const result = await engineBroadcast(post, request.chainId, hexToBase64(txRawHex), "sync");
-  return {
-    txhash: result.txHash,
-    code: result.code,
-    rawLog: result.rawLog,
-    success: result.success,
-  };
+  await touchSession();
+
+  let lastError: unknown;
+  let forcedSequence: string | null = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const live = await resolveSignerAccount(lcd, request.chainId, request.signerAddress);
+    const sequence = forcedSequence ?? live.sequence;
+    const txRawHex = kernel.signTx(
+      mnemonic,
+      "",
+      chainJson,
+      accountIndex,
+      request.chainId,
+      msgsJson,
+      feeJson,
+      memo,
+      live.accountNumber,
+      sequence,
+      "direct",
+    );
+    try {
+      const result = await engineBroadcast(post, request.chainId, hexToBase64(txRawHex), "sync");
+      if (!result.success) {
+        const error = new Error(
+          result.rawLog || `Transaction rejected (code ${result.code})`,
+        );
+        if (isSequenceMismatch(error) && attempt === 0) {
+          lastError = error;
+          forcedSequence =
+            result.failure?.expectedSequence ?? expectedSequenceOf(error);
+          continue;
+        }
+        throw error;
+      }
+      const inclusion = await waitForTx(lcd, request.chainId, result.txHash, {
+        deadlineMs: 45_000,
+      });
+      const includedCode = inclusion.code;
+      if (includedCode !== null && includedCode !== 0) {
+        const classified = classifyTxFailure(
+          includedCode,
+          inclusion.rawLog ?? "",
+          "sdk",
+        );
+        throw new Error(
+          classified?.message
+            ? `${classified.message}${inclusion.rawLog ? ` ${inclusion.rawLog}` : ""}`
+            : inclusion.rawLog || `Transaction failed (code ${includedCode})`,
+        );
+      }
+      return {
+        txhash: result.txHash,
+        code: includedCode ?? result.code,
+        rawLog: inclusion.rawLog ?? result.rawLog,
+        success: includedCode === null || includedCode === 0,
+      };
+    } catch (error) {
+      lastError = error;
+      if (!isSequenceMismatch(error) || attempt === 1) throw error;
+      forcedSequence = expectedSequenceOf(error);
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
 /** Hex from the kernel to base64 for the wire, without a Buffer. */

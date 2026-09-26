@@ -18,16 +18,13 @@
 
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import {
-  AddressChip,
-  Avatar,
   Button,
+  TokenLogo,
   Callout,
-  FeeSummary,
   Input,
   KeyValueRow,
   PacketTracker,
   Pill,
-  ProgressTracker,
   RoutePreview,
   ScreenScaffold,
   Segmented,
@@ -43,6 +40,7 @@ import type { ChainBalance, TokenBalance } from "../../../lib/balances";
 import type { AddressBookEntry } from "../../../lib/address-book";
 import { explorerTxUrl } from "../../../config/interchain";
 import { estimateFee, msgSend } from "../../../lib/amino-tx";
+import { resolveTxMemo } from "../../../lib/tx-memo";
 import {
   NO_VALUE,
   formatUnits,
@@ -50,6 +48,7 @@ import {
   isBech32,
   prefixOf,
 } from "../../../lib/format";
+import { maxSendable, reservedFeeUnits } from "../../../lib/fee-prefs";
 import { sendToBackground } from "../../../lib/popup-client";
 import {
   buildTransferMsgFromPlan,
@@ -68,6 +67,8 @@ import {
 import { routeOutcome } from "../../../lib/packet-tracking";
 import type { TxPreview } from "../../../lib/tx-kernel";
 import type { ChainAccountView } from "../hooks/useChainAccounts";
+import { useTxDetail } from "../hooks/useChainQuery";
+import { GasFeePrefs } from "../components/GasFeePrefs";
 import { usePrefs } from "../state/Prefs";
 import { useToast } from "../state/Toasts";
 import { ChainSheet, PickerTrigger } from "../components/ChainSheet";
@@ -83,6 +84,7 @@ import {
   DisabledReason,
   HopChannelList,
   ResumeTrackingBanner,
+  RouteChoiceList,
   TruncatedValue,
   toBaseUnits,
   useAutoDiscovery,
@@ -95,7 +97,7 @@ import {
 } from "./interchain-ui";
 import { SaveContactPrompt } from "../components/SaveContactPrompt";
 import { fieldFocusWithin } from "../components/field-focus";
-import { IconSend } from "./icons";
+import { IconCheck, IconCopy, IconSend } from "./icons";
 import { signingError, useSignedSend } from "../state/SigningPassword";
 
 const PERCENTS = [25, 50, 75, 100] as const;
@@ -115,10 +117,12 @@ function nativeToken(chain: ChainAccountView, balance?: ChainBalance): TokenBala
   };
 }
 
-/** Every token held on a chain, its own first. */
+/** Every token held on a chain: native first, then IBC, factory, and others. */
 function tokensOn(chain: ChainAccountView, balance?: ChainBalance): TokenBalance[] {
   const native = nativeToken(chain, balance);
-  const rest = (balance?.tokens ?? []).filter((token) => token.denom !== native.denom);
+  const rest = (balance?.tokens ?? []).filter(
+    (token) => token.denom !== native.denom && token.amount !== "0" && token.amount !== "",
+  );
   return [native, ...rest];
 }
 
@@ -156,10 +160,12 @@ function ChainOverlayPicker({
         onClick={() => setOpen(true)}
         aria-label={`${label}: ${chain?.entry.chainName ?? "pick a network"}`}
         icon={
-          <Avatar
+          <TokenLogo
             src={chain?.iconUrl}
-            fallback={chain?.entry.chainName ?? "?"}
+            symbol={chain?.entry.chainName ?? "?"}
             size={26}
+            verified={chain?.entry.inCosmosRegistry}
+            verifiedLabel="Listed in the Cosmos chain registry"
           />
         }
         title={chain?.entry.coinDenom ?? "-"}
@@ -194,16 +200,67 @@ function ChainOverlayPicker({
   );
 }
 
-/** Which token on the source chain is being moved. Cross-send only. */
+function tokenKindLabel(token: TokenBalance): string {
+  if (token.kind === "ibc") return "IBC";
+  if (token.kind === "factory") return "Factory";
+  if (token.kind === "other") return "Asset";
+  return "Native";
+}
+
+function tokenLogoSrc(token: TokenBalance | undefined, fallback?: string): string | undefined {
+  return token?.iconUrl || fallback;
+}
+
+function PartyRow({
+  label,
+  address,
+  hint,
+  onCopy,
+}: {
+  label: string;
+  address: string;
+  hint?: string;
+  onCopy: (address: string, title: string) => void;
+}) {
+  return (
+    <div className="flex items-start justify-between gap-3 py-2 first:pt-0 last:pb-0">
+      <div className="min-w-0">
+        <p className="font-mono text-[9px] uppercase tracking-[0.14em] text-fg-dim">{label}</p>
+        {hint ? (
+          <p className="mt-0.5 truncate text-[12.5px] font-medium text-fg">{hint}</p>
+        ) : null}
+        <p className="mt-0.5 break-all font-mono text-[11px] leading-snug text-fg-muted">
+          {address}
+        </p>
+      </div>
+      <button
+        type="button"
+        onClick={() => onCopy(address, `${label} copied`)}
+        className={cn(
+          "mt-0.5 inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 font-mono text-[9.5px] text-accent",
+          "transition-colors duration-[var(--z-duration-base)] hover:bg-[var(--z-state-hover)]",
+          focusRing,
+        )}
+      >
+        <IconCopy width={11} height={11} />
+        Copy
+      </button>
+    </div>
+  );
+}
+
+/** Which token on the source chain is being moved. Native, IBC, factory, other. */
 function TokenPicker({
   tokens,
   denom,
   hidden,
+  fallbackIconUrl,
   onSelect,
 }: {
   tokens: readonly TokenBalance[];
   denom: string;
   hidden: boolean;
+  fallbackIconUrl?: string;
   onSelect: (denom: string) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -214,45 +271,70 @@ function TokenPicker({
       tokens.map((token) => ({
         id: token.denom,
         label: token.displayName,
-        sublabel: shortDenom(token.denom),
-        keywords: [token.symbol, token.denom],
-        icon: <Avatar src={token.iconUrl} fallback={token.symbol} size={24} />,
+        sublabel: `${tokenKindLabel(token)} · ${shortDenom(token.denom)}`,
+        keywords: [token.symbol, token.denom, token.kind, token.displayName],
+        icon: (
+          <TokenLogo
+            src={tokenLogoSrc(token, fallbackIconUrl)}
+            symbol={token.symbol}
+            size={24}
+          />
+        ),
         trailing: (
           <span className="font-mono text-[9.5px] tabular-nums text-fg-dim">
             {hidden ? "••••" : formatUnits(token.amount, token.decimals)}
           </span>
         ),
       })),
-    [tokens, hidden],
+    [tokens, hidden, fallbackIconUrl],
   );
-  if (tokens.length <= 1) return null;
   return (
-    <section>
-      <p className="font-mono text-[9px] uppercase tracking-[0.16em] text-fg-dim">Token</p>
-      <PickerTrigger
-        className="mt-1.5 py-2"
-        expanded={open}
-        onClick={() => setOpen(true)}
+    <>
+      <button
+        type="button"
+        aria-haspopup="dialog"
+        aria-expanded={open}
         aria-label={`Token: ${selected?.displayName ?? "none"}`}
-        title={selected?.displayName ?? "-"}
-        subtitle={selected ? shortDenom(selected.denom) : undefined}
-      />
+        disabled={tokens.length === 0}
+        onClick={() => setOpen(true)}
+        className={cn(
+          "flex min-w-0 max-w-[168px] shrink-0 items-center gap-1.5 rounded-full border border-[var(--z-line)] bg-[var(--z-surface-raised)] py-1.5 pl-1.5 pr-2.5",
+          "transition-colors duration-[var(--z-duration-base)] hover:border-[var(--z-line-strong)] hover:bg-[var(--z-state-hover)]",
+          "disabled:cursor-not-allowed disabled:opacity-50",
+          focusRing,
+        )}
+      >
+        <TokenLogo
+          src={tokenLogoSrc(selected, fallbackIconUrl)}
+          symbol={selected?.symbol ?? "?"}
+          size={24}
+        />
+        <span className="min-w-0 text-left">
+          <span className="block truncate text-[12.5px] font-semibold leading-none tracking-tight text-fg">
+            {selected?.symbol ?? "Token"}
+          </span>
+          <span className="mt-0.5 block truncate font-mono text-[9px] leading-none text-fg-dim">
+            {selected ? tokenKindLabel(selected) : "None"}
+          </span>
+        </span>
+      </button>
       <PickerSheet
         open={open}
         onClose={() => setOpen(false)}
-        title="Choose a token"
+        title="Choose an asset"
         items={items}
         selectedId={selected?.denom}
-        searchPlaceholder="Search tokens"
+        searchPlaceholder="Search native, IBC, factory, or any denom"
         favorites={memory.favorites}
         recents={memory.recents}
         onToggleFavorite={memory.toggleFavorite}
+        emptyLabel="No assets on this network"
         onSelect={(id) => {
           memory.remember(id);
           onSelect(id);
         }}
       />
-    </section>
+    </>
   );
 }
 
@@ -305,6 +387,7 @@ export function SendScreen({
   contacts,
   onContactsChanged,
   onBack,
+  onOpenNfts,
 }: {
   chains: ChainAccountView[];
   balances: Record<string, ChainBalance>;
@@ -314,6 +397,7 @@ export function SendScreen({
   contacts: AddressBookEntry[];
   onContactsChanged?: () => void;
   onBack: () => void;
+  onOpenNfts?: () => void;
 }) {
   const signedSend = useSignedSend();
   const toast = useToast();
@@ -329,9 +413,12 @@ export function SendScreen({
   );
   const [denom, setDenom] = useState("");
   const [recipient, setRecipient] = useState("");
+  /** Cross-chain To field stays closed until the user wants a different address. */
+  const [toOpen, setToOpen] = useState(false);
   const [amount, setAmount] = useState("");
   const [memo, setMemo] = useState("");
   const [manual, setManual] = useState<ManualChannel[]>([]);
+  const [routeKey, setRouteKey] = useState<string | null>(null);
   // Bumped by the route panel's retry, so re-planning the same inputs actually
   // re-plans rather than reusing the settled answer.
   const [retryToken, setRetryToken] = useState(0);
@@ -356,20 +443,52 @@ export function SendScreen({
   const destChain = chains.find((c) => c.chainId === destChainId);
   const balance = chain ? balances[chain.chainId] : undefined;
   const cross = mode === "cross";
+  const inclusion = useTxDetail(
+    chain?.chainId ?? "",
+    phase === "sent" && txHash && !cross ? txHash : "",
+    phase === "sent" && Boolean(txHash) && !cross && liveReads,
+    { intervalMs: 2_000, maxRetries: 60 },
+  );
 
   const chainIdList = useMemo(() => chains.map((c) => c.chainId), [chains]);
   const channelReach = useChannelReach(cross ? (chain?.chainId ?? "") : "", chainIdList);
   const knownReach = destChain ? channelReach.reach.get(destChain.chainId) : undefined;
+  const routeOptions = destChain ? (channelReach.paths.get(destChain.chainId) ?? []) : [];
+  const selectedRoute =
+    routeOptions.find((option) => option.key === routeKey) ?? routeOptions[0];
   const discovery = useAutoDiscovery(
     chain?.chainId ?? "",
     destChain?.chainId ?? "",
-    cross &&
-      liveReads &&
-      channelReach.ready &&
-      Boolean(destChain) &&
-      !(knownReach && knownReach.hops.length === 1 && knownReach.verified),
+    cross && liveReads && channelReach.ready && Boolean(destChain),
     channelReach.reload,
   );
+
+  useEffect(() => {
+    setRouteKey(null);
+  }, [chain?.chainId, destChain?.chainId]);
+
+  const routePins = useMemo<ManualChannel[]>(() => {
+    if (!selectedRoute) return [];
+    return selectedRoute.hops.flatMap((hop) =>
+      hop.counterpartyChainId && hop.channelId
+        ? [
+            {
+              fromChainId: hop.chainId,
+              toChainId: hop.counterpartyChainId,
+              channelId: hop.channelId,
+              ...(hop.channelVerified ? { verdict: "verified" as const } : {}),
+            },
+          ]
+        : [],
+    );
+  }, [selectedRoute]);
+
+  const effectiveManual = useMemo(() => {
+    const byPair = new Map<string, ManualChannel>();
+    for (const pin of routePins) byPair.set(`${pin.fromChainId}>${pin.toChainId}`, pin);
+    for (const pin of manual) byPair.set(`${pin.fromChainId}>${pin.toChainId}`, pin);
+    return [...byPair.values()];
+  }, [routePins, manual]);
 
   // Reachable networks first, fewest hops first; the rest keep their order.
   const destOptions = useMemo(() => {
@@ -386,8 +505,17 @@ export function SendScreen({
   const decimals = token?.decimals ?? chain?.entry.coinDecimals ?? 6;
   const available = token ? BigInt(token.amount) : null;
   const amountUnits = toBaseUnits(amount, decimals);
+  const feeReserve =
+    chain && token
+      ? reservedFeeUnits(chain.chainId, token.denom, settings)
+      : 0n;
+  const spendable =
+    available !== null ? maxSendable(available, feeReserve) : null;
   const overBalance =
-    amountUnits !== null && available !== null && amountUnits > available;
+    amountUnits !== null && spendable !== null && amountUnits > spendable;
+  const destSelf = destChain?.address?.trim() ?? "";
+  const effectiveRecipient = recipient.trim() || (cross ? destSelf : "");
+  const usingSelf = cross && !recipient.trim() && Boolean(destSelf);
 
   /* ---------------------------------------------------------------- *
    * Route planning (cross-send only)
@@ -399,8 +527,8 @@ export function SendScreen({
   } | null>(null);
 
   const recipientValid =
-    isBech32(recipient.trim()) &&
-    (!cross || prefixOf(recipient.trim()) === destChain?.entry.bech32Prefix);
+    isBech32(effectiveRecipient) &&
+    (!cross || prefixOf(effectiveRecipient) === destChain?.entry.bech32Prefix);
 
   const planKey =
     cross &&
@@ -416,8 +544,8 @@ export function SendScreen({
           destChain.chainId,
           token.denom,
           amountUnits.toString(),
-          recipient.trim(),
-          manual
+          effectiveRecipient,
+          effectiveManual
             .map((m) => `${m.fromChainId}>${m.toChainId}:${m.port ?? ""}/${m.channelId}`)
             .join("|"),
           retryToken,
@@ -435,8 +563,8 @@ export function SendScreen({
         inputDenom: token!.denom,
         amountBaseUnits: amountUnits!.toString(),
         sender: chain!.address,
-        recipient: recipient.trim(),
-        manualChannels: manual,
+        recipient: effectiveRecipient,
+        manualChannels: effectiveManual,
         resolveAddresses,
         signal: controller.signal,
       }).then((next) => {
@@ -478,6 +606,7 @@ export function SendScreen({
   // still be entered by hand when nothing was found.
   const previewHops = useMemo((): RouteHopView[] => {
     if (!cross || !chain || !destChain) return [];
+    if (selectedRoute) return [...selectedRoute.hops];
     const pinnedDirect = manual.some(
       (row) => row.fromChainId === chain.chainId && row.toChainId === destChain.chainId,
     );
@@ -494,7 +623,7 @@ export function SendScreen({
         kind: "transfer",
       },
     ];
-  }, [cross, chain, destChain, manual, knownReach]);
+  }, [cross, chain, destChain, manual, knownReach, selectedRoute]);
 
   const routeHint = ((): string => {
     if (!chain || !destChain) return "";
@@ -503,14 +632,19 @@ export function SendScreen({
     }
     if (!channelReach.ready) return "Reading the channel cache…";
     if (discovery.searching) {
-      return `Looking for a channel from ${chain.entry.chainName} to ${destChain.entry.chainName}…`;
+      return `Reading open channels on ${chain.entry.chainName} and checking each hop…`;
     }
     if (!knownReach) {
       return discovery.error
         ? `${discovery.error} Use Modify to enter a channel you know.`
         : `No open channel found from ${chain.entry.chainName} to ${destChain.entry.chainName}. Use Modify to enter one you know.`;
     }
-    return "Enter the recipient and an amount, and Zunia plans the transfer on this route.";
+    if (routeOptions.length > 1) {
+      return `${routeOptions.length} routes found. Pick one, then enter an amount.`;
+    }
+    return usingSelf
+      ? `Enter an amount. Arrival is this wallet on ${destChain.entry.chainName} unless you add another address.`
+      : "Enter an amount, and Zunia plans the transfer on this route.";
   })();
 
   /* ---------------------------------------------------------------- *
@@ -519,12 +653,14 @@ export function SendScreen({
 
   const localFee = useMemo(() => {
     if (!chain || cross) return null;
+    const price = chain.entry.gasPriceStep?.[settings.feeSpeed] ?? 0.025;
+    const gasLimit = Math.max(1, Math.ceil(200_000 * settings.gasAdjustment));
     return estimateFee({
-      gasLimit: 200_000,
-      gasPrice: chain.entry.gasPriceStep?.average ?? 0.025,
+      gasLimit,
+      gasPrice: price,
       denom: chain.entry.feeMinimalDenom,
     });
-  }, [chain, cross]);
+  }, [chain, cross, settings.feeSpeed, settings.gasAdjustment]);
 
   /* ---------------------------------------------------------------- *
    * Validation
@@ -537,7 +673,17 @@ export function SendScreen({
 
   const recipientState = useMemo(() => {
     const value = recipient.trim();
-    if (!value) return { tone: "default" as const, hint: undefined };
+    if (!value) {
+      if (cross && destSelf) {
+        return {
+          tone: "valid" as const,
+          hint: destChain
+            ? `This wallet on ${destChain.entry.chainName}`
+            : "This wallet on the destination",
+        };
+      }
+      return { tone: "default" as const, hint: undefined };
+    }
     if (!isBech32(value)) {
       return { tone: "error" as const, hint: "Not a valid address. Check it for a typo." };
     }
@@ -552,7 +698,7 @@ export function SendScreen({
       tone: "valid" as const,
       hint: known ? `Saved as ${known.label}` : "Valid address",
     };
-  }, [recipient, chain, contacts, expectedPrefix, cross]);
+  }, [recipient, chain, contacts, expectedPrefix, cross, destSelf, destChain]);
 
   const blockedReason = useMemo((): string | null => {
     if (!chain) return "Enable at least one network first.";
@@ -561,6 +707,9 @@ export function SendScreen({
     }
     if (cross && kernel.reason) return kernel.reason;
     if (cross && !destChain) return "Pick a destination network.";
+    if (cross && !effectiveRecipient) {
+      return "This wallet has no address on the destination. Add one to continue.";
+    }
     if (recipientState.tone !== "valid") return null;
     if (!amount) return null;
     if (amountUnits === null) return "That amount is not a number this chain can hold.";
@@ -582,6 +731,7 @@ export function SendScreen({
     liveReads,
     kernel.reason,
     destChain,
+    effectiveRecipient,
     recipientState.tone,
     amount,
     amountUnits,
@@ -602,7 +752,7 @@ export function SendScreen({
 
   function applyPercent(pct: number) {
     if (available === null) return;
-    const units = (available * BigInt(pct)) / 100n;
+    const units = (maxSendable(available, feeReserve) * BigInt(pct)) / 100n;
     setAmount(formatUnitsExact(units.toString(), decimals));
   }
 
@@ -631,6 +781,8 @@ export function SendScreen({
         chainId: chain.chainId,
         signerAddress: chain.address,
         msgs,
+        feeSpeed: settings.feeSpeed,
+        gasAdjustment: settings.gasAdjustment,
       });
       setPendingMsgs(msgs);
       // Captured here, not at signing: this is the plan the confirm screen
@@ -643,7 +795,7 @@ export function SendScreen({
     } finally {
       setBusy(false);
     }
-  }, [chain, amountUnits, cross, plan]);
+  }, [chain, amountUnits, cross, plan, settings.feeSpeed, settings.gasAdjustment]);
 
   /** Moves a saved recipient up the Recent list. Best effort: the send already happened. */
   function countSend(address: string) {
@@ -651,6 +803,15 @@ export function SendScreen({
     void sendToBackground("TOUCH_ADDRESS_BOOK_ENTRY", { address })
       .then(() => onContactsChanged?.())
       .catch(() => undefined);
+  }
+
+  async function copyParty(value: string, title: string) {
+    try {
+      await navigator.clipboard.writeText(value);
+      toast(title, { meta: truncateAddress(value, 10, 6) });
+    } catch {
+      toast("Could not copy", { tone: "danger" });
+    }
   }
 
   async function confirmAndBroadcast() {
@@ -666,6 +827,7 @@ export function SendScreen({
             chainId: chain.chainId,
             signerAddress: chain.address,
             msgs: pendingMsgs,
+            memo: preview.preview.memo,
             fee: preview.fee,
             accountNumber: preview.accountNumber,
             sequence: preview.sequence,
@@ -691,21 +853,25 @@ export function SendScreen({
         setTxHash(broadcastResult.txhash);
         setSentTo(recipient.trim());
         countSend(recipient.trim());
-        toast("Transfer sent", { meta: truncateAddress(broadcastResult.txhash, 6, 4) });
+        toast("Transfer sent", {
+          meta: truncateAddress(broadcastResult.txhash, 6, 4),
+          alert: true,
+        });
       } else {
+        const msgs = [
+          msgSend({
+            fromAddress: chain.address,
+            toAddress: recipient.trim(),
+            amount: [{ denom: token.denom, amount: amountUnits.toString() }],
+          }),
+        ];
         const broadcastResult = await signedSend<{ txhash: string }>(
           "SIGN_AND_BROADCAST",
           {
             chainId: chain.chainId,
             signerAddress: chain.address,
-            msgs: [
-              msgSend({
-                fromAddress: chain.address,
-                toAddress: recipient.trim(),
-                amount: [{ denom: token.denom, amount: amountUnits.toString() }],
-              }),
-            ],
-            memo: memo || undefined,
+            msgs,
+            memo: resolveTxMemo(memo, msgs),
             fee: localFee,
             gasLimit: 200_000,
           },
@@ -713,11 +879,16 @@ export function SendScreen({
         setTxHash(broadcastResult.txhash);
         setSentTo(recipient.trim());
         countSend(recipient.trim());
-        toast("Transaction sent", { meta: truncateAddress(broadcastResult.txhash, 6, 4) });
+        toast("Transaction sent", {
+          meta: truncateAddress(broadcastResult.txhash, 6, 4),
+          alert: true,
+        });
       }
       setPhase("sent");
     } catch (caught) {
-      setError(signingError(caught));
+      const message = signingError(caught);
+      setError(message);
+      if (message) toast(message, { tone: "danger" });
     } finally {
       setBusy(false);
     }
@@ -740,7 +911,8 @@ export function SendScreen({
   // A settled transfer has nothing left to act on, so stop offering to resume it.
   const trackedHash = tracked?.txHash ?? null;
   const outcome = tracking.route ? routeOutcome(tracking.route) : null;
-  const finished = outcome === "delivered" || outcome === "refunded";
+  const finished =
+    outcome === "delivered" || outcome === "refunded" || outcome === "failed";
   useEffect(() => {
     if (!trackedHash || !finished) return;
     void removePendingTransfer(trackedHash);
@@ -759,9 +931,10 @@ export function SendScreen({
   if (phase === "sent" && txHash) {
     if (cross && tracked) {
       const route = tracking.route;
+      const failed = outcome === "failed" || route?.failure === "source-failed";
       return (
         <ScreenScaffold
-          title="Transfer in flight"
+          title={failed ? "Transfer failed" : "Transfer in flight"}
           footer={
             <Button className="w-full" variant="secondary" onClick={onBack}>
               Done
@@ -782,68 +955,123 @@ export function SendScreen({
               onRefresh={tracking.refresh}
               lastUpdatedAt={route?.updatedAt ?? null}
             />
-            <Callout
-              tone="neutral"
-              className="mt-3"
-              title="This keeps running without the popup"
-            >
-              The transfer proceeds on chain whether or not Zunia is open. Zunia
-              follows it for a day and lists it at the top of Activity until it
-              arrives.
-            </Callout>
+            {failed ? (
+              <Callout compact className="mt-3" tone="danger" title="Transaction failed">
+                {route?.sourceError ||
+                  "The source chain rejected this transfer. Nothing was sent."}
+              </Callout>
+            ) : (
+              <Callout
+                compact
+                tone="neutral"
+                className="mt-3"
+                title="Runs without the popup"
+              >
+                Zunia follows this for a day and lists it on Activity until it
+                arrives.
+              </Callout>
+            )}
             <div className="mt-3">
-              <SaveContactPrompt
-                address={sentTo}
-                chainId={tracked.plan.destChainId}
-                contacts={contacts}
-                onSaved={() => onContactsChanged?.()}
-              />
+              {sentTo ? (
+                <SaveContactPrompt
+                  address={sentTo}
+                  chainId={tracked.plan.destChainId}
+                  contacts={contacts}
+                  onSaved={() => onContactsChanged?.()}
+                />
+              ) : null}
             </div>
           </div>
         </ScreenScaffold>
       );
     }
     const sentUrl = explorerTxUrl(chain.chainId, txHash);
+    const confirmed = inclusion.detail;
+    const waiting =
+      liveReads && !confirmed && (inclusion.retrying || inclusion.loading || inclusion.missing);
+    const failed = Boolean(confirmed && !confirmed.success);
+    const included = Boolean(confirmed?.success);
+    const symbol = token?.symbol ?? chain.entry.coinDenom;
+    const explorer = sentUrl ? (
+      <Button className="w-full" asChild>
+        <a href={sentUrl} target="_blank" rel="noreferrer">
+          View on explorer
+        </a>
+      </Button>
+    ) : undefined;
+
+    if (waiting) {
+      return (
+        <ScreenScaffold title="Sending" onBack={onBack}>
+          <div className="flex flex-col items-center px-2 pt-10 text-center">
+            <div className="relative flex size-[76px] items-center justify-center">
+              <span className="absolute inset-0 rounded-full border border-[var(--z-line)]" />
+              <span className="absolute inset-[6px] animate-spin rounded-full border-2 border-transparent border-t-accent" />
+              <Spinner className="size-6 text-accent" />
+            </div>
+            <p className="mt-5 text-[18px] font-semibold tracking-tight text-fg">
+              Confirming
+            </p>
+            <p className="mt-1.5 max-w-[240px] text-[12.5px] leading-snug text-fg-muted">
+              Waiting for {chain.entry.chainName} to include this send.
+            </p>
+            <p className="mt-5 break-all font-mono text-[10px] leading-relaxed text-fg-faint">
+              {txHash}
+            </p>
+          </div>
+        </ScreenScaffold>
+      );
+    }
+
     return (
       <ScreenScaffold
-        title="Transfer sent"
+        title={failed ? "Rejected" : included ? "Sent" : "Broadcast"}
         onBack={onBack}
-        footer={
-          <div className="flex gap-2">
-            {sentUrl ? (
-              <Button variant="secondary" className="flex-1" asChild>
-                <a href={sentUrl} target="_blank" rel="noreferrer">
-                  View on explorer
-                </a>
-              </Button>
-            ) : null}
-            <Button className="flex-1" onClick={onBack}>
-              Done
-            </Button>
-          </div>
-        }
+        footer={explorer}
       >
-        <div className="flex flex-col gap-3 pt-1">
-          <ProgressTracker
-            title="Waiting for a block"
-            steps={[
-              { label: "Signed", state: "done" },
-              { label: "Broadcast", state: "done" },
-              { label: "Included", state: "current" },
-            ]}
-            step={2}
-            total={3}
-          />
-          <KeyValueRow
-            label="Hash"
-            value={<AddressChip address={txHash} />}
-          />
-          <SaveContactPrompt
-            address={sentTo}
-            chainId={chain.chainId}
-            contacts={contacts}
-            onSaved={() => onContactsChanged?.()}
-          />
+        <div className="flex flex-col items-center px-2 pt-8 text-center">
+          <div
+            className={cn(
+              "flex size-[76px] items-center justify-center rounded-full",
+              failed
+                ? "bg-[var(--z-danger-fill)] text-[var(--z-danger)]"
+                : "bg-[var(--z-success-fill)] text-[var(--z-success)]",
+            )}
+          >
+            {failed ? (
+              <span className="text-[28px] font-semibold leading-none">!</span>
+            ) : (
+              <IconCheck width={32} height={32} />
+            )}
+          </div>
+          <p className="mt-5 text-[18px] font-semibold tracking-tight text-fg">
+            {failed ? "Not included" : included ? "Included" : "Broadcast accepted"}
+          </p>
+          {amount ? (
+            <p className="mt-2 text-[22px] font-semibold tracking-[-0.03em] tabular-nums text-fg">
+              {amount} {symbol}
+            </p>
+          ) : null}
+          <p className="mt-1.5 max-w-[250px] text-[12.5px] leading-snug text-fg-muted">
+            {failed
+              ? confirmed?.error || "The chain included this transaction with an error."
+              : included
+                ? `Confirmed on ${chain.entry.chainName}.`
+                : `${chain.entry.chainName} has not confirmed it here yet. Open the explorer to follow it.`}
+          </p>
+          <p className="mt-4 break-all font-mono text-[10px] leading-relaxed text-fg-faint">
+            {txHash}
+          </p>
+        </div>
+        <div className="mt-4">
+          {sentTo ? (
+            <SaveContactPrompt
+              address={sentTo}
+              chainId={chain.chainId}
+              contacts={contacts}
+              onSaved={() => onContactsChanged?.()}
+            />
+          ) : null}
         </div>
       </ScreenScaffold>
     );
@@ -870,9 +1098,49 @@ export function SendScreen({
             ),
         )
       : [];
+    const confirmKind = !cross
+      ? "send"
+      : signedPlan?.plan.requiresPfm
+        ? "ibc-forward"
+        : "ibc";
+    const confirmTitle =
+      confirmKind === "send"
+        ? "Confirm send"
+        : confirmKind === "ibc-forward"
+          ? "Confirm IBC route"
+          : "Confirm IBC send";
+    const signLabel =
+      confirmKind === "send"
+        ? "Sign send"
+        : confirmKind === "ibc-forward"
+          ? "Sign route"
+          : "Sign IBC send";
+    const shownMemo = cross
+      ? preview?.preview.memo || resolveTxMemo("", pendingMsgs ?? [])
+      : resolveTxMemo(
+          memo,
+          token
+            ? [
+                {
+                  type: "cosmos-sdk/MsgSend",
+                  value: {
+                    amount: [
+                      {
+                        denom: token.denom,
+                        amount: amountUnits?.toString() ?? "0",
+                      },
+                    ],
+                  },
+                },
+              ]
+            : [],
+        );
+    const toAddress = effectiveRecipient;
+    const toContact = contacts.find((contact) => contact.address === toAddress);
+    const symbol = token?.symbol ?? chain.entry.coinDenom;
     return (
       <ScreenScaffold
-        title="Confirm transfer"
+        title={confirmTitle}
         onBack={() => {
           setPhase("form");
           setError(null);
@@ -895,28 +1163,116 @@ export function SendScreen({
               disabled={busy}
               onClick={() => void confirmAndBroadcast()}
             >
-              {busy ? "Signing…" : "Sign and send"}
+              {busy ? "Signing…" : signLabel}
             </Button>
           </div>
         }
       >
         <div className="flex flex-col gap-3 pt-1">
-          <section className="rounded-[13px] border border-[var(--z-line)] px-3 py-3">
-            <KeyValueRow
-              label="Amount"
-              value={`${amount} ${token?.symbol ?? chain.entry.coinDenom}`}
+          <section className="rounded-[18px] border border-[var(--z-line)] bg-[var(--z-glass)] px-3.5 py-4">
+            <div className="flex items-start gap-3">
+              <TokenLogo
+                src={tokenLogoSrc(token, chain.iconUrl)}
+                symbol={symbol}
+                size={44}
+              />
+              <div className="min-w-0 flex-1">
+                <p className="font-mono text-[9px] uppercase tracking-[0.16em] text-fg-dim">
+                  {confirmKind === "send"
+                    ? "Send"
+                    : confirmKind === "ibc-forward"
+                      ? "Multi-hop IBC"
+                      : "IBC transfer"}
+                </p>
+                <p className="mt-1 text-[26px] font-semibold leading-none tracking-[-0.04em] tabular-nums text-fg">
+                  {amount}{" "}
+                  <span className="text-[15px] font-semibold tracking-[-0.02em] text-fg-muted">
+                    {symbol}
+                  </span>
+                </p>
+                <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                  {token ? (
+                    <Pill className="px-1.5 py-0.5 text-[8.5px] tracking-[0.08em]">
+                      {tokenKindLabel(token)}
+                    </Pill>
+                  ) : null}
+                  {cross && destChain ? (
+                    <Pill tone="accent" className="px-1.5 py-0.5 text-[8.5px] tracking-[0.08em]">
+                      {chain.entry.chainName} → {destChain.entry.chainName}
+                    </Pill>
+                  ) : (
+                    <Pill className="px-1.5 py-0.5 text-[8.5px] tracking-[0.08em]">
+                      {chain.entry.chainName}
+                    </Pill>
+                  )}
+                </div>
+              </div>
+            </div>
+            {cross && destChain ? (
+              <div className="mt-3.5 flex items-center gap-2 rounded-[12px] border border-[var(--z-line)] px-3 py-2">
+                <TokenLogo
+                  src={chain.iconUrl}
+                  symbol={chain.entry.chainName}
+                  size={22}
+                  verified={chain.entry.inCosmosRegistry}
+                />
+                <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-fg-muted">
+                  {routeSentence(signedPlan?.hops ?? []) ||
+                    `${chain.entry.chainName} → ${destChain.entry.chainName}`}
+                </span>
+                <TokenLogo
+                  src={destChain.iconUrl}
+                  symbol={destChain.entry.chainName}
+                  size={22}
+                  verified={destChain.entry.inCosmosRegistry}
+                />
+              </div>
+            ) : null}
+          </section>
+
+          <section className="divide-y divide-[var(--z-line)] rounded-[16px] border border-[var(--z-line)] px-3.5 py-2.5">
+            <PartyRow
+              label="From"
+              address={chain.address}
+              hint="You"
+              onCopy={copyParty}
             />
-            <KeyValueRow label="To" value={truncateAddress(recipient.trim(), 10, 8)} />
-            <KeyValueRow
-              label="Route"
-              value={
-                <TruncatedValue>
-                  {cross
-                    ? routeSentence(signedPlan?.hops ?? []) || "?"
-                    : "Direct · MsgSend"}
-                </TruncatedValue>
+            <PartyRow
+              label="To"
+              address={toAddress}
+              hint={
+                toContact?.label ??
+                (usingSelf
+                  ? `This wallet · ${destChain?.entry.chainName ?? "destination"}`
+                  : cross
+                    ? destChain?.entry.chainName
+                    : undefined)
               }
+              onCopy={copyParty}
             />
+          </section>
+
+          <section className="flex flex-col gap-1.5 rounded-[16px] border border-[var(--z-line)] px-3.5 py-3">
+            {confirmKind === "send" ? (
+              <KeyValueRow label="Message" value="MsgSend" />
+            ) : (
+              <KeyValueRow
+                label="Message"
+                value={confirmKind === "ibc-forward" ? "MsgTransfer · PFM" : "MsgTransfer"}
+              />
+            )}
+            {token?.kind === "ibc" && token.baseDenom ? (
+              <KeyValueRow
+                label="Origin"
+                value={<TruncatedValue>{token.baseDenom}</TruncatedValue>}
+              />
+            ) : null}
+            {token && (token.kind === "factory" || token.kind === "other") ? (
+              <KeyValueRow
+                label="Denom"
+                value={<TruncatedValue>{token.denom}</TruncatedValue>}
+              />
+            ) : null}
             {forwarders.length > 0 ? (
               <KeyValueRow
                 label="Forwarded by"
@@ -930,9 +1286,12 @@ export function SendScreen({
               />
             ) : null}
             {cross && eta ? (
-              <KeyValueRow label="Arrives in" value={`about ${Math.max(1, Math.round(eta / 60))} min`} />
+              <KeyValueRow
+                label="Arrives in"
+                value={`about ${Math.max(1, Math.round(eta / 60))} min`}
+              />
             ) : null}
-            {!cross && memo ? <KeyValueRow label="Memo" value={memo} /> : null}
+            <KeyValueRow label="Memo" value={<TruncatedValue>{shownMemo}</TruncatedValue>} />
           </section>
 
           {unconfirmedPins.map((pin) => (
@@ -948,8 +1307,8 @@ export function SendScreen({
           ))}
 
           {cross && memoInfo ? (
-            <section className="rounded-[13px] border border-[var(--z-line)] px-3 py-3">
-              <SectionLabel>What the memo will do</SectionLabel>
+            <section className="rounded-[16px] border border-[var(--z-line)] px-3.5 py-3">
+              <SectionLabel>What the packet memo will do</SectionLabel>
               <p className="mt-1.5 text-[11.5px] leading-snug text-fg">
                 {memoInfo.summary}
               </p>
@@ -961,28 +1320,24 @@ export function SendScreen({
             </section>
           ) : null}
 
-          <FeeSummary
-            rows={[
-              {
-                label: "Network fee",
-                value: feeCoin
-                  ? `${formatUnits(feeCoin.amount, chain.entry.feeDecimals)} ${chain.entry.feeDenom}`
-                  : NO_VALUE,
-              },
-              { label: "Gas", value: gas ?? NO_VALUE },
-              ...(cross && preview
-                ? [
-                    {
-                      label: "Sign bytes",
-                      value: `${preview.preview.signBytesHash.slice(0, 12)}…`,
-                    },
-                  ]
-                : []),
-            ]}
-          />
+          <section className="rounded-[12px] border border-[var(--z-line)] px-2.5 py-2">
+            <GasFeePrefs
+              feeAmount={feeCoin?.amount}
+              feeDecimals={chain.entry.feeDecimals}
+              feeSymbol={chain.entry.feeDenom}
+              onChanged={() => {
+                if (cross) void review();
+              }}
+            />
+            {gas ? (
+              <div className="mt-1.5">
+                <KeyValueRow label="Gas" value={gas} />
+              </div>
+            ) : null}
+          </section>
 
           {cross && preview?.feeNote ? (
-            <Callout tone="warning" title="Fee is an estimate">
+            <Callout compact tone="warning" title="Fee is an estimate">
               {preview.feeNote}
             </Callout>
           ) : null}
@@ -991,12 +1346,16 @@ export function SendScreen({
             <Callout tone="danger" title="Could not broadcast">
               {error}
             </Callout>
-          ) : (
-            <Callout tone="info" title="Signed on this device">
-              {cross
-                ? `You pay gas only on ${chain.entry.chainName}, in ${chain.entry.feeDenom}. Relayers carry the packet the rest of the way.`
-                : "Approving signs with your unlocked keyring and posts the tx to this chain's public REST endpoint."}
+          ) : cross ? (
+            <Callout tone="warning" title="Gas is paid on this chain">
+              You pay gas only on {chain.entry.chainName}, in {chain.entry.feeDenom}.
+              Relayers carry the packet the rest of the way.
             </Callout>
+          ) : (
+            <p className="text-[11px] leading-snug text-fg-muted">
+              This stays on {chain.entry.chainName}. The recipient can spend it as soon
+              as the transaction is included.
+            </p>
           )}
         </div>
       </ScreenScaffold>
@@ -1052,6 +1411,7 @@ export function SendScreen({
             setMode(next);
             setPhase("form");
             setRecipient("");
+            setToOpen(false);
             setManual([]);
           }}
           options={[
@@ -1061,7 +1421,7 @@ export function SendScreen({
         />
 
         <ChainOverlayPicker
-          label={cross ? "From" : "Asset"}
+          label={cross ? "From network" : "Network"}
           chain={chain}
           chains={chains}
           balance={balance}
@@ -1070,6 +1430,7 @@ export function SendScreen({
           onSelect={(id) => {
             setChainId(id);
             setRecipient("");
+            setToOpen(false);
             setAmount("");
             setDenom("");
             setManual([]);
@@ -1081,19 +1442,6 @@ export function SendScreen({
         />
 
         {cross ? (
-          <TokenPicker
-            tokens={tokens}
-            denom={token?.denom ?? ""}
-            hidden={hidden}
-            onSelect={(next) => {
-              setDenom(next);
-              setAmount("");
-              setManual([]);
-            }}
-          />
-        ) : null}
-
-        {cross ? (
           <ChainOverlayPicker
             label="To network"
             chain={destChain}
@@ -1103,50 +1451,87 @@ export function SendScreen({
             onSelect={(id) => {
               setDestChainId(id);
               setRecipient("");
+              setToOpen(false);
               setManual([]);
             }}
           />
         ) : null}
 
-        <section>
-          <p className="font-mono text-[9px] uppercase tracking-[0.16em] text-fg-dim">To</p>
-          <Input
-            className="mt-1.5"
-            placeholder={`${expectedPrefix ?? "cosmos"}1…`}
-            value={recipient}
-            spellCheck={false}
-            autoComplete="off"
-            state={recipientState.tone}
-            hint={recipientState.hint}
-            onChange={(e) => setRecipient(e.target.value)}
-            trailing={
-              <AddressFieldActions
-                onScan={() => setPicker("qr")}
-                onBook={() => setPicker("book")}
-              />
-            }
-          />
-          {!recipient ? (
-            <ContactChips
-              contacts={contacts}
-              expectedPrefix={expectedPrefix}
-              expectedChainId={recipientChainId}
-              onPick={setRecipient}
+        {cross && destSelf && !toOpen ? (
+          <p className="-mt-1 text-[11px] text-fg-dim">
+            Arrives in this wallet.{" "}
+            <button
+              type="button"
+              onClick={() => setToOpen(true)}
+              className={cn("text-accent underline-offset-2 hover:underline", focusRing)}
+            >
+              Use another address
+            </button>
+          </p>
+        ) : !cross || toOpen || !destSelf ? (
+          <section>
+            <div className="flex items-center justify-between gap-2">
+              <p className="font-mono text-[9px] uppercase tracking-[0.16em] text-fg-muted">
+                To
+              </p>
+              {cross && destSelf ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setRecipient("");
+                    setToOpen(false);
+                  }}
+                  className={cn(
+                    "font-mono text-[9.5px] uppercase tracking-[0.08em] text-accent",
+                    focusRing,
+                  )}
+                >
+                  Use this wallet
+                </button>
+              ) : null}
+            </div>
+            <Input
+              className="mt-1.5 h-12 py-0"
+              style={{ paddingRight: "6.75rem" }}
+              placeholder={`${expectedPrefix ?? "cosmos"}1…`}
+              value={recipient}
+              spellCheck={false}
+              autoComplete="off"
+              state={recipientState.tone}
+              hint={recipientState.hint}
+              onChange={(e) => setRecipient(e.target.value)}
+              trailing={
+                <AddressFieldActions
+                  onScan={() => setPicker("qr")}
+                  onBook={() => setPicker("book")}
+                />
+              }
             />
-          ) : null}
-        </section>
+            {!recipient ? (
+              <ContactChips
+                contacts={contacts}
+                expectedPrefix={expectedPrefix}
+                expectedChainId={recipientChainId}
+                onPick={(address) => {
+                  setRecipient(address);
+                  setToOpen(true);
+                }}
+              />
+            ) : null}
+          </section>
+        ) : null}
 
         <section
           className={cn(
-            "rounded-[13px] border border-[var(--z-line)] px-3 py-3",
+            "rounded-[16px] border border-[var(--z-line)] bg-[var(--z-glass)] px-3.5 py-3",
             fieldFocusWithin,
           )}
         >
-          <div className="flex items-baseline justify-between">
-            <p className="font-mono text-[9px] uppercase tracking-[0.16em] text-fg-dim">
-              Amount
+          <div className="flex items-baseline justify-between gap-2">
+            <p className="font-mono text-[9px] uppercase tracking-[0.16em] text-fg-muted">
+              You send
             </p>
-            <p className="font-mono text-[9.5px] text-fg-dim">
+            <p className="truncate font-mono text-[10px] tabular-nums text-fg-dim">
               {hidden
                 ? "••••"
                 : token
@@ -1154,26 +1539,34 @@ export function SendScreen({
                   : "balance unknown"}
             </p>
           </div>
-          <div className="mt-1.5 flex items-baseline gap-2">
+          <div className="mt-2.5 flex items-center gap-2.5">
             <label className="sr-only" htmlFor="send-amount">
               Amount
             </label>
             <input
               id="send-amount"
               inputMode="decimal"
-              placeholder="0.00"
+              placeholder="0"
               value={amount}
               onChange={(e) => setAmount(e.target.value)}
               className={cn(
-                "min-w-0 flex-1 bg-transparent text-[28px] font-medium tracking-[-0.04em] text-fg outline-none",
+                "min-w-0 flex-1 bg-transparent text-left text-[26px] font-semibold leading-none tracking-[-0.04em] tabular-nums text-fg outline-none",
                 "placeholder:text-fg-faint",
               )}
             />
-            <span className="font-mono text-[11px] uppercase tracking-[0.08em] text-fg-dim">
-              {token?.symbol ?? chain.entry.coinDenom}
-            </span>
+            <TokenPicker
+              tokens={tokens}
+              denom={token?.denom ?? ""}
+              hidden={hidden}
+              fallbackIconUrl={chain.iconUrl}
+              onSelect={(next) => {
+                setDenom(next);
+                setAmount("");
+                setManual([]);
+              }}
+            />
           </div>
-          <div className="mt-2.5 flex gap-1.5">
+          <div className="mt-2.5 flex gap-1">
             {PERCENTS.map((pct) => (
               <button
                 key={pct}
@@ -1181,7 +1574,7 @@ export function SendScreen({
                 disabled={available === null}
                 onClick={() => applyPercent(pct)}
                 className={cn(
-                  "flex-1 rounded-full border border-[var(--z-line)] py-1 font-mono text-[9.5px] uppercase tracking-[0.08em] text-fg-muted",
+                  "flex-1 rounded-full border border-[var(--z-line)] py-1 font-mono text-[10px] font-semibold uppercase tracking-[0.06em] text-fg-muted",
                   "transition-colors duration-[var(--z-duration-base)] hover:border-[var(--z-line-strong)] hover:text-fg",
                   "disabled:cursor-not-allowed disabled:opacity-40",
                   focusRing,
@@ -1213,18 +1606,30 @@ export function SendScreen({
               onRetry={() => setRetryToken((n) => n + 1)}
               footer={
                 plan ? (
-                  <HopChannelList
-                    hops={plan.hops}
-                    manual={manual}
-                    onPick={pinChannel}
-                    onClear={unpinChannel}
-                  />
+                  <div className="flex flex-col gap-2">
+                    <RouteChoiceList
+                      options={routeOptions}
+                      selectedKey={selectedRoute?.key ?? ""}
+                      onSelect={setRouteKey}
+                    />
+                    <HopChannelList
+                      hops={plan.hops}
+                      manual={manual}
+                      onPick={pinChannel}
+                      onClear={unpinChannel}
+                    />
+                  </div>
                 ) : null
               }
             />
           ) : (
             <section className="flex flex-col gap-1.5">
               <SectionLabel>Route</SectionLabel>
+              <RouteChoiceList
+                options={routeOptions}
+                selectedKey={selectedRoute?.key ?? ""}
+                onSelect={setRouteKey}
+              />
               {previewHops.length > 0 ? (
                 <HopChannelList
                   hops={previewHops}
@@ -1247,23 +1652,29 @@ export function SendScreen({
         {!cross ? (
           <Input
             label="Memo (optional)"
-            placeholder="Visible to everyone on chain"
+            placeholder="Leave empty for a Zunia default"
             value={memo}
             maxLength={256}
             onChange={(e) => setMemo(e.target.value)}
           />
         ) : null}
 
-        <section className="flex flex-col gap-1.5 rounded-[13px] border border-[var(--z-line)] px-3 py-3">
-          <KeyValueRow label="From" value={chain.entry.chainId} />
-          {cross && destChain ? (
-            <KeyValueRow label="To" value={destChain.entry.chainId} />
-          ) : null}
-          <KeyValueRow
-            label="Gas price"
-            value={`${chain.entry.gasPriceStep?.average ?? 0.025} ${chain.entry.feeMinimalDenom}`}
-          />
-        </section>
+        {onOpenNfts ? (
+          <button
+            type="button"
+            onClick={onOpenNfts}
+            className={cn(
+              "w-full rounded-[14px] border border-[var(--z-line)] px-3.5 py-2.5 text-left",
+              "transition-colors duration-[var(--z-duration-base)] hover:bg-[var(--z-state-hover)]",
+              focusRing,
+            )}
+          >
+            <span className="block text-[12.5px] font-medium text-fg">Send an NFT</span>
+            <span className="mt-0.5 block text-[10.5px] leading-snug text-fg-muted">
+              Collectibles use their own transfer. Open NFTs to pick one.
+            </span>
+          </button>
+        ) : null}
 
         <p className="flex items-center justify-center gap-1.5 pb-1 font-mono text-[9px] uppercase tracking-[0.12em] text-fg-dim">
           <IconSend width={16} height={16} />
@@ -1291,6 +1702,7 @@ export function SendScreen({
           onClose={() => setPicker(null)}
           onPick={(address) => {
             setRecipient(address);
+            setToOpen(true);
             setPicker(null);
           }}
         />
@@ -1300,6 +1712,7 @@ export function SendScreen({
           onClose={() => setPicker(null)}
           onScan={(address) => {
             setRecipient(address);
+            setToOpen(true);
             setPicker(null);
           }}
         />

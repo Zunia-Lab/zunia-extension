@@ -27,6 +27,7 @@ import {
   discoverCollections,
   listUserContracts,
   nftChainSupport,
+  probeUserContract,
   removeUserContract,
   setNftBridgeAddress,
   verifyNftBridge,
@@ -172,13 +173,86 @@ export function useNftDiscovery(input: {
   };
 }
 
+/** One finished discovery run, tagged with the chain it was asked on. */
+export interface NftChainDiscovery {
+  readonly chainId: string;
+  readonly result: NftListResult | null;
+  readonly error: string | null;
+}
+
 /**
- * What was actually queried, in one paragraph.
+ * Ask every CosmWasm chain the wallet has an address on, in parallel.
  *
- * This is the control that stops the screen implying it looked everywhere.
- * CosmWasm has no chain-level index, so an empty grid means one of two very
- * different things and the user is told which.
+ * The list screen shows every token that comes back, then the user can filter
+ * to one network. A chain that was never asked is not treated as empty.
  */
+export function useNftDiscoveryAll(input: {
+  chains: readonly ChainAccountView[];
+  enabled: boolean;
+}): {
+  rows: readonly NftChainDiscovery[];
+  loading: boolean;
+  reload: () => void;
+} {
+  const [token, setToken] = useState(0);
+  const targets = useMemo(
+    () =>
+      input.chains
+        .filter((chain) => nftChainSupport(chain.chainId).supported && chain.address)
+        .map((chain) => ({ chainId: chain.chainId, owner: chain.address })),
+    [input.chains],
+  );
+  const requestKey = input.enabled
+    ? `${token}|${targets.map((row) => `${row.chainId}:${row.owner}`).join(",")}`
+    : "";
+  const [settled, setSettled] = useState<{
+    requestKey: string;
+    rows: NftChainDiscovery[];
+    done: boolean;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!requestKey || targets.length === 0) return;
+    const controller = new AbortController();
+    const rows: NftChainDiscovery[] = [];
+    void Promise.all(
+      targets.map(async (target) => {
+        try {
+          const result = await discoverCollections(target.chainId, target.owner, {
+            signal: controller.signal,
+          });
+          if (!controller.signal.aborted) {
+            rows.push({ chainId: target.chainId, result, error: null });
+            setSettled({ requestKey, rows: [...rows], done: false });
+          }
+        } catch (error: unknown) {
+          if (controller.signal.aborted) return;
+          rows.push({
+            chainId: target.chainId,
+            result: null,
+            error: describeInterchainError(error),
+          });
+          setSettled({ requestKey, rows: [...rows], done: false });
+        }
+      }),
+    ).then(() => {
+      if (!controller.signal.aborted) {
+        setSettled({ requestKey, rows: [...rows], done: true });
+      }
+    });
+    return () => controller.abort();
+  }, [requestKey, targets]);
+
+  const reload = useCallback(() => setToken((n) => n + 1), []);
+  const current = settled?.requestKey === requestKey ? settled : null;
+  return {
+    rows: current?.rows ?? [],
+    loading: Boolean(requestKey) && !current?.done,
+    reload,
+  };
+}
+
+/** Failed lookups only. A quiet scan is not announced. */
 export function ScanDisclosure({
   result,
   chainName,
@@ -186,50 +260,19 @@ export function ScanDisclosure({
   result: NftListResult;
   chainName: string;
 }) {
-  const { scan } = result;
-  const parts: string[] = [];
-  if (scan.indexer) parts.push(`the ${scan.indexer} index`);
-  if (scan.known > 0) {
-    parts.push(`${scan.known} collection${scan.known === 1 ? "" : "s"} Zunia ships`);
-  }
-  if (scan.user > 0) {
-    parts.push(`${scan.user} contract${scan.user === 1 ? "" : "s"} you added`);
-  }
-
-  if (scan.queriedNothing) {
-    return (
-      <Callout tone="warning" title="Nothing was queried">
-        CosmWasm has no chain-wide list of who owns what, so a wallet can only
-        ask contracts it already knows about. Zunia ships no collection list for{" "}
-        {chainName} and no index is configured for it, and you have not added a
-        contract address, so nothing was asked and this list says nothing about
-        what you own. Add a CW721 contract address below to look it up.
-      </Callout>
-    );
-  }
-
+  if (result.issues.length === 0) return null;
   return (
-    <div className="flex flex-col gap-1.5">
-      <p className="m-0 text-[10.5px] leading-snug text-fg-muted">
-        Asked {parts.join(", ")}.{" "}
-        {result.complete
-          ? "The index answered, so this list is complete."
-          : "CosmWasm has no chain-wide owner index, so this covers only those contracts and nothing else you may hold."}
-      </p>
-      {result.issues.length > 0 ? (
-        <Callout tone="warning" title="Some lookups failed">
-          <ul className="flex flex-col gap-1">
-            {result.issues.map((issue) => (
-              <li key={`${issue.contractAddress ?? "indexer"}-${issue.message}`}>
-                {issue.contractAddress
-                  ? `${truncateAddress(issue.contractAddress, 8, 6)}: ${issue.message}`
-                  : issue.message}
-              </li>
-            ))}
-          </ul>
-        </Callout>
-      ) : null}
-    </div>
+    <Callout tone="warning" title={`Some lookups failed on ${chainName}`}>
+      <ul className="flex flex-col gap-1">
+        {result.issues.map((issue) => (
+          <li key={`${issue.contractAddress ?? "indexer"}-${issue.message}`}>
+            {issue.contractAddress
+              ? `${truncateAddress(issue.contractAddress, 8, 6)}: ${issue.message}`
+              : issue.message}
+          </li>
+        ))}
+      </ul>
+    </Callout>
   );
 }
 
@@ -239,9 +282,19 @@ export function ScanDisclosure({
  * Worth a pill of its own: when a list looks wrong, "you added this one" and
  * "Zunia shipped this one" send the user to different places.
  */
-export function SourcePill({ source }: { source: "known" | "indexer" | "user" }) {
+export function SourcePill({
+  source,
+}: {
+  source: "known" | "indexer" | "user" | "module";
+}) {
   const label =
-    source === "user" ? "You added" : source === "indexer" ? "Indexed" : "Shipped";
+    source === "user"
+      ? "You added"
+      : source === "indexer"
+        ? "Indexed"
+        : source === "module"
+          ? "On chain"
+          : "Shipped";
   return (
     <span className="shrink-0 rounded-full border border-[var(--z-line)] px-2 py-[2px] font-mono text-[8.5px] uppercase tracking-[0.1em] text-fg-dim">
       {label}
@@ -253,41 +306,112 @@ export function SourcePill({ source }: { source: "known" | "indexer" | "user" })
  * The contract list the user owns
  * -------------------------------------------------------------------------- */
 
+function chainFamilyName(chainName: string): string {
+  return (
+    chainName
+      .replace(/\s*\([^)]*testnet[^)]*\)/i, "")
+      .replace(/\s+(public\s+)?(testnet|devnet)\b.*/i, "")
+      .trim() || chainName
+  );
+}
+
+function networkChoiceLabel(
+  chain: ChainAccountView,
+  siblings: readonly ChainAccountView[],
+): string {
+  const base = chain.entry.network === "mainnet" ? "Mainnet" : "Testnet";
+  const sameKind = siblings.filter((row) => row.entry.network === chain.entry.network);
+  return sameKind.length > 1 ? `${base} · ${chain.chainId}` : base;
+}
+
 /**
- * Add and remove CW721 contract addresses for one chain.
- *
- * The escape hatch that makes the whole feature usable: with no shipped list
- * and no index, this is the only way to find anything, so it is on the screen
- * rather than behind a setting.
+ * Add a collection the scan missed. Chain and network pick the chain id, then
+ * Test has to hear the contract answer before Add turns on.
  */
 export function ContractManager({
-  chainId,
+  chains,
   onChanged,
 }: {
-  chainId: string;
+  chains: readonly ChainAccountView[];
   onChanged: () => void;
 }) {
+  const families = useMemo(() => {
+    const grouped = new Map<string, ChainAccountView[]>();
+    for (const chain of chains) {
+      const name = chainFamilyName(chain.entry.chainName);
+      const rows = grouped.get(name) ?? [];
+      rows.push(chain);
+      grouped.set(name, rows);
+    }
+    return [...grouped.entries()]
+      .map(([name, options]) => ({
+        name,
+        options: [...options].sort((a, b) => {
+          if (a.entry.network === b.entry.network) return a.chainId.localeCompare(b.chainId);
+          return a.entry.network === "mainnet" ? -1 : 1;
+        }),
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [chains]);
+
+  const [familyName, setFamilyName] = useState(families[0]?.name ?? "");
+  const family = families.find((row) => row.name === familyName) ?? families[0];
+  const [chainId, setChainId] = useState(family?.options[0]?.chainId ?? "");
+  const selected =
+    family?.options.find((row) => row.chainId === chainId) ?? family?.options[0];
+  const activeChainId = selected?.chainId ?? "";
+
   const [contracts, setContracts] = useState<readonly string[]>([]);
   const [value, setValue] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+  const [tested, setTested] = useState<{ chainId: string; address: string } | null>(null);
+  const [testing, setTesting] = useState(false);
   const [busy, setBusy] = useState(false);
   const fieldId = useId();
-  const entry = findCatalogEntry(chainId);
+  const chainFieldId = useId();
+  const networkFieldId = useId();
+  const proven =
+    tested?.chainId === activeChainId &&
+    tested.address === value.trim() &&
+    value.trim().length > 0;
 
   useEffect(() => {
+    if (!activeChainId) return;
     let cancelled = false;
-    void listUserContracts(chainId).then((rows) => {
+    void listUserContracts(activeChainId).then((rows) => {
       if (!cancelled) setContracts(rows);
     });
     return () => {
       cancelled = true;
     };
-  }, [chainId]);
+  }, [activeChainId]);
+
+  function clearProof() {
+    setTested(null);
+    setNote(null);
+    setError(null);
+  }
+
+  async function testContract() {
+    if (!activeChainId) return;
+    setTesting(true);
+    clearProof();
+    const outcome = await probeUserContract(activeChainId, value);
+    setTesting(false);
+    if (!outcome.ok) {
+      setError(outcome.error);
+      return;
+    }
+    setTested({ chainId: activeChainId, address: value.trim() });
+    setNote(outcome.name ? `${outcome.name} answered.` : "Contract answered.");
+  }
 
   async function add() {
+    if (!activeChainId || !proven) return;
     setBusy(true);
     setError(null);
-    const outcome = await addUserContract(chainId, value);
+    const outcome = await addUserContract(activeChainId, value);
     setBusy(false);
     if (!outcome.ok) {
       setError(outcome.error);
@@ -295,68 +419,125 @@ export function ContractManager({
     }
     setContracts(outcome.contracts);
     setValue("");
+    setTested(null);
+    setNote(null);
     onChanged();
   }
 
   async function remove(address: string) {
-    setContracts(await removeUserContract(chainId, address));
+    if (!activeChainId) return;
+    setContracts(await removeUserContract(activeChainId, address));
     onChanged();
   }
 
+  if (!family || !selected) return null;
+
   return (
-    <section className="flex flex-col gap-2">
-      <SectionLabel>Collections you track</SectionLabel>
-      {contracts.length > 0 ? (
-        <ul className="flex flex-col divide-y divide-[var(--z-line)] rounded-[13px] border border-[var(--z-line)] px-2.5">
-          {contracts.map((address) => (
-            <li key={address} className="flex items-center gap-2 py-2">
-              <span
-                className="min-w-0 flex-1 truncate font-mono text-[10px] text-fg"
-                title={address}
-              >
-                {truncateAddress(address, 12, 8)}
-              </span>
-              <button
-                type="button"
-                aria-label={`Stop tracking ${address}`}
-                onClick={() => void remove(address)}
-                className={cn(
-                  "shrink-0 rounded-[8px] p-1 text-fg-dim hover:bg-[var(--z-state-hover)] hover:text-fg",
-                  focusRing,
-                )}
-              >
-                <IconTrash width={14} height={14} />
-              </button>
-            </li>
-          ))}
-        </ul>
-      ) : null}
-      <Input
-        id={fieldId}
-        label="Add a CW721 contract"
-        placeholder={`${entry?.bech32Prefix ?? "addr"}1…`}
-        value={value}
-        spellCheck={false}
-        autoComplete="off"
-        state={error ? "error" : "default"}
-        hint={
-          error ??
-          "Paste the collection's contract address. Zunia asks that contract which of its tokens you hold."
-        }
-        onChange={(event) => {
-          setValue(event.target.value);
-          setError(null);
-        }}
-      />
-      <Button
-        size="sm"
-        className="self-start"
-        disabled={busy || value.trim().length === 0}
-        onClick={() => void add()}
+    <details className="rounded-[13px] border border-[var(--z-line)] px-3 py-2">
+      <summary
+        className={cn(
+          "cursor-pointer text-[12px] font-medium text-fg-muted",
+          focusRing,
+        )}
       >
-        {busy ? "Adding…" : "Add collection"}
-      </Button>
-    </section>
+        Missing a collection?
+      </summary>
+      <div className="mt-2 flex flex-col gap-2">
+        <p className="m-0 text-[10.5px] leading-snug text-fg-muted">
+          Paste a contract only if a collection never showed up. Test it, then add it.
+        </p>
+        {contracts.length > 0 ? (
+          <ul className="flex flex-col divide-y divide-[var(--z-line)] rounded-[13px] border border-[var(--z-line)] px-2.5">
+            {contracts.map((address) => (
+              <li key={address} className="flex items-center gap-2 py-2">
+                <span
+                  className="min-w-0 flex-1 truncate font-mono text-[10px] text-fg"
+                  title={address}
+                >
+                  {truncateAddress(address, 12, 8)}
+                </span>
+                <button
+                  type="button"
+                  aria-label={`Stop tracking ${address}`}
+                  onClick={() => void remove(address)}
+                  className={cn(
+                    "shrink-0 rounded-[8px] p-1 text-fg-dim hover:bg-[var(--z-state-hover)] hover:text-fg",
+                    focusRing,
+                  )}
+                >
+                  <IconTrash width={14} height={14} />
+                </button>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+        <label className="flex flex-col gap-1" htmlFor={chainFieldId}>
+          <span className="text-[11px] font-medium text-fg-muted">Chain</span>
+          <select
+            id={chainFieldId}
+            value={family.name}
+            onChange={(event) => {
+              const next = families.find((row) => row.name === event.target.value);
+              setFamilyName(event.target.value);
+              setChainId(next?.options[0]?.chainId ?? "");
+              clearProof();
+            }}
+            className="w-full rounded-[12px] border border-[var(--z-line)] bg-[var(--z-glass)] px-3 py-2.5 text-[13px] text-fg outline-none focus-visible:shadow-[0_0_0_1px_var(--z-focus-ring)]"
+          >
+            {families.map((row) => (
+              <option key={row.name} value={row.name}>
+                {row.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="flex flex-col gap-1" htmlFor={networkFieldId}>
+          <span className="text-[11px] font-medium text-fg-muted">Network</span>
+          <select
+            id={networkFieldId}
+            value={activeChainId}
+            onChange={(event) => {
+              setChainId(event.target.value);
+              clearProof();
+            }}
+            className="w-full rounded-[12px] border border-[var(--z-line)] bg-[var(--z-glass)] px-3 py-2.5 text-[13px] text-fg outline-none focus-visible:shadow-[0_0_0_1px_var(--z-focus-ring)]"
+          >
+            {family.options.map((row) => (
+              <option key={row.chainId} value={row.chainId}>
+                {networkChoiceLabel(row, family.options)}
+              </option>
+            ))}
+          </select>
+        </label>
+        <Input
+          id={fieldId}
+          label="Collection contract"
+          placeholder={`${selected.entry.bech32Prefix}1…`}
+          value={value}
+          spellCheck={false}
+          autoComplete="off"
+          state={error ? "error" : proven ? "valid" : "default"}
+          hint={error ?? note ?? undefined}
+          onChange={(event) => {
+            setValue(event.target.value);
+            clearProof();
+          }}
+        />
+        <div className="flex gap-1.5">
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={testing || busy || value.trim().length === 0}
+            onClick={() => void testContract()}
+          >
+            {testing ? "Testing…" : "Test"}
+          </Button>
+          <Button size="sm" disabled={!proven || busy || testing} onClick={() => void add()}>
+            {busy ? "Adding…" : "Add"}
+          </Button>
+        </div>
+      </div>
+    </details>
   );
 }
 

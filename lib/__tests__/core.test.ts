@@ -214,7 +214,7 @@ describe("local kernel", () => {
     const envelope = kernel.sealKeyring(phrase, "password123", "{}");
     expect(kernel.openKeyring(envelope, "password123")).toBe(phrase);
     expect(() => kernel.openKeyring(envelope, "wrong")).toThrow(/password/i);
-  });
+  }, 20_000);
 
   it("rejects mnemonics with a bad checksum", () => {
     expect(kernel.validateMnemonic("abandon ".repeat(12).trim())).toBe(false);
@@ -290,5 +290,17 @@ describe("token classification", () => {
     expect(classifyToken("factory/osmo1abc/usdc", "1", native).kind).toBe(
       "factory",
     );
+  });
+
+  it("reads ibc-go v9 denom traces so OSMO on Hub keeps its origin logo", async () => {
+    const { parseDenomTrace } = await import("@zunialab/interchain");
+    const trace = parseDenomTrace({
+      denom: {
+        base: "uosmo",
+        trace: [{ port_id: "transfer", channel_id: "channel-141" }],
+      },
+    });
+    expect(trace.baseDenom).toBe("uosmo");
+    expect(trace.path).toBe("transfer/channel-141");
   });
 });

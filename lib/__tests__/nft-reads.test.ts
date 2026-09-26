@@ -74,6 +74,10 @@ function installFetch(options: { metadataBody?: unknown } = {}): void {
   vi.stubGlobal("fetch", async (input: string): Promise<Response> => {
     requested.push(input);
 
+    if (input.includes("/cosmos/nft/v1beta1/") || /\/cosmwasm\/wasm\/v1\/code(?:\?|$|\/)/.test(input)) {
+      return json({ nfts: [], class: null, code_infos: [], contracts: [], pagination: {} });
+    }
+
     // Off-chain metadata host. Not an LCD path; only reached when the caller
     // opted in to reading `token_uri`.
     if (!input.startsWith(REST)) {
@@ -149,17 +153,18 @@ afterEach(() => {
 });
 
 describe("discoverCollections", () => {
-  it("says nothing was queried when there is nothing to query", async () => {
-    // This is the defect the mobile app shipped: an empty list rendered as
-    // "you own no NFTs" after asking nobody. `queriedNothing` is what lets the
-    // screen tell the two apart.
+  it("asks the chain nft module and wasm list even with no pasted contract", async () => {
     const result = await discoverCollections(CHAIN, OWNER);
     expect(result.collections).toEqual([]);
-    expect(result.scan.queriedNothing).toBe(true);
-    expect(result.scan.known).toBe(0);
+    expect(result.scan.queriedNothing).toBe(false);
+    expect(result.scan.onChain).toBe(true);
     expect(result.scan.user).toBe(0);
-    expect(result.scan.indexer).toBeNull();
-    expect(requested).toEqual([]);
+    expect(requested.some((url) => url.includes("/cosmos/nft/v1beta1/nfts"))).toBe(
+      true,
+    );
+    expect(requested.some((url) => url.includes("/cosmwasm/wasm/v1/code"))).toBe(
+      true,
+    );
   });
 
   it("reads a user-added contract and labels where it came from", async () => {
@@ -193,11 +198,13 @@ describe("discoverCollections", () => {
     expect(await listUserContracts(CHAIN)).toEqual([]);
   });
 
-  it("refuses to run at all on a chain without cosmwasm", async () => {
-    await expect(discoverCollections("cosmoshub-4", "cosmos1owner")).rejects.toThrow(
-      /cosmwasm/i,
+  it("still asks x/nft on a chain without cosmwasm", async () => {
+    const result = await discoverCollections("cosmoshub-4", "cosmos1owner");
+    expect(result.collections).toEqual([]);
+    expect(result.scan.onChain).toBe(true);
+    expect(requested.some((url) => url.includes("/cosmos/nft/v1beta1/nfts"))).toBe(
+      true,
     );
-    expect(requested).toEqual([]);
   });
 
   it("reads nothing while the live-reads gate is off", async () => {

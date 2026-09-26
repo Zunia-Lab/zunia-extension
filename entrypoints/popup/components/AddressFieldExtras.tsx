@@ -38,19 +38,19 @@ export function AddressFieldActions({
   onBook: () => void;
 }) {
   return (
-    <span className="flex items-center gap-0.5">
+    <span className="flex h-full items-center gap-1">
       <button
         type="button"
         aria-label="Scan QR code"
         title="Scan QR"
         onClick={onScan}
         className={cn(
-          "flex size-7 items-center justify-center rounded-[8px] text-fg-dim",
+          "flex size-11 items-center justify-center rounded-full text-fg-muted",
           "transition-colors duration-[var(--z-duration-fast)] hover:bg-[var(--z-state-hover)] hover:text-fg",
           focusRing,
         )}
       >
-        <IconQr width={16} height={16} />
+        <IconQr width={22} height={22} className="block shrink-0" />
       </button>
       <button
         type="button"
@@ -58,12 +58,12 @@ export function AddressFieldActions({
         title="Address book"
         onClick={onBook}
         className={cn(
-          "flex size-7 items-center justify-center rounded-[8px] text-fg-dim",
+          "flex size-11 items-center justify-center rounded-full text-fg-muted",
           "transition-colors duration-[var(--z-duration-fast)] hover:bg-[var(--z-state-hover)] hover:text-fg",
           focusRing,
         )}
       >
-        <IconBook width={16} height={16} />
+        <IconBook width={22} height={22} className="block shrink-0" />
       </button>
     </span>
   );

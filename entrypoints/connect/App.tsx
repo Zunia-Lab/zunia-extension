@@ -227,7 +227,7 @@ function AccountRow({
         className={cn(
           "flex size-[26px] shrink-0 items-center justify-center rounded-full font-mono text-[10px] uppercase",
           selected
-            ? "bg-[image:var(--z-accent-gradient)] text-[var(--z-accent-fg)]"
+            ? "bg-[image:var(--z-button-gradient)] text-[var(--z-button-fg)]"
             : "bg-[var(--z-glass-2)] text-fg-muted",
         )}
       >

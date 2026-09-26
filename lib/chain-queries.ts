@@ -29,30 +29,81 @@ export interface ValidatorInfo {
   chainId: string;
   operatorAddress: string;
   moniker: string;
+  /** Keybase hex from `description.identity`, empty when the validator set none. */
+  identity: string;
+  /** Keybase picture URL, set after the identity lookup. */
+  logoUrl?: string;
   /** Commission rate as a 0-1 fraction. */
   commission: number;
+  /** Max commission the validator can raise to, 0-1. */
+  maxCommission: number;
   /** Share of total bonded stake, 0-1. */
   votingPower: number;
   tokens: string;
+  minSelfDelegation: string;
+  website: string;
+  details: string;
   jailed: boolean;
   status: string;
+}
+
+/** http(s) website from `description.website`, or null when the field is empty or unsafe. */
+export function validatorWebsite(raw: string | undefined): string | null {
+  const value = (raw ?? "").trim();
+  if (!value) return null;
+  try {
+    const url = new URL(value.includes("://") ? value : `https://${value}`);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+    return url.href;
+  } catch {
+    return null;
+  }
+}
+
+export type ValidatorBondState = "active" | "inactive" | "jailed";
+
+/** Bonded and not jailed is active. Unbonded / unbonding is inactive. */
+export function validatorBondState(input: {
+  jailed?: boolean;
+  status?: string;
+}): ValidatorBondState {
+  if (input.jailed) return "jailed";
+  const status = (input.status ?? "")
+    .trim()
+    .toUpperCase()
+    .replace(/^BOND_STATUS_/, "");
+  if (
+    status === "UNBONDED" ||
+    status === "UNBONDING" ||
+    status === "1" ||
+    status === "3"
+  ) {
+    return "inactive";
+  }
+  return "active";
 }
 
 export interface DelegationInfo {
   chainId: string;
   validatorAddress: string;
   moniker: string;
+  identity: string;
+  logoUrl?: string;
   amount: string;
   rewards: string;
   denom: string;
   decimals: number;
   symbol: string;
+  jailed: boolean;
+  status: string;
 }
 
 export interface UnbondingInfo {
   chainId: string;
   validatorAddress: string;
   moniker: string;
+  identity: string;
+  logoUrl?: string;
   amount: string;
   completionTime: string;
   denom: string;
@@ -103,6 +154,8 @@ export interface ActivityItem {
   symbol: string;
   timestamp: number;
   success: boolean;
+  from?: string;
+  to?: string;
 }
 
 async function getJson(url: string): Promise<unknown> {
@@ -169,26 +222,43 @@ export async function fetchValidators(
       jailed?: boolean;
       status?: string;
       tokens?: string;
-      description?: { moniker?: string };
-      commission?: { commission_rates?: { rate?: string } };
+      min_self_delegation?: string;
+      description?: {
+        moniker?: string;
+        identity?: string;
+        website?: string;
+        details?: string;
+      };
+      commission?: {
+        commission_rates?: { rate?: string; max_rate?: string };
+      };
     }>;
   };
 
   const rows = body.validators ?? [];
   const total = rows.reduce((sum, v) => sum + BigInt(v.tokens || "0"), 0n);
-  return rows
+  const mapped = rows
     .map((v) => ({
       chainId,
       operatorAddress: v.operator_address ?? "",
       moniker: v.description?.moniker ?? v.operator_address ?? "Validator",
+      identity: v.description?.identity ?? "",
       commission: Number(v.commission?.commission_rates?.rate ?? "0"),
+      maxCommission: Number(v.commission?.commission_rates?.max_rate ?? "0"),
       votingPower:
         total > 0n ? Number((BigInt(v.tokens || "0") * 10000n) / total) / 10000 : 0,
       tokens: v.tokens ?? "0",
+      minSelfDelegation: v.min_self_delegation ?? "0",
+      website: v.description?.website ?? "",
+      details: (v.description?.details ?? "").trim(),
       jailed: Boolean(v.jailed),
       status: v.status ?? "",
     }))
     .sort((a, b) => Number(b.tokens) - Number(a.tokens));
+  // Do not wait on Keybase here. A bonded set is 100+ rows; looking each
+  // identity up before returning left Earn blank and often timed the
+  // background message out. The popup resolves pictures per row.
+  return mapped;
 }
 
 /** Active delegations for one address, with their pending rewards. */
@@ -232,19 +302,23 @@ export async function fetchDelegations(
   };
   const rows = body.delegation_responses ?? [];
 
-  const monikers = await resolveMonikers(
+  const monikers = await resolveValidatorMeta(
     rest,
     rows.map((r) => r.delegation?.validator_address ?? ""),
   );
 
   return rows.map((row) => {
     const validator = row.delegation?.validator_address ?? "";
+    const metaRow = monikers.get(validator);
     return {
       chainId,
       validatorAddress: validator,
-      moniker: monikers.get(validator) ?? validator,
+      moniker: metaRow?.moniker ?? validator,
+      identity: metaRow?.identity ?? "",
       amount: row.balance?.amount ?? "0",
       rewards: rewardByValidator.get(validator) ?? "0",
+      jailed: metaRow?.jailed ?? false,
+      status: metaRow?.status ?? "",
       ...meta,
     };
   });
@@ -270,42 +344,65 @@ export async function fetchUnbonding(
   };
 
   const rows = body.unbonding_responses ?? [];
-  const monikers = await resolveMonikers(
+  const monikers = await resolveValidatorMeta(
     rest,
     rows.map((r) => r.validator_address ?? ""),
   );
 
   return rows
     .flatMap((row) =>
-      (row.entries ?? []).map((entry) => ({
-        chainId,
-        validatorAddress: row.validator_address ?? "",
-        moniker:
-          monikers.get(row.validator_address ?? "") ??
-          row.validator_address ??
-          "",
-        amount: entry.balance ?? "0",
-        completionTime: entry.completion_time ?? "",
-        ...meta,
-      })),
+      (row.entries ?? []).map((entry) => {
+        const metaRow = monikers.get(row.validator_address ?? "");
+        return {
+          chainId,
+          validatorAddress: row.validator_address ?? "",
+          moniker: metaRow?.moniker ?? row.validator_address ?? "",
+          identity: metaRow?.identity ?? "",
+          amount: entry.balance ?? "0",
+          completionTime: entry.completion_time ?? "",
+          ...meta,
+        };
+      }),
     )
     .sort((a, b) => a.completionTime.localeCompare(b.completionTime));
 }
 
-async function resolveMonikers(
+async function resolveValidatorMeta(
   rest: string,
   operators: string[],
-): Promise<Map<string, string>> {
+): Promise<
+  Map<
+    string,
+    { moniker: string; identity: string; jailed: boolean; status: string }
+  >
+> {
   const unique = Array.from(new Set(operators.filter(Boolean)));
   const pairs = await Promise.all(
     unique.map(async (operator) => {
       try {
         const body = (await getJson(
           `${rest}/cosmos/staking/v1beta1/validators/${operator}`,
-        )) as { validator?: { description?: { moniker?: string } } };
-        return [operator, body.validator?.description?.moniker ?? operator] as const;
+        )) as {
+          validator?: {
+            jailed?: boolean;
+            status?: string;
+            description?: { moniker?: string; identity?: string };
+          };
+        };
+        return [
+          operator,
+          {
+            moniker: body.validator?.description?.moniker ?? operator,
+            identity: body.validator?.description?.identity ?? "",
+            jailed: Boolean(body.validator?.jailed),
+            status: body.validator?.status ?? "",
+          },
+        ] as const;
       } catch {
-        return [operator, operator] as const;
+        return [
+          operator,
+          { moniker: operator, identity: "", jailed: false, status: "" },
+        ] as const;
       }
     }),
   );
@@ -531,6 +628,12 @@ export interface DescribedMessage {
   symbol: string;
   /** One sentence for the transaction detail. */
   summary: string;
+  from?: string;
+  to?: string;
+  channel?: string;
+  contract?: string;
+  proposalId?: string;
+  vote?: string;
 }
 
 /** Read one message into words. Unknown messages keep their type name. */
@@ -564,6 +667,8 @@ export function describeMessage(
       title: `${outgoing ? "Send" : "Receive"} ${coin.symbol}`,
       subtitle: outgoing ? `to ${to}` : `from ${from}`,
       ...coin,
+      from,
+      to,
       summary: outgoing
         ? `Send ${words} to ${shortAddress(to)}`
         : `Receive ${words} from ${shortAddress(from)}`,
@@ -591,6 +696,9 @@ export function describeMessage(
       title: `Send ${coin.symbol} over IBC`,
       subtitle: `to ${receiver}`,
       ...coin,
+      from: text(message.sender) || address,
+      to: receiver,
+      channel,
       summary: `Send ${words} over IBC to ${shortAddress(receiver)} on ${channel}`,
     };
   }
@@ -606,6 +714,9 @@ export function describeMessage(
         title: `Receive ${coin.symbol} over IBC`,
         subtitle: `from ${sender}`,
         ...coin,
+        from: sender,
+        to: data.receiver,
+        channel: packet?.channel,
         summary: `Receive ${words} over IBC from ${shortAddress(sender)} on ${packet?.channel}`,
       };
     }
@@ -655,6 +766,8 @@ export function describeMessage(
       title: action ? `Call ${action}` : "Contract call",
       subtitle: `on ${contract}`,
       ...coin,
+      to: contract,
+      contract,
       summary: `Call ${action || "a contract"} on ${shortAddress(contract)}${words ? ` with ${words}` : ""}`,
     };
   }
@@ -668,6 +781,7 @@ export function describeMessage(
       title: delegate ? "Delegate" : "Undelegate",
       subtitle: validator,
       ...coin,
+      ...(delegate ? { to: validator } : { from: validator }),
       summary: delegate
         ? `Delegate ${words} to ${shortAddress(validator)}`
         : `Undelegate ${words} from ${shortAddress(validator)}`,
@@ -683,6 +797,8 @@ export function describeMessage(
       title: "Redelegate",
       subtitle: to,
       ...coin,
+      from,
+      to,
       summary: `Move ${words} from ${shortAddress(from)} to ${shortAddress(to)}`,
     };
   }
@@ -694,6 +810,7 @@ export function describeMessage(
       title: "Claim rewards",
       subtitle: validator,
       ...plain,
+      from: validator,
       summary: `Claim staking rewards from ${shortAddress(validator)}`,
     };
   }
@@ -706,6 +823,8 @@ export function describeMessage(
       title: `Vote on #${proposal}`,
       subtitle: option,
       ...plain,
+      proposalId: proposal,
+      vote: option,
       summary: option ? `Vote ${option} on proposal #${proposal}` : `Vote on proposal #${proposal}`,
     };
   }
@@ -787,7 +906,14 @@ export async function fetchActivity(
       );
       const message = pickMessage(messages, address);
       if (!message) continue;
-      const { summary: _summary, ...described } = describeMessage(message, address, chainId);
+      const {
+        summary: _summary,
+        channel: _channel,
+        contract: _contract,
+        proposalId: _proposalId,
+        vote: _vote,
+        ...described
+      } = describeMessage(message, address, chainId);
       items.push({
         chainId,
         hash,
@@ -823,7 +949,18 @@ export interface TxDetailInfo {
   fee: TxFeeCoin[];
   gasWanted: string | null;
   gasUsed: string | null;
-  messages: Array<{ type: string; summary: string }>;
+  messages: Array<{
+    type: string;
+    summary: string;
+    kind: ActivityKind;
+    title: string;
+    from?: string;
+    to?: string;
+    channel?: string;
+    contract?: string;
+    proposalId?: string;
+    vote?: string;
+  }>;
   /** IBC packets the transaction sent, to follow them across chains. */
   packets: ExtractedPacket[];
 }
@@ -870,10 +1007,21 @@ export function parseTxDetail(
       .map((coin) => ({ ...coin, ...coinDisplay(chainId, coin.denom) })),
     gasWanted: text(response.gas_wanted) || null,
     gasUsed: text(response.gas_used) || null,
-    messages: messages.map((message) => ({
-      type: shortTypeName(typeUrlOf(message)),
-      summary: describeMessage(message, address, chainId).summary,
-    })),
+    messages: messages.map((message) => {
+      const described = describeMessage(message, address, chainId);
+      return {
+        type: shortTypeName(typeUrlOf(message)),
+        summary: described.summary,
+        kind: described.kind,
+        title: described.title,
+        ...(described.from ? { from: described.from } : {}),
+        ...(described.to ? { to: described.to } : {}),
+        ...(described.channel ? { channel: described.channel } : {}),
+        ...(described.contract ? { contract: described.contract } : {}),
+        ...(described.proposalId ? { proposalId: described.proposalId } : {}),
+        ...(described.vote ? { vote: described.vote } : {}),
+      };
+    }),
     // A failed transaction sends nothing, whatever its messages asked for.
     packets: code === 0 ? [...extractPacketsFromTx(body)] : [],
   };

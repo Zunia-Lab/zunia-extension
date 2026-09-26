@@ -237,7 +237,12 @@ const MAX_TX_RETRIES = 20;
  * One transaction's detail. A transaction the node does not know yet, as
  * right after a broadcast, is asked for again until it shows up.
  */
-export function useTxDetail(chainId: string, hash: string, enabled: boolean) {
+export function useTxDetail(
+  chainId: string,
+  hash: string,
+  enabled: boolean,
+  options?: { intervalMs?: number; maxRetries?: number },
+) {
   const key = `${enabled ? "on" : "off"}:${chainId}:${hash}`;
   const [attempt, setAttempt] = useState(0);
   const [settled, setSettled] = useState<{
@@ -271,12 +276,14 @@ export function useTxDetail(chainId: string, hash: string, enabled: boolean) {
   const current = settled?.key === key ? settled : null;
   const missing = enabled && current !== null && current.detail === null && current.error === null;
 
-  const retrying = missing && (current?.attempt ?? 0) < MAX_TX_RETRIES;
+  const intervalMs = options?.intervalMs ?? TX_RETRY_MS;
+  const maxRetries = options?.maxRetries ?? MAX_TX_RETRIES;
+  const retrying = missing && (current?.attempt ?? 0) < maxRetries;
   useEffect(() => {
     if (!retrying) return;
-    const timer = window.setTimeout(() => setAttempt((n) => n + 1), TX_RETRY_MS);
+    const timer = window.setTimeout(() => setAttempt((n) => n + 1), intervalMs);
     return () => window.clearTimeout(timer);
-  }, [retrying, current?.attempt]);
+  }, [retrying, current?.attempt, intervalMs]);
 
   return {
     detail: current?.detail ?? null,

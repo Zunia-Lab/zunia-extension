@@ -49,7 +49,10 @@ import { AddChainScreen } from "./screens/AddChainScreen";
 import { NftScreen } from "./screens/NftScreen";
 import { NftDetailScreen } from "./screens/NftDetailScreen";
 import { GovernanceScreen } from "./screens/GovernanceScreen";
-import { NotificationsScreen } from "./screens/NotificationsScreen";
+import {
+  NotificationAlertsHost,
+  NotificationsScreen,
+} from "./screens/NotificationsScreen";
 import { AddressBookScreen } from "./screens/AddressBookScreen";
 import { SettingsScreen } from "./screens/SettingsScreen";
 import { SecurityScreen } from "./screens/SecurityScreen";
@@ -342,6 +345,14 @@ function AppBody({ state }: { state: ExtensionState }) {
         </div>
       ) : null}
 
+      {unlocked && route !== "notifications" ? (
+        <NotificationAlertsHost
+          approvals={approvals}
+          chains={chains}
+          balances={balances}
+        />
+      ) : null}
+
       {route === "boot" ? (
         <div className="flex flex-1 items-center justify-center gap-2 text-fg-dim">
           <Spinner />
@@ -437,6 +448,9 @@ function AppBody({ state }: { state: ExtensionState }) {
               onOpenChain={(chainId) => go("chain", chainId)}
               onOpenValidator={openValidator}
               onSelectionChange={rememberEarnPick}
+              onRefreshBalances={() => {
+                void reloadBalances(true);
+              }}
             />,
           )
         : null}
@@ -456,6 +470,7 @@ function AppBody({ state }: { state: ExtensionState }) {
             <ActivityScreen
               chains={chains}
               balances={balances}
+              initialChainId={location.chainId}
               onOpenTx={openTx}
             />,
           )
@@ -536,6 +551,7 @@ function AppBody({ state }: { state: ExtensionState }) {
           contacts={contacts}
           onContactsChanged={loadContacts}
           onBack={back}
+          onOpenNfts={() => go("nft")}
         />
       ) : null}
 

@@ -16,6 +16,22 @@ import { getAccountAddresses } from "../lib/account-addresses";
 import { approvalIdFromPortName } from "../lib/connect-overlay";
 import { EVENT_PORT, publishEvents, registerEventPort } from "../lib/event-port";
 import {
+  WALLET_EVENT_PORT,
+  broadcastWalletEvent,
+  registerWalletEventPort,
+  resetWalletEventSnapshot,
+} from "../lib/wallet-events";
+import {
+  REALTIME_ALARM,
+  clearArrivals,
+  primeSurface,
+  refreshNotices,
+  runRealtimeTick,
+  stopRealtime,
+  syncRealtime,
+} from "../lib/realtime";
+import { markNoticesRead } from "../lib/notices";
+import {
   isExternallyConnectableOrigin,
   type ExtensionMessage,
   type ExtensionResponse,
@@ -407,10 +423,16 @@ async function routeMessage(
           | undefined;
         const chainIds = payload?.chainIds ?? (await getEnabledChainIds());
         const accounts = await getChainAccounts(chainIds);
-        return {
-          ok: true,
-          data: await getChainBalances(accounts, { force: payload?.force }),
-        };
+        const balances = await getChainBalances(accounts, { force: payload?.force });
+        // Fold the answer into the worker's picture as well as returning it.
+        // A manual refresh in one surface is new information for every other
+        // surface and for the notification feed, and without this the two
+        // would disagree until the next chain event.
+        if (balances.length > 0) {
+          broadcastWalletEvent({ type: "balances", balances });
+          void refreshNotices(balances).catch(() => undefined);
+        }
+        return { ok: true, data: balances };
       }
 
       case "GET_PRICES": {
@@ -493,6 +515,18 @@ async function routeMessage(
             failed: results.filter((r) => r.failed).map((r) => r.chainId),
           },
         };
+      }
+
+      case "MARK_NOTICES_READ": {
+        const payload = message.payload as { ids?: unknown } | undefined;
+        const ids = Array.isArray(payload?.ids)
+          ? payload.ids.filter((id): id is string => typeof id === "string")
+          : [];
+        await markNoticesRead(ids);
+        // Re-derive so the badge drops and every open surface sees the rows
+        // turn read at the same moment.
+        await refreshNotices();
+        return { ok: true, data: { ok: true } };
       }
 
       case "GET_TX_DETAIL": {
@@ -773,6 +807,22 @@ function onPortConnect(port: ReturnType<typeof browser.runtime.connect>): void {
     return;
   }
 
+  if (port.name === WALLET_EVENT_PORT) {
+    // Wallet surfaces only. A content script must never be able to open the
+    // channel that carries this account's balances.
+    if (kind !== "extension-page") {
+      port.disconnect();
+      return;
+    }
+    registerWalletEventPort(port, {
+      onOpen: () => {
+        void syncRealtime().catch(() => undefined);
+        void primeSurface().catch(() => undefined);
+      },
+    });
+    return;
+  }
+
   if (port.name === EVENT_PORT) {
     // Same audience as the tabs.sendMessage path: the top frame of a page, by
     // the origin the browser reports for it.
@@ -819,22 +869,17 @@ function onPortConnect(port: ReturnType<typeof browser.runtime.connect>): void {
   });
 }
 
-function updateBadge(count: number): void {
-  const action = browser.action;
-  if (!action?.setBadgeText) return;
-  void action.setBadgeText({ text: count > 0 ? String(count) : "" }).catch(() => undefined);
-  // --z-accent from @zunialab/tokens; the badge API takes a literal color.
-  void action.setBadgeBackgroundColor?.({ color: "#ff1b0c" }).catch(() => undefined);
-}
-
 export default defineBackground(() => {
   registerSessionLifecycle();
   void hydrateCustomChains();
 
   browser.runtime.onConnect.addListener(onPortConnect);
 
-  onApprovalsChanged((pending) => {
-    updateBadge(pending.length);
+  onApprovalsChanged(() => {
+    // The badge is written in one place only (`lib/notices.ts`), from the
+    // derived feed. A pending approval is a notice like any other, so counting
+    // approvals here as well would double-count it against the same badge.
+    void refreshNotices().catch(() => undefined);
     // Open extension pages refresh their queue; nobody listening is fine.
     void browser.runtime
       .sendMessage({ type: "APPROVALS_CHANGED" })
@@ -863,8 +908,20 @@ export default defineBackground(() => {
     if (lock) {
       const wasOpen = typeof lock.oldValue === "string";
       const isOpen = typeof lock.newValue === "string";
-      if (wasOpen && !isOpen) void deliverToConnectedSites("locked");
-      else if (!wasOpen && isOpen) void deliverToConnectedSites("accountsChanged");
+      if (wasOpen && !isOpen) {
+        void deliverToConnectedSites("locked");
+        // Locking ends every chain subscription. Nothing is watched on behalf
+        // of an account the worker can no longer derive an address for, and the
+        // balances already pushed are dropped so a relocked wallet does not
+        // hand them to the next surface that opens.
+        stopRealtime();
+        resetWalletEventSnapshot();
+        void refreshNotices().catch(() => undefined);
+      } else if (!wasOpen && isOpen) {
+        void deliverToConnectedSites("accountsChanged");
+        void syncRealtime().catch(() => undefined);
+        void primeSurface().catch(() => undefined);
+      }
       return;
     }
     const account = changes[STORAGE_KEYS.sessionActiveAccount];
@@ -874,6 +931,14 @@ export default defineBackground(() => {
       account.newValue !== account.oldValue
     ) {
       void deliverToConnectedSites("accountsChanged");
+      // A different account is a different set of addresses: the old one's
+      // arrivals and balances are not this one's, and `syncRealtime` closes
+      // every socket whose watched address no longer matches.
+      resetWalletEventSnapshot();
+      void clearArrivals()
+        .then(() => syncRealtime())
+        .then(() => primeSurface())
+        .catch(() => undefined);
     }
   });
 
@@ -898,12 +963,28 @@ export default defineBackground(() => {
     // Routes signed in the popup keep being followed after it closes.
     if (alarm.name === TRANSFER_WATCH_ALARM) void runTransferWatch().catch(() => undefined);
     if (alarm.name === GRANT_EXPIRY_ALARM) void sweepExpiredGrants().catch(() => undefined);
+    // Reopens every chain socket after MV3 stopped the worker, and polls the
+    // chains no socket covers. This is what makes realtime survive the worker
+    // lifecycle rather than lasting only as long as one popup session.
+    if (alarm.name === REALTIME_ALARM) void runRealtimeTick().catch(() => undefined);
   });
   browser.storage.onChanged.addListener((changes, area) => {
     if (area !== "local" || !changes[STORAGE_KEYS.pendingTransfers]) return;
     void syncTransferWatch().catch(() => undefined);
   });
   void syncTransferWatch().catch(() => undefined);
+
+  // Turning a network on or off, and turning live reads off entirely, both
+  // change which sockets may be open. `syncRealtime` closes what is no longer
+  // allowed and opens what now is, so neither needs its own handler.
+  browser.storage.onChanged.addListener((changes, area) => {
+    if (area !== "local") return;
+    if (!changes[STORAGE_KEYS.enabledChains] && !changes[STORAGE_KEYS.settings]) return;
+    void syncRealtime().catch(() => undefined);
+  });
+  // A worker that was just restarted by an alarm, a message or a port has to
+  // put its sockets back; nothing else does it.
+  void syncRealtime().catch(() => undefined);
 
   // A fresh install lands on the full-tab flow: a 24 word phrase does not fit
   // in a 360px popup without scrolling, which is where people mistranscribe.

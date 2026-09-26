@@ -7,6 +7,7 @@ import {
   formatCoin,
   parseTxDetail,
   pickMessage,
+  validatorWebsite,
 } from "../chain-queries";
 import { forwardChannelOf } from "../packet-tracking";
 
@@ -184,6 +185,11 @@ describe("parseTxDetail", () => {
       {
         type: "MsgTransfer",
         summary: `Send 1 OSMO over IBC to ${HUB_SENDER.slice(0, 12)}…${HUB_SENDER.slice(-6)} on channel-0`,
+        kind: "ibc",
+        title: "Send OSMO over IBC",
+        from: ME,
+        to: HUB_SENDER,
+        channel: "channel-0",
       },
     ]);
     expect(detail?.packets).toHaveLength(1);
@@ -214,5 +220,19 @@ describe("forwardChannelOf", () => {
     expect(forwardChannelOf("thanks")).toBeNull();
     expect(forwardChannelOf(JSON.stringify({ wasm: { contract: "osmo1x" } }))).toBeNull();
     expect(forwardChannelOf(JSON.stringify({ forward: { channel: 3 } }))).toBeNull();
+  });
+});
+
+describe("validatorWebsite", () => {
+  it("accepts a host and an https url", () => {
+    expect(validatorWebsite("validarios.io")).toBe("https://validarios.io/");
+    expect(validatorWebsite("https://validarios.io/about")).toBe(
+      "https://validarios.io/about",
+    );
+  });
+
+  it("rejects empty and non-http schemes", () => {
+    expect(validatorWebsite("")).toBeNull();
+    expect(validatorWebsite("javascript:alert(1)")).toBeNull();
   });
 });

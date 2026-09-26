@@ -6,6 +6,7 @@ import type {
   ProposalInfo,
   UnbondingInfo,
 } from "../../../lib/chain-queries";
+import { showBrowserAlert } from "../../../lib/browser-alerts";
 import { formatUnits } from "../../../lib/format";
 import { STORAGE_KEYS } from "../../../lib/storage-keys";
 
@@ -177,6 +178,37 @@ export function useNotifications({
   }, [read, notices]);
 
   const unreadCount = notices.filter((n) => !n.read).length;
+
+  useEffect(() => {
+    const unread = notices.filter((notice) => !notice.read);
+    if (unread.length === 0) return;
+    let cancelled = false;
+    void browser.storage.local
+      .get(STORAGE_KEYS.alertedNotifications)
+      .then((store) => {
+        if (cancelled) return;
+        const seen = new Set(
+          Array.isArray(store[STORAGE_KEYS.alertedNotifications])
+            ? (store[STORAGE_KEYS.alertedNotifications] as string[])
+            : [],
+        );
+        const fresh = unread.filter((notice) => !seen.has(notice.id));
+        if (fresh.length === 0) return;
+        // First snapshot after a clean install: remember the current feed so
+        // opening the popup does not fire a burst of alerts for old rewards.
+        const announce = seen.size > 0;
+        for (const notice of fresh) {
+          seen.add(notice.id);
+          if (announce) void showBrowserAlert(notice.id, notice.title, notice.meta);
+        }
+        void browser.storage.local.set({
+          [STORAGE_KEYS.alertedNotifications]: [...seen],
+        });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [notices]);
 
   return { notices, unreadCount, markAllRead };
 }

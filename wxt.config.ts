@@ -8,6 +8,7 @@ import { CONNECT_CONFIG } from "./config/connect";
 import {
   HOST_PERMISSIONS,
   OPTIONAL_HOST_PERMISSIONS,
+  REALTIME_HOST_PERMISSIONS,
   PROVIDER_RESOURCE_MATCHES,
 } from "./config/hosts";
 
@@ -33,6 +34,26 @@ export default defineConfig({
         absoluteSrc: localRequire.resolve("@zunialab/core/wasm"),
         relativeDest: "zunia_core_bg.wasm",
       });
+    },
+    /**
+     * Dev mode copies each content-script match into `host_permissions` so the
+     * scripting API can register the script. The https wildcard is then required
+     * and optional at once, and Chrome drops the optional copy with a warning.
+     * Production leaves the match on the content script, so the optional grant
+     * stays.
+     */
+    "build:manifestGenerated": (_wxt, manifest) => {
+      const generated = manifest as {
+        host_permissions?: string[];
+        optional_host_permissions?: string[];
+      };
+      const required = new Set(generated.host_permissions ?? []);
+      if (!generated.optional_host_permissions?.length) return;
+      const optional = generated.optional_host_permissions.filter(
+        (origin) => !required.has(origin),
+      );
+      if (optional.length === 0) delete generated.optional_host_permissions;
+      else generated.optional_host_permissions = optional;
     },
   },
   /**
@@ -113,6 +134,17 @@ export default defineConfig({
       alias: {
         react: path.resolve(rootDir, "node_modules/react"),
         "react-dom": path.resolve(rootDir, "node_modules/react-dom"),
+        // Bundle UI from source so validator logos and other wallet widgets
+        // pick up package edits without a stale dist.
+        "@zunialab/ui/styles.css": path.resolve(
+          uiPackagesDir,
+          "ui/dist/styles.css",
+        ),
+        "@zunialab/ui/validator-logos": path.resolve(
+          uiPackagesDir,
+          "ui/src/wallet/validatorLogoResolve.ts",
+        ),
+        "@zunialab/ui": path.resolve(uiPackagesDir, "ui/src/index.ts"),
       },
     },
     server: {
@@ -159,7 +191,10 @@ export default defineConfig({
      * externally_connectable / user-granted origins), not via broad https host wildcards.
      */
     host_permissions: [...HOST_PERMISSIONS],
-    optional_host_permissions: [...OPTIONAL_HOST_PERMISSIONS],
+    optional_host_permissions: [
+      ...OPTIONAL_HOST_PERMISSIONS,
+      ...REALTIME_HOST_PERMISSIONS,
+    ],
     /**
      * Chromium only. Firefox has no externally_connectable, and Safari's
      * support differs, so first-party pages talk to the wallet through

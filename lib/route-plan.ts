@@ -205,6 +205,63 @@ export async function discoverChannels(
 }
 
 /**
+ * Walk every open transfer channel on `sourceChainId` and cache each
+ * counterparty. One listing, then the graph can search multi-hop routes
+ * without a second walk per destination.
+ */
+export async function discoverOutgoingChannels(
+  sourceChainId: string,
+  options: { signal?: AbortSignal } = {},
+): Promise<readonly IbcChannelOption[]> {
+  const found = await channelService().findOutgoingIbcChannels(sourceChainId, {
+    ...(options.signal ? { signal: options.signal } : {}),
+  });
+  if (found.length === 0) return found;
+
+  const now = Date.now();
+  const registry = await loadRouteRegistry();
+  registry.putMany(
+    found.map((option) => ({
+      sourceChainId,
+      destChainId: option.counterpartyChainId,
+      channelId: option.channelId,
+      counterpartyChannelId: option.counterpartyChannelId,
+      verifiedAt: now,
+      source: "discovered" as const,
+    })),
+  );
+  await saveRouteRegistry(registry);
+  return found;
+}
+
+/**
+ * Confirm one hop that the cache already named (a seed, or a guessed channel)
+ * and record it as discovered when both sides agree it is open.
+ */
+export async function verifyChannelHop(
+  sourceChainId: string,
+  destChainId: string,
+  channelId: string,
+  options: { signal?: AbortSignal } = {},
+): Promise<boolean> {
+  const check = await validateChannel(sourceChainId, channelId, destChainId, {
+    ...options,
+  });
+  if (!check.ok || check.state !== "open") return false;
+  const registry = await loadRouteRegistry();
+  registry.put({
+    sourceChainId,
+    destChainId,
+    channelId: check.channelId || channelId,
+    counterpartyChannelId: check.counterpartyChannelId ?? "",
+    verifiedAt: Date.now(),
+    source: "discovered",
+  });
+  await saveRouteRegistry(registry);
+  return true;
+}
+
+/**
  * Check one channel id the user typed, on the source chain and on the far side.
  *
  * The counterparty check costs a second chain's round trip and is worth it
@@ -463,6 +520,7 @@ function pathChainIds(candidate: RoutePlanCandidate): string[] {
 
 interface PlanPassOptions {
   readonly allowSwap: boolean;
+  readonly maxHops?: number;
   readonly outputDenom?: string;
   readonly slippagePercent?: number;
   readonly recoveryAddress?: string;
@@ -490,7 +548,7 @@ async function runPlan(
         ? {}
         : { slippagePercent: pass.slippagePercent }),
       ...(pass.recoveryAddress ? { recoveryAddress: pass.recoveryAddress } : {}),
-      maxHops: MAX_ROUTE_HOPS,
+      maxHops: pass.maxHops ?? MAX_ROUTE_HOPS,
       allowSwap: pass.allowSwap,
       allowPfm: true,
       timeoutMinutes: PACKET_TIMEOUT_MINUTES,
@@ -524,7 +582,7 @@ async function runPlan(
 export async function planTransfer(input: PlanInput): Promise<TransferPlanResult> {
   try {
     const directory = await channelDirectory();
-    const first = await runPlan(input, directory, { allowSwap: false });
+    const first = await runPlan(input, directory, { allowSwap: false, maxHops: 1 });
     if (!first.best) {
       return {
         best: null,
@@ -552,6 +610,7 @@ export async function planTransfer(input: PlanInput): Promise<TransferPlanResult
     ]);
     const second = await runPlan(input, directory, {
       allowSwap: false,
+      maxHops: 1,
       intermediateReceivers: receivers,
       capabilities,
     });
@@ -911,9 +970,9 @@ async function quoteOnVenue(
         tokenOutDenom: args.venueOutputDenom,
         slippagePercent: args.slippagePercent,
         router: swapRouterClient(),
-        // One path rather than a split order: the crosschain-swap contract
-        // executes a single route, so a split quote would price something the
-        // memo cannot ask for.
+        // Osmosis SQS `/router/quote` returns the highest-output single path.
+        // Same endpoint Keplr uses for crosschain-swap. Split routes are off
+        // because the memo can execute only one pool path.
         singleRoute: true,
         ...(args.signal ? { request: { signal: args.signal } } : {}),
       },

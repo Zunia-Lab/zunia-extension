@@ -1,13 +1,27 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ChainBalance } from "../../../lib/balances";
 import { sendToBackground } from "../../../lib/popup-client";
+import { useRealtime } from "./useWalletEvents";
 
 /** Stable identity for the "nothing to show" map. */
 const NO_BALANCES: Record<string, ChainBalance> = {};
 
 /**
- * Live balances for the enabled chains. Returns an empty map when the user has
- * not opted in, which keeps every caller on the em-dash placeholder path.
+ * Live balances for the enabled chains.
+ *
+ * Two sources, in one order. The fetch is the cold start: a surface that has
+ * just opened asks once, so it renders numbers even if no chain event happens
+ * while it is on screen. The worker's push is everything after that - it
+ * watches the chains on a socket and sends each chain's new balance the moment
+ * it changes, so a transfer that lands with the popup open updates the row
+ * without anything here asking again.
+ *
+ * The push always wins, because it cannot be older: the worker also folds the
+ * answer to this hook's own fetch into the same channel, so the two agree by
+ * construction rather than by racing.
+ *
+ * Returns an empty map when the user has not opted in, which keeps every caller
+ * on the em-dash placeholder path.
  */
 export function useBalances(chainIds: string[], enabled: boolean) {
   const key = chainIds.join(",");
@@ -56,11 +70,31 @@ export function useBalances(chainIds: string[], enabled: boolean) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, key, attempt]);
 
-  // Derived, not stored: turning live reads off empties the map on the same
-  // render as the switch, with no effect writing {} and forcing a second pass.
-  const balances = enabled ? (settled?.balances ?? NO_BALANCES) : NO_BALANCES;
+  const pushed = useRealtime().balances;
+
+  const balances = useMemo(() => {
+    // Derived, not stored: turning live reads off empties the map on the same
+    // render as the switch, with no effect writing {} and forcing a second pass.
+    if (!enabled) return NO_BALANCES;
+    const fetched = settled?.balances ?? NO_BALANCES;
+    // Scoped to the chains this caller asked about. The worker's picture spans
+    // every enabled chain, and a screen showing three of them must not suddenly
+    // grow rows for the other twenty.
+    const merged: Record<string, ChainBalance> = {};
+    for (const chainId of chainIds) {
+      const row = pushed[chainId] ?? fetched[chainId];
+      if (row) merged[chainId] = row;
+    }
+    return Object.keys(merged).length > 0 ? merged : NO_BALANCES;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabled, key, settled, pushed]);
+
+  // Loading only until something has arrived. A push that beat the fetch is a
+  // perfectly good first render, so the skeleton stops there rather than
+  // waiting out a request whose answer is already on screen.
   const loading =
     active &&
+    Object.keys(balances).length === 0 &&
     (settled === null || settled.key !== key || settled.attempt !== attempt.n);
 
   const reload = useCallback((force = false) => {

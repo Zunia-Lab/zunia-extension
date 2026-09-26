@@ -25,7 +25,7 @@ html {
   /* An overscroll bounce here must not scroll the dApp page behind the modal. */
   overscroll-behavior: contain;
   scrollbar-width: thin;
-  scrollbar-color: var(--z-line-strong) transparent;
+  scrollbar-color: color-mix(in srgb, var(--z-fg) 28%, transparent) transparent;
 }
 
 html,

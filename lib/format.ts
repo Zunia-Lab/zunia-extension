@@ -82,6 +82,17 @@ export function formatUnits(
   );
 }
 
+/** True when the compact display would read as 0 / 0.00. */
+export function displaysAsZero(
+  amount: string,
+  decimals: number,
+  maxFractionDigits = 2,
+): boolean {
+  return (
+    Number.parseFloat(formatUnits(amount, decimals, maxFractionDigits)) === 0
+  );
+}
+
 export function formatFiat(value: number, currency: string): string {
   if (!Number.isFinite(value)) {
     return formatFiat(0, currency);
@@ -98,8 +109,16 @@ export function formatFiat(value: number, currency: string): string {
   return `${sign}${symbol}${formatCompact(Math.abs(value), 2)}`;
 }
 
-/** `ibc/27394FB0…41E5EB2` for a voucher, the denom itself for anything else. */
+/** `ibc/27394FB0…41E5EB2` for a voucher, a clipped factory path, else the denom. */
 export function shortDenom(denom: string): string {
+  if (denom.startsWith("factory/")) {
+    const parts = denom.split("/");
+    const sub = parts[parts.length - 1] ?? denom;
+    const creator = parts[1] ?? "";
+    const clipped =
+      creator.length > 12 ? `${creator.slice(0, 6)}…${creator.slice(-4)}` : creator;
+    return clipped ? `factory/${clipped}/${sub}` : denom;
+  }
   if (!denom.startsWith("ibc/") || denom.length <= 20) return denom;
   return `ibc/${denom.slice(4, 12)}…${denom.slice(-6)}`;
 }

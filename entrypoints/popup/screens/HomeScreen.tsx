@@ -27,20 +27,28 @@ import {
   liveBalanceRefusalNote,
   requestLiveBalancePermission,
   type ChainBalance,
-  type TokenBalance,
 } from "../../../lib/balances";
 import type { PriceMap, SpotPrice } from "../../../lib/prices";
 import type { ActivityItem } from "../../../lib/chain-queries";
+import {
+  groupHomeAssets,
+  groupedSubtitle,
+  homeAssets,
+  type HomeAsset,
+} from "../../../lib/home-assets";
+import type { AssetListMode } from "../../../lib/settings";
 import { computePortfolio, toWholeCoins } from "../../../lib/portfolio";
 import { searchItems } from "../../../lib/picker";
 import { sendToBackground } from "../../../lib/popup-client";
 import {
   NO_VALUE,
+  displaysAsZero,
   formatFiat,
   formatUnits,
   relativeTime,
 } from "../../../lib/format";
 import { ActivityBadge } from "../components/ActivityBadge";
+import { HeroSkeleton, ListSkeleton } from "../components/ListSkeleton";
 import { PopupHeader } from "../components/PopupHeader";
 import type { ChainAccountView } from "../hooks/useChainAccounts";
 import { useActivity } from "../hooks/useChainQuery";
@@ -49,30 +57,20 @@ import { useToast } from "../state/Toasts";
 import type { PopupRoute } from "../routes";
 import {
   IconActivity,
-  IconChevronDown,
   IconCopy,
   IconEye,
   IconEyeOff,
+  IconChevronRight,
   IconGlobe,
+  IconLayers,
+  IconLock,
   IconReceive,
+  IconRows,
   IconRefresh,
   IconSend,
   IconStake,
   IconSwap,
 } from "./icons";
-
-/** Past this many networks the list gets a search box and a held-only filter. */
-const FILTER_FROM = 6;
-
-/** True when the network holds anything: spendable, staked, or other tokens. */
-function holdsFunds(balance: ChainBalance | undefined): boolean {
-  if (!balance) return false;
-  return (
-    balance.available !== "0" ||
-    balance.staked !== "0" ||
-    balance.tokens.some((token) => token.amount !== "0")
-  );
-}
 
 function hostOf(origin: string): string {
   try {
@@ -101,196 +99,234 @@ function QuickAction({
         "flex flex-1 flex-col items-center justify-center gap-1.5 rounded-[13px] py-2.5",
         "transition-[background-color,border-color,filter,transform] duration-[var(--z-duration-fast)] ease-[var(--z-ease)]",
         primary
-          ? "bg-[image:var(--z-accent-gradient)] text-[var(--z-accent-fg)] shadow-[var(--z-accent-glow)] hover:brightness-110 active:brightness-95 active:scale-[0.98]"
+          ? "bg-[image:var(--z-button-gradient)] text-[var(--z-button-fg)] shadow-[0_10px_22px_rgba(154,16,22,0.34)] hover:brightness-110 active:brightness-95 active:scale-[0.98]"
           : "border border-[var(--z-line)] bg-[image:var(--z-surface-raised-gradient)] text-fg hover:border-[var(--z-line-strong)] hover:bg-[var(--z-state-hover)] active:bg-[var(--z-state-press)] active:scale-[0.98]",
         focusRing,
       )}
     >
       {icon}
-      <span className="text-[10.5px] font-medium leading-none">{label}</span>
+      <span className="text-[11px] font-semibold leading-none">{label}</span>
     </button>
   );
 }
 
-function TokenLine({
-  token,
+function AssetRow({
+  asset,
+  currency,
   hidden,
+  verified,
+  grouped,
+  onOpen,
 }: {
-  token: TokenBalance;
+  asset: HomeAsset;
+  currency: string;
   hidden: boolean;
+  verified?: boolean;
+  grouped?: boolean;
+  onOpen: () => void;
 }) {
-  const kindLabel =
-    token.kind === "ibc"
-      ? "IBC"
-      : token.kind === "factory"
-        ? "Factory"
-        : null;
+  const { token } = asset;
+  const bridged = token.kind === "ibc" || token.kind === "factory";
+  const borrowedIcon = Boolean(
+    bridged && token.iconUrl && token.iconUrl === asset.chainIconUrl,
+  );
+  const amount = formatUnits(token.amount, token.decimals, 2);
+  const subtitle = grouped ? groupedSubtitle(token) : asset.subtitle;
+  const fiat =
+    asset.fiatValue !== null ? formatFiat(asset.fiatValue, currency) : null;
+  const change = asset.change24h;
 
   return (
-    <div className="flex items-center gap-2.5 py-1.5 pl-10 pr-1">
-      <TokenLogo src={token.iconUrl} symbol={token.symbol} size={22} />
+    <button
+      type="button"
+      onClick={onOpen}
+      className={cn(
+        "flex w-full min-w-0 items-center text-left",
+        "transition-[background-color] duration-[var(--z-duration-fast)] ease-[var(--z-ease)]",
+        "hover:bg-[var(--z-state-hover)] active:bg-[var(--z-state-press)]",
+        grouped
+          ? "gap-2 rounded-none px-2.5 py-1.5"
+          : "gap-2.5 rounded-[10px] px-1.5 py-2",
+        focusRing,
+      )}
+    >
+      <TokenLogo
+        src={borrowedIcon ? undefined : (token.iconUrl ?? asset.chainIconUrl)}
+        symbol={token.symbol}
+        size={grouped ? 26 : 32}
+        verified={token.kind === "native" ? verified : false}
+        verifiedLabel="Listed in the Cosmos chain registry"
+        chainSrc={!grouped && bridged ? asset.chainIconUrl : undefined}
+        chainLabel={!grouped && bridged ? asset.chainName : undefined}
+      />
       <span className="min-w-0 flex-1">
-        <span className="flex items-center gap-1.5">
-          <span className="truncate text-[12px] font-medium text-fg">
-            {token.displayName}
+        <span className="flex min-w-0 items-center gap-1.5">
+          <span
+            className={cn(
+              "truncate font-semibold tracking-[-0.02em] text-fg",
+              grouped ? "text-[12.5px]" : "text-[13px]",
+            )}
+          >
+            {token.symbol}
           </span>
-          {kindLabel ? (
-            <span className="shrink-0 font-mono text-[8px] uppercase tracking-[0.08em] text-fg-dim">
-              {kindLabel}
+          {token.kind !== "native" ? (
+            <span className="shrink-0 rounded-full bg-[var(--z-glass-2)] px-1.5 py-px font-mono text-[8px] uppercase tracking-[0.08em] text-fg-dim">
+              {asset.kindLabel}
             </span>
           ) : null}
         </span>
+        {grouped && token.kind === "native" ? null : (
+          <span className="mt-0.5 flex min-w-0 items-center gap-1 text-[11px] text-fg-muted">
+            <span className="truncate">{subtitle}</span>
+            {!grouped && asset.testnet ? (
+              <IconLock
+                width={9}
+                height={9}
+                aria-label="Testnet"
+                className="shrink-0 text-fg-dim"
+              />
+            ) : null}
+          </span>
+        )}
       </span>
-      <span className={cn(amountInlineClass, "max-w-[45%] shrink-0 truncate text-[12.5px]")}>
-        {hidden ? "••••" : formatUnits(token.amount, token.decimals)}
+      <span className="max-w-[46%] shrink-0 text-right">
+        <span
+          className={cn(
+            amountPrimaryClass,
+            "block truncate",
+            grouped ? "text-[13px]" : "text-[14px]",
+          )}
+        >
+          {hidden ? "••••" : amount}
+        </span>
+        {fiat || (change !== null && token.amount !== "0") ? (
+          <span
+            className={cn(
+              amountSecondaryClass,
+              "mt-0.5 block truncate text-[10px]",
+              !fiat && change !== null
+                ? change >= 0
+                  ? "text-[var(--z-success)]"
+                  : "text-[var(--z-danger)]"
+                : null,
+            )}
+          >
+            {hidden
+              ? "••••"
+              : fiat
+                ? fiat
+                : `${change! >= 0 ? "+" : ""}${change!.toFixed(2)}%`}
+          </span>
+        ) : null}
       </span>
+    </button>
+  );
+}
+
+function AssetModeSwitch({
+  mode,
+  onChange,
+}: {
+  mode: AssetListMode;
+  onChange: (mode: AssetListMode) => void;
+}) {
+  return (
+    <div
+      className="grid h-8 w-[60px] shrink-0 grid-cols-2 items-center overflow-hidden rounded-full border border-[var(--z-line)] bg-[var(--z-glass)] p-[3px]"
+      role="group"
+      aria-label="Asset list layout"
+    >
+      {(
+        [
+          ["separate", "Show each token", IconRows],
+          ["grouped", "Group by network", IconLayers],
+        ] as const
+      ).map(([value, label, Icon]) => {
+        const on = mode === value;
+        return (
+          <button
+            key={value}
+            type="button"
+            aria-label={label}
+            aria-pressed={on}
+            title={label}
+            onClick={() => onChange(value)}
+            className={cn(
+              "flex h-full w-full items-center justify-center rounded-full p-0 leading-none",
+              "transition-colors duration-[var(--z-duration-fast)]",
+              on
+                ? "bg-[var(--z-state-selected)] text-fg"
+                : "text-fg-muted hover:text-fg",
+              focusRing,
+            )}
+          >
+            <Icon width={14} height={14} className="block shrink-0" />
+          </button>
+        );
+      })}
     </div>
   );
 }
 
-function NetworkRow({
-  chain,
-  balance,
-  price,
-  currency,
+function ChainGroupHeader({
+  name,
+  iconUrl,
+  testnet,
+  count,
+  fiat,
   hidden,
-  query,
+  currency,
   onOpen,
 }: {
-  chain: ChainAccountView;
-  balance?: ChainBalance;
-  price?: SpotPrice;
-  currency: string;
+  name: string;
+  iconUrl?: string;
+  testnet: boolean;
+  count: number;
+  fiat: number | null;
   hidden: boolean;
-  /** The list search, so a network found by one of its tokens shows it. */
-  query: string;
+  currency: string;
   onOpen: () => void;
 }) {
-  // Null until the user toggles, so a search can open the token list.
-  const [open, setOpen] = useState<boolean | null>(null);
-  const nativeToken =
-    balance?.tokens.find((t) => t.kind === "native") ??
-    (balance
-      ? {
-          denom: balance.denom,
-          amount: balance.available,
-          kind: "native" as const,
-          symbol: balance.symbol,
-          displayName: balance.symbol,
-          decimals: balance.decimals,
-          iconUrl: balance.iconUrl ?? chain.iconUrl,
-        }
-      : undefined);
-  const extras = (balance?.tokens ?? []).filter((t) => t.kind !== "native");
-  const needle = query.trim().toLowerCase();
-  const tokenMatch =
-    needle.length > 0 &&
-    extras.some(
-      (token) =>
-        token.symbol.toLowerCase().includes(needle) ||
-        token.displayName.toLowerCase().includes(needle),
-    );
-  const expanded = open ?? tokenMatch;
-  const amount = balance
-    ? formatUnits(balance.available, balance.decimals)
-    : NO_VALUE;
-  const fiat =
-    balance && price
-      ? formatFiat(
-          toWholeCoins(balance.available, balance.decimals) * price.price,
-          currency,
-        )
-      : null;
-  const tokenIcon = nativeToken?.iconUrl ?? balance?.iconUrl ?? chain.iconUrl;
-  const tokenSymbol = nativeToken?.symbol ?? chain.entry.coinDenom;
-  const primaryAmount = hidden
+  const meta = hidden
     ? "••••"
-    : fiat
-      ? fiat
-      : `${amount} ${tokenSymbol}`;
-  const secondaryAmount =
-    fiat && !hidden ? `${amount} ${tokenSymbol}` : hidden && fiat ? "••••" : null;
-
+    : fiat !== null
+      ? formatFiat(fiat, currency)
+      : count === 1
+        ? "1"
+        : String(count);
   return (
-    <div>
-      <div className="flex items-center gap-0.5">
-        <button
-          type="button"
-          onClick={onOpen}
-          className={cn(
-            "flex min-w-0 flex-1 items-center gap-2.5 rounded-[10px] px-1.5 py-2 text-left",
-            "transition-[background-color] duration-[var(--z-duration-fast)] ease-[var(--z-ease)]",
-            "hover:bg-[var(--z-state-hover)] active:bg-[var(--z-state-press)]",
-            focusRing,
-          )}
-        >
-          <TokenLogo src={tokenIcon} symbol={tokenSymbol} size={32} />
-          <span className="min-w-0 flex-1">
-            <span className="flex items-center gap-1.5">
-              <span className="truncate text-[13px] font-semibold tracking-[-0.02em] text-fg">
-                {tokenSymbol}
-              </span>
-              {chain.entry.network === "testnet" ? (
-                <span className="shrink-0 font-mono text-[8px] uppercase tracking-[0.08em] text-[var(--z-warning)]">
-                  test
-                </span>
-              ) : null}
-            </span>
-            <span className="mt-0.5 block truncate text-[11px] text-fg-muted">
-              {chain.entry.chainName}
-            </span>
+    <button
+      type="button"
+      onClick={onOpen}
+      className={cn(
+        "flex w-full min-w-0 items-center gap-2 border-b border-[var(--z-line)] px-2.5 py-2 text-left",
+        "bg-[var(--z-glass-2)]",
+        "transition-[background-color] duration-[var(--z-duration-fast)] ease-[var(--z-ease)]",
+        "hover:bg-[var(--z-state-hover)]",
+        focusRing,
+      )}
+    >
+      <TokenLogo src={iconUrl} symbol={name} size={20} />
+      <span className="min-w-0 flex-1">
+        <span className="flex min-w-0 items-center gap-1">
+          <span className="truncate text-[12px] font-semibold tracking-[-0.02em] text-fg">
+            {name}
           </span>
-          <span className="max-w-[48%] shrink-0 text-right">
-            <span className={cn(amountPrimaryClass, "block truncate text-[14px]")}>
-              {primaryAmount}
-            </span>
-            {secondaryAmount ? (
-              <span className={cn(amountSecondaryClass, "mt-0.5 block truncate text-[10px]")}>
-                {secondaryAmount}
-              </span>
-            ) : null}
-          </span>
-        </button>
-
-        {extras.length > 0 ? (
-          <button
-            type="button"
-            aria-label={
-              expanded
-                ? `Hide other ${chain.entry.chainName} tokens`
-                : `Show ${extras.length} other ${chain.entry.chainName} tokens`
-            }
-            aria-expanded={expanded}
-            onClick={() => setOpen(!expanded)}
-            className={cn(
-              "flex size-8 shrink-0 items-center justify-center rounded-[8px] text-fg-dim",
-              "transition-[background-color,color] duration-[var(--z-duration-fast)] ease-[var(--z-ease)]",
-              "hover:bg-[var(--z-state-hover)] hover:text-fg",
-              expanded && "text-fg",
-              focusRing,
-            )}
-          >
-            <IconChevronDown
-              width={14}
-              height={14}
-              aria-hidden
-              className={cn(
-                "transition-transform duration-[var(--z-duration-fast)] ease-[var(--z-ease)]",
-                expanded && "rotate-180",
-              )}
+          {testnet ? (
+            <IconLock
+              width={9}
+              height={9}
+              aria-label="Testnet"
+              className="shrink-0 text-fg-dim"
             />
-          </button>
-        ) : null}
-      </div>
-
-      {expanded && extras.length > 0 ? (
-        <div className="pb-1">
-          {extras.map((token) => (
-            <TokenLine key={token.denom} token={token} hidden={hidden} />
-          ))}
-        </div>
-      ) : null}
-    </div>
+          ) : null}
+        </span>
+      </span>
+      <span className="shrink-0 font-mono text-[10px] tabular-nums text-fg-muted">
+        {meta}
+      </span>
+      <IconChevronRight width={12} height={12} className="shrink-0 text-fg-dim" />
+    </button>
   );
 }
 
@@ -387,6 +423,8 @@ function StakedRow({
         src={balance.iconUrl ?? chain.iconUrl}
         symbol={symbol}
         size={30}
+        verified={chain.entry.inCosmosRegistry}
+        verifiedLabel="Listed in the Cosmos chain registry"
       />
       <span className="min-w-0 flex-1">
         <span className="block truncate text-[12.5px] font-medium text-fg">
@@ -459,33 +497,63 @@ export function HomeScreen({
   // account's default derivation, which belongs to a different prefix.
   const headerAddress = primary?.address ?? active?.address;
   const readsLive = settings.liveBalances && hostGranted;
-  const filterable = chains.length > FILTER_FROM;
-  // Held-only needs balances to judge by; without live reads it would hide all.
-  const filterHeld = filterable && heldOnly && readsLive;
-  const visibleChains = useMemo(() => {
-    const byId = new Map(chains.map((chain) => [chain.chainId, chain]));
-    const pool = filterHeld
-      ? chains.filter((chain) => holdsFunds(balances[chain.chainId]))
-      : chains;
+  const assets = useMemo(
+    () =>
+      homeAssets(
+        chains.map((chain) => ({
+          chainId: chain.chainId,
+          chainName: chain.entry.chainName,
+          network: chain.entry.network,
+          coinDenom: chain.entry.coinDenom,
+          coinMinimalDenom: chain.entry.coinMinimalDenom,
+          coinDecimals: chain.entry.coinDecimals,
+          ...(chain.iconUrl ? { iconUrl: chain.iconUrl } : {}),
+          ...(chain.entry.inCosmosRegistry
+            ? { inCosmosRegistry: chain.entry.inCosmosRegistry }
+            : {}),
+        })),
+        balances,
+        prices,
+      ),
+    [chains, balances, prices],
+  );
+  const visibleAssets = useMemo(() => {
+    const pool =
+      heldOnly && readsLive
+        ? assets.filter((asset) => asset.token.amount !== "0")
+        : assets;
+    const byKey = new Map(pool.map((asset) => [asset.key, asset]));
     return searchItems(
-      pool.map((chain) => ({
-        id: chain.chainId,
-        label: chain.entry.chainName,
-        sublabel: chain.entry.coinDenom,
+      pool.map((asset) => ({
+        id: asset.key,
+        label: asset.token.symbol,
+        sublabel: asset.subtitle,
         keywords: [
-          chain.chainId,
-          ...(balances[chain.chainId]?.tokens ?? []).flatMap((token) => [
-            token.symbol,
-            token.displayName,
-          ]),
+          asset.chainId,
+          asset.chainName,
+          asset.token.displayName,
+          asset.token.denom,
+          asset.token.baseDenom ?? "",
+          asset.token.originChainName ?? "",
+          asset.kindLabel,
         ],
       })),
-      filterable ? query : "",
-    ).flatMap((item) => byId.get(item.id) ?? []);
-  }, [chains, balances, query, filterable, filterHeld]);
+      query,
+    ).flatMap((item) => byKey.get(item.id) ?? []);
+  }, [assets, heldOnly, readsLive, query]);
+  const chainById = useMemo(
+    () => new Map(chains.map((chain) => [chain.chainId, chain])),
+    [chains],
+  );
+  const listMode: AssetListMode =
+    settings.assetListMode === "grouped" ? "grouped" : "separate";
+  const groupedAssets = useMemo(
+    () => groupHomeAssets(visibleAssets, chains.map((chain) => chain.chainId)),
+    [visibleAssets, chains],
+  );
   const staked = chains.filter((c) => {
     const b = balances[c.chainId];
-    return b && b.staked !== "0";
+    return b && !displaysAsZero(b.staked, b.decimals, 2);
   });
 
   const totals = useMemo(
@@ -496,7 +564,10 @@ export function HomeScreen({
   const hasTotal = totals.pricedChains > 0;
 
   const chainIds = useMemo(() => chains.map((c) => c.chainId), [chains]);
-  const { rows: activity } = useActivity(chainIds, readsLive);
+  const { rows: activity, loading: activityLoading } = useActivity(
+    chainIds,
+    readsLive,
+  );
   const recentActivity = activity.slice(0, 5);
 
   const [refusal, setRefusal] = useState<string | null>(null);
@@ -611,31 +682,37 @@ export function HomeScreen({
           </div>
 
           <div className="mt-1.5 flex items-end gap-2">
-            <span className={cn(amountHeroClass, "text-[32px] leading-none")}>
-              {hidden
-                ? "••••"
-                : hasTotal
-                  ? formatFiat(totals.total, currency)
-                  : NO_VALUE}
-            </span>
-            {hidden ? null : hasTotal ? (
-              totals.change24h === null ? null : (
-                <span
-                  className={cn(
-                    "pb-1 font-mono text-[10px] tabular-nums",
-                    totals.change24h >= 0
-                      ? "text-[var(--z-success)]"
-                      : "text-[var(--z-danger)]",
-                  )}
-                >
-                  {totals.change24h >= 0 ? "+" : ""}
-                  {totals.change24h.toFixed(1)}%
-                </span>
-              )
+            {readsLive && balancesLoading && !hasTotal && !hidden ? (
+              <HeroSkeleton label="Loading total balance" />
             ) : (
-              <span className="pb-1 font-mono text-[9.5px] uppercase tracking-[0.1em] text-fg-dim">
-                {readsLive ? "no price feed" : "balances off"}
-              </span>
+              <>
+                <span className={cn(amountHeroClass, "text-[32px] leading-none")}>
+                  {hidden
+                    ? "••••"
+                    : hasTotal
+                      ? formatFiat(totals.total, currency)
+                      : NO_VALUE}
+                </span>
+                {hidden ? null : hasTotal ? (
+                  totals.change24h === null ? null : (
+                    <span
+                      className={cn(
+                        "pb-1 font-mono text-[10px] tabular-nums",
+                        totals.change24h >= 0
+                          ? "text-[var(--z-success)]"
+                          : "text-[var(--z-danger)]",
+                      )}
+                    >
+                      {totals.change24h >= 0 ? "+" : ""}
+                      {totals.change24h.toFixed(1)}%
+                    </span>
+                  )
+                ) : (
+                  <span className="pb-1 font-mono text-[9.5px] uppercase tracking-[0.1em] text-fg-dim">
+                    {readsLive ? "no price feed" : "balances off"}
+                  </span>
+                )}
+              </>
             )}
           </div>
 
@@ -669,7 +746,7 @@ export function HomeScreen({
             onClick={() => onNavigate("send")}
           />
           <QuickAction
-            label="Receive"
+            label="Deposit"
             icon={<IconReceive width={15} height={15} />}
             onClick={() => onNavigate("receive")}
           />
@@ -707,61 +784,109 @@ export function HomeScreen({
 
         <Tabs defaultValue="tokens">
           <TabsList>
-            <TabsTrigger value="tokens">Networks</TabsTrigger>
+            <TabsTrigger value="tokens">Assets</TabsTrigger>
             <TabsTrigger value="staked">Staked</TabsTrigger>
             <TabsTrigger value="activity">Activity</TabsTrigger>
           </TabsList>
 
           <TabsContent value="tokens" className="pt-0.5">
-            {filterable ? (
-              <div className="mb-1.5 mt-2 flex items-center gap-2">
-                <SearchField
-                  className="min-w-0 flex-1"
-                  value={query}
-                  onValueChange={setQuery}
-                  placeholder="Search networks and tokens"
-                />
-                {readsLive ? (
-                  <button
-                    type="button"
-                    aria-pressed={heldOnly}
-                    onClick={() => setHeldOnly((v) => !v)}
-                    className={cn(
-                      "h-9 shrink-0 rounded-full border px-3 font-mono text-[9.5px] uppercase tracking-[0.08em]",
-                      "transition-colors duration-[var(--z-duration-base)]",
-                      heldOnly
-                        ? "border-accent bg-[var(--z-state-selected)] text-fg"
-                        : "border-[var(--z-line)] text-fg-muted hover:border-[var(--z-line-strong)] hover:text-fg",
-                      focusRing,
-                    )}
-                  >
-                    Held only
-                  </button>
-                ) : null}
-              </div>
-            ) : null}
-            {visibleChains.length === 0 && chains.length > 0 ? (
+            <div className="mb-2 mt-2 flex h-8 items-center gap-1.5">
+              <AssetModeSwitch
+                mode={listMode}
+                onChange={(mode) => void update({ assetListMode: mode })}
+              />
+              <SearchField
+                compact
+                className="min-w-0 flex-1"
+                value={query}
+                onValueChange={setQuery}
+                placeholder="Search asset or network"
+                aria-label="Search asset or network"
+              />
+              {readsLive ? (
+                <button
+                  type="button"
+                  aria-pressed={heldOnly}
+                  onClick={() => setHeldOnly((v) => !v)}
+                  className={cn(
+                    "flex h-8 shrink-0 items-center rounded-full border px-2.5 font-mono text-[9.5px] leading-none uppercase tracking-[0.08em]",
+                    "transition-colors duration-[var(--z-duration-base)]",
+                    heldOnly
+                      ? "border-accent bg-[var(--z-state-selected)] text-fg"
+                      : "border-[var(--z-line)] bg-[var(--z-glass)] text-fg-muted hover:border-[var(--z-line-strong)] hover:text-fg",
+                    focusRing,
+                  )}
+                >
+                  Held
+                </button>
+              ) : null}
+            </div>
+            {readsLive && balancesLoading && Object.keys(balances).length === 0 ? (
+              <ListSkeleton
+                rows={Math.min(5, Math.max(3, chains.length))}
+                label="Loading balances"
+              />
+            ) : visibleAssets.length === 0 && chains.length > 0 ? (
               <p className="py-6 text-center text-[12px] text-fg-muted">
                 {query.trim()
-                  ? <>Nothing matches &ldquo;{query.trim()}&rdquo;{filterHeld ? " among networks with funds" : ""}.</>
-                  : "No network holds funds yet."}
+                  ? <>Nothing matches &ldquo;{query.trim()}&rdquo;{heldOnly ? " among held assets" : ""}.</>
+                  : heldOnly
+                    ? "No spendable assets yet."
+                    : "No networks enabled."}
               </p>
-            ) : null}
-            <ul className="flex flex-col">
-              {visibleChains.map((chain) => (
-                <li key={chain.chainId}>
-                  <NetworkRow
-                    chain={chain}
-                    balance={balances[chain.chainId]}
-                    price={prices[chain.chainId]}
-                    currency={currency}
-                    hidden={hidden}
-                    query={filterable ? query : ""}
-                    onOpen={() => onOpenChain(chain.chainId)}
-                  />
-                </li>
-              ))}
-            </ul>
+            ) : (
+              listMode === "grouped" ? (
+                <ul className="flex flex-col gap-2">
+                  {groupedAssets.map((group) => (
+                    <li
+                      key={group.chainId}
+                      className="min-w-0 overflow-hidden rounded-[14px] border border-[var(--z-line)] bg-[var(--z-glass)]"
+                    >
+                      <ChainGroupHeader
+                        name={group.chainName}
+                        iconUrl={group.chainIconUrl}
+                        testnet={group.testnet}
+                        count={group.assets.length}
+                        fiat={group.fiatValue}
+                        hidden={hidden}
+                        currency={currency}
+                        onOpen={() => onOpenChain(group.chainId)}
+                      />
+                      <ul className="divide-y divide-[var(--z-line)]">
+                        {group.assets.map((asset) => (
+                          <li key={asset.key}>
+                            <AssetRow
+                              asset={asset}
+                              currency={currency}
+                              hidden={hidden}
+                              grouped
+                              verified={
+                                chainById.get(asset.chainId)?.entry.inCosmosRegistry
+                              }
+                              onOpen={() => onOpenChain(asset.chainId)}
+                            />
+                          </li>
+                        ))}
+                      </ul>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <ul className="flex flex-col">
+                  {visibleAssets.map((asset) => (
+                    <li key={asset.key}>
+                      <AssetRow
+                        asset={asset}
+                        currency={currency}
+                        hidden={hidden}
+                        verified={chainById.get(asset.chainId)?.entry.inCosmosRegistry}
+                        onOpen={() => onOpenChain(asset.chainId)}
+                      />
+                    </li>
+                  ))}
+                </ul>
+              )
+            )}
             <button
               type="button"
               onClick={() => onNavigate("networks")}
@@ -779,7 +904,9 @@ export function HomeScreen({
           </TabsContent>
 
           <TabsContent value="staked" className="pt-1">
-            {staked.length === 0 ? (
+            {readsLive && balancesLoading && staked.length === 0 ? (
+              <ListSkeleton rows={2} bordered label="Loading staked positions" />
+            ) : staked.length === 0 ? (
               <EmptyState
                 icon={<IconStake width={18} height={18} />}
                 title={readsLive ? "Nothing staked" : "Staking is off"}
@@ -843,7 +970,9 @@ export function HomeScreen({
           </TabsContent>
 
           <TabsContent value="activity" className="pt-1">
-            {recentActivity.length === 0 ? (
+            {activityLoading && recentActivity.length === 0 ? (
+              <ListSkeleton rows={4} avatar={false} label="Loading activity" />
+            ) : recentActivity.length === 0 ? (
               <EmptyState
                 icon={<IconActivity width={16} height={16} />}
                 title={readsLive ? "No activity yet" : "Activity is off"}

@@ -5,6 +5,12 @@
  * Mainnets and testnets are both emitted; icons resolve to bundled assets when present,
  * otherwise to the registry raw URL.
  *
+ * Also asks the official cosmos/chain-registry (via cosmos.directory + the
+ * GitHub testnets tree) whether each chain_id is listed, and asks Cosmostation
+ * chainlist for the directory name their validator monikers live under. Those
+ * two lookups replace the hand-maintained slug map that used to live in the
+ * logo resolver.
+ *
  * Usage: node scripts/generate-chain-catalog.mjs [--registry ../zunia-chain-registry]
  */
 import fs from "node:fs";
@@ -35,7 +41,148 @@ function isTestnet(fileName, chain) {
   );
 }
 
-function readRegistry(registryDir) {
+function slugify(value) {
+  return (value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, "")
+    .replace(/^-+|-+$/g, "");
+}
+
+function logoSlugsFor({
+  chainId,
+  chainName,
+  identifier,
+  registrySlug,
+  cosmostationSlug,
+}) {
+  const slugs = [];
+  const push = (value) => {
+    const slug = slugify(value);
+    if (slug && !slugs.includes(slug)) slugs.push(slug);
+  };
+  push(cosmostationSlug);
+  push(registrySlug);
+  push(identifier);
+  push(chainName?.replace(/\s+/g, ""));
+  push(chainName);
+  push(chainId.replace(/_\d+-\d+$/, "").replace(/-\d+$/, ""));
+  push(chainId);
+  return slugs;
+}
+
+async function mapPool(items, concurrency, fn) {
+  const out = new Array(items.length);
+  let next = 0;
+  async function worker() {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await fn(items[i], i);
+    }
+  }
+  const n = Math.min(concurrency, Math.max(items.length, 1));
+  await Promise.all(Array.from({ length: n }, () => worker()));
+  return out;
+}
+
+async function fetchJson(url, { timeoutMs = 15_000 } = {}) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, {
+      signal: ctrl.signal,
+      headers: { "user-agent": "zunia-chain-catalog" },
+    });
+    if (!res.ok) throw new Error(`${res.status} ${url}`);
+    return await res.json();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Official cosmos/chain-registry membership, keyed by chain_id.
+ * Mainnets come from cosmos.directory (the public registry index).
+ * Testnets are not in that index, so we read chain.json from GitHub.
+ */
+async function fetchOfficialRegistry() {
+  const byChainId = new Map();
+  try {
+    const data = await fetchJson("https://chains.cosmos.directory/");
+    for (const chain of data.chains ?? []) {
+      if (typeof chain.chain_id !== "string" || !chain.chain_id) continue;
+      const slug = chain.chain_name ?? chain.path ?? chain.name;
+      byChainId.set(chain.chain_id, {
+        chainName: slug,
+        path: chain.path ?? slug,
+      });
+    }
+  } catch (err) {
+    console.warn(`  cosmos.directory: ${err.message}`);
+  }
+
+  try {
+    const listing = await fetchJson(
+      "https://api.github.com/repos/cosmos/chain-registry/contents/testnets",
+    );
+    const dirs = (Array.isArray(listing) ? listing : [])
+      .filter((row) => row?.type === "dir" && typeof row.name === "string")
+      .map((row) => row.name);
+    await mapPool(dirs, 16, async (name) => {
+      try {
+        const chain = await fetchJson(
+          `https://raw.githubusercontent.com/cosmos/chain-registry/master/testnets/${name}/chain.json`,
+          { timeoutMs: 8_000 },
+        );
+        if (typeof chain.chain_id === "string" && chain.chain_id) {
+          const slug = chain.chain_name ?? name;
+          if (!byChainId.has(chain.chain_id)) {
+            byChainId.set(chain.chain_id, { chainName: slug, path: slug });
+          }
+        }
+      } catch {
+        /* folder without chain.json */
+      }
+    });
+  } catch (err) {
+    console.warn(`  cosmos testnets: ${err.message}`);
+  }
+
+  return byChainId;
+}
+
+/** Cosmostation chainlist folder name for each cosmos chain_id. */
+async function fetchCosmostationSlugs() {
+  const byChainId = new Map();
+  let folders = [];
+  try {
+    const listing = await fetchJson(
+      "https://api.github.com/repos/cosmostation/chainlist/contents/chain",
+    );
+    folders = (Array.isArray(listing) ? listing : [])
+      .filter((row) => row?.type === "dir" && typeof row.name === "string")
+      .map((row) => row.name);
+  } catch (err) {
+    console.warn(`  cosmostation list: ${err.message}`);
+    return byChainId;
+  }
+
+  await mapPool(folders, 20, async (name) => {
+    try {
+      const param = await fetchJson(
+        `https://raw.githubusercontent.com/cosmostation/chainlist/main/chain/${name}/param_2.json`,
+        { timeoutMs: 8_000 },
+      );
+      const id = param.chain_id_cosmos ?? param.chain_id;
+      if (typeof id === "string" && id) byChainId.set(id, name);
+    } catch {
+      /* evm-only folder, or no param file */
+    }
+  });
+  return byChainId;
+}
+
+function readRegistry(registryDir, official, cosmostation) {
   const chainsDir = path.join(registryDir, "cosmos");
   if (!fs.existsSync(chainsDir)) {
     throw new Error(`Registry not found at ${chainsDir}`);
@@ -59,6 +206,10 @@ function readRegistry(registryDir) {
 
     const fee = raw.feeCurrencies?.[0] ?? currency;
     const localIcon = `${chainId}.png`;
+    const identifier = file.replace(/\.json$/, "");
+    const fromIcon = raw.chainSymbolImageUrl?.match(/\/images\/([^/]+)\//)?.[1];
+    const officialRow = official.get(chainId);
+    const registrySlug = officialRow?.chainName ?? officialRow?.path;
     entries.push({
       chainId,
       chainName: raw.chainName ?? chainId,
@@ -88,6 +239,15 @@ function readRegistry(registryDir) {
       rest: raw.rest,
       iconPath: bundledIcons.has(localIcon) ? `/chains/${localIcon}` : undefined,
       iconUrl: raw.chainSymbolImageUrl,
+      registrySlug,
+      inCosmosRegistry: Boolean(officialRow),
+      logoSlugs: logoSlugsFor({
+        chainId,
+        chainName: raw.chainName ?? chainId,
+        identifier: fromIcon ?? identifier,
+        registrySlug,
+        cosmostationSlug: cosmostation.get(chainId),
+      }),
     });
   }
   return entries;
@@ -123,6 +283,13 @@ function serialize(entries) {
     if (e.rest) parts.push(`rest: ${JSON.stringify(e.rest)}`);
     if (e.iconPath) parts.push(`iconPath: ${JSON.stringify(e.iconPath)}`);
     if (e.iconUrl) parts.push(`iconUrl: ${JSON.stringify(e.iconUrl)}`);
+    if (e.registrySlug) {
+      parts.push(`registrySlug: ${JSON.stringify(e.registrySlug)}`);
+    }
+    parts.push(`inCosmosRegistry: ${e.inCosmosRegistry ? "true" : "false"}`);
+    if (e.logoSlugs?.length) {
+      parts.push(`logoSlugs: ${JSON.stringify(e.logoSlugs)}`);
+    }
     return `  { ${parts.join(", ")} },`;
   });
 
@@ -136,7 +303,12 @@ ${lines.join("\n")}
 }
 
 const { registry } = parseArgs(process.argv.slice(2));
-const entries = readRegistry(registry);
+console.log("chain catalog: resolving cosmos registry + Cosmostation slugs…");
+const [official, cosmostation] = await Promise.all([
+  fetchOfficialRegistry(),
+  fetchCosmostationSlugs(),
+]);
+const entries = readRegistry(registry, official, cosmostation);
 const outFile = path.join(rootDir, "lib/chain-catalog.generated.ts");
 fs.writeFileSync(outFile, serialize(entries));
 
@@ -160,10 +332,16 @@ for (const target of [
 }
 
 const mainnets = entries.filter((e) => e.network === "mainnet").length;
+const listed = entries.filter((e) => e.inCosmosRegistry).length;
 console.log(
   `chain catalog: ${entries.length} chains (${mainnets} mainnet, ${
     entries.length - mainnets
   } testnet) → ${path.relative(rootDir, outFile)}`,
+);
+console.log(
+  `  cosmos chain-registry: ${listed} listed, ${
+    entries.length - listed
+  } not listed (${official.size} official ids, ${cosmostation.size} Cosmostation slugs)`,
 );
 
 // Printed because the NFT and swap surfaces are gated on it: a drop to zero

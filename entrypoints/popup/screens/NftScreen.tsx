@@ -1,26 +1,15 @@
 /**
- * The NFTs an account holds on one chain.
+ * The NFTs this wallet holds across every enabled CosmWasm network.
  *
- * Three facts shape this screen and are all visible on it:
- *
- * 1. Only 118 of the 332 chains in the registry declare `cosmwasm`, so most
- *    chains cannot hold a CW721 token at all. Those get a sentence saying so,
- *    never an empty grid.
- * 2. CosmWasm has no chain-level "tokens by owner" index. A wallet can only ask
- *    contracts it already knows about, so the screen says which contracts it
- *    asked and never presents an unqueried chain as an empty one.
- * 3. Artwork lives on hosts the token's minter chose. Loading it tells those
- *    hosts the user's IP and which tokens they hold, so it is off until the
- *    user turns it on, next to the sentence explaining what that costs.
+ * All supported networks are queried at once, then the chips filter the grid.
+ * Artwork is the Preferences switch, not a control on this screen.
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Button,
   Callout,
-  Checkbox,
   EmptyState,
-  NFT_MEDIA_PRIVACY_NOTE,
   NftGrid,
   ScreenScaffold,
   SearchField,
@@ -38,37 +27,32 @@ import {
   loadToken,
   mediaTargetFor,
   nftChainSupport,
-  NFT_LIST_LIMITATION,
   type NftCollectionView,
   type NftTokenView,
 } from "../../../lib/nft";
 import type { PopupRoute } from "../routes";
 import type { ChainAccountView } from "../hooks/useChainAccounts";
 import { usePrefs } from "../state/Prefs";
-import { ChainSheet, PickerTrigger } from "../components/ChainSheet";
-import { TileSkeleton } from "../components/ListSkeleton";
+import { NftGallerySkeleton } from "../components/ListSkeleton";
 import {
   ContractManager,
   ScanDisclosure,
   SourcePill,
   useNftChains,
-  useNftDiscovery,
+  useNftDiscoveryAll,
   useNftMediaGate,
 } from "./nft-ui";
 import { IconNft, IconRefresh } from "./icons";
 
-/**
- * Stable identity for "no collections yet".
- *
- * A fresh `[]` on every render would change the detail plan's identity and
- * re-run its effect on every render while discovery is still in flight.
- */
-const NO_COLLECTIONS: readonly NftCollectionView[] = [];
-
-/** Key for the token detail cache. A token id is unique only within a contract. */
-function tokenKey(contract: string, tokenId: string): string {
-  return `${contract}:${tokenId}`;
+/** Key for the token detail cache. A token id is unique only within a contract on a chain. */
+function tokenKey(chainId: string, contract: string, tokenId: string): string {
+  return `${chainId}:${contract}:${tokenId}`;
 }
+
+type NftCollectionRow = NftCollectionView & {
+  chainId: string;
+  chainName: string;
+};
 
 /**
  * Read on-chain detail for the tokens on screen, a few at a time.
@@ -81,8 +65,7 @@ function tokenKey(contract: string, tokenId: string): string {
  * a rate-limited one.
  */
 function useTokenDetails(input: {
-  chainId: string | null;
-  collections: readonly NftCollectionView[];
+  collections: ReadonlyArray<NftCollectionView & { chainId: string }>;
   withOffChainMetadata: boolean;
   reloadToken: number;
 }): {
@@ -92,15 +75,21 @@ function useTokenDetails(input: {
   notRead: number;
   errors: readonly string[];
 } {
-  const { chainId, collections, withOffChainMetadata, reloadToken } = input;
+  const { collections, withOffChainMetadata, reloadToken } = input;
 
   // A stable identity for "the exact tokens to read", so the effect does not
   // re-run on every render of a new array with the same contents.
   const plan = useMemo(() => {
-    const rows: Array<{ contract: string; tokenId: string; name: string | null }> = [];
+    const rows: Array<{
+      chainId: string;
+      contract: string;
+      tokenId: string;
+      name: string | null;
+    }> = [];
     for (const collection of collections) {
       for (const tokenId of collection.tokenIds) {
         rows.push({
+          chainId: collection.chainId,
           contract: collection.contractAddress,
           tokenId,
           name: collection.info?.name ?? null,
@@ -109,8 +98,8 @@ function useTokenDetails(input: {
     }
     return rows;
   }, [collections]);
-  const planKey = `${chainId ?? ""}|${withOffChainMetadata}|${reloadToken}|${plan
-    .map((row) => tokenKey(row.contract, row.tokenId))
+  const planKey = `${withOffChainMetadata}|${reloadToken}|${plan
+    .map((row) => tokenKey(row.chainId, row.contract, row.tokenId))
     .join(",")}`;
 
   const [settled, setSettled] = useState<{
@@ -121,7 +110,7 @@ function useTokenDetails(input: {
   } | null>(null);
 
   useEffect(() => {
-    if (!chainId || plan.length === 0) return;
+    if (plan.length === 0) return;
     const controller = new AbortController();
     const targets = plan.slice(0, NFT_DETAIL_PREFETCH);
     const details = new Map<string, NftTokenView>();
@@ -134,12 +123,12 @@ function useTokenDetails(input: {
         const target = targets[index];
         if (!target || controller.signal.aborted) return;
         try {
-          const view = await loadToken(chainId!, target.contract, target.tokenId, {
+          const view = await loadToken(target.chainId, target.contract, target.tokenId, {
             withOffChainMetadata,
             collectionName: target.name,
             signal: controller.signal,
           });
-          details.set(tokenKey(target.contract, target.tokenId), view);
+          details.set(tokenKey(target.chainId, target.contract, target.tokenId), view);
         } catch (error) {
           if (controller.signal.aborted) return;
           errors.push(
@@ -168,7 +157,7 @@ function useTokenDetails(input: {
     });
 
     return () => controller.abort();
-  }, [planKey, chainId, plan, withOffChainMetadata]);
+  }, [planKey, plan, withOffChainMetadata]);
 
   const current = settled?.planKey === planKey ? settled : null;
   return {
@@ -177,6 +166,35 @@ function useTokenDetails(input: {
     notRead: Math.max(0, plan.length - NFT_DETAIL_PREFETCH),
     errors: current?.errors ?? [],
   };
+}
+
+function FilterChip({
+  label,
+  selected,
+  onSelect,
+}: {
+  label: string;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="tab"
+      aria-selected={selected}
+      onClick={onSelect}
+      className={cn(
+        "shrink-0 rounded-full border px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.08em]",
+        "transition-colors duration-[var(--z-duration-base)]",
+        selected
+          ? "border-transparent bg-[var(--z-button)] text-[var(--z-button-fg)]"
+          : "border-[var(--z-line-strong)] text-fg hover:bg-[var(--z-state-hover)]",
+        focusRing,
+      )}
+    >
+      {label}
+    </button>
+  );
 }
 
 export function NftScreen({
@@ -199,32 +217,48 @@ export function NftScreen({
   const { settings } = usePrefs();
   const liveReads = settings.liveBalances;
   const media = useNftMediaGate();
-  const { supported, unsupported } = useNftChains(chains);
+  const { supported } = useNftChains(chains);
 
-  // Only the user's explicit pick is state. The chain actually shown is derived
-  // from it, so a chain disabled in Networks while this screen is open falls
-  // back on the next render instead of needing an effect to correct itself.
-  const [picked, setPicked] = useState<string | null>(
-    initialChainId && nftChainSupport(initialChainId).supported ? initialChainId : null,
+  const [filter, setFilter] = useState<string>(
+    initialChainId && nftChainSupport(initialChainId).supported ? initialChainId : "all",
   );
-  const [pickerOpen, setPickerOpen] = useState(false);
   const [contractsToken, setContractsToken] = useState(0);
   const [query, setQuery] = useState("");
 
-  const chain =
-    supported.find((row) => row.chainId === picked) ?? supported[0] ?? null;
-  const chainId = chain?.chainId ?? null;
-  const owner = chain?.address && chain.address.length > 0 ? chain.address : null;
-
-  const discovery = useNftDiscovery({
-    chainId,
-    owner,
-    enabled: liveReads && Boolean(chain && owner),
+  const discovery = useNftDiscoveryAll({
+    chains: supported,
+    enabled: liveReads && supported.some((row) => Boolean(row.address)),
   });
 
-  const collections = discovery.result?.collections ?? NO_COLLECTIONS;
+  const names = useMemo(
+    () => new Map(supported.map((row) => [row.chainId, row.entry.chainName])),
+    [supported],
+  );
+
+  const collections = useMemo((): NftCollectionRow[] => {
+    const rows: NftCollectionRow[] = [];
+    for (const scan of discovery.rows) {
+      if (filter !== "all" && scan.chainId !== filter) continue;
+      for (const collection of scan.result?.collections ?? []) {
+        rows.push({
+          ...collection,
+          chainId: scan.chainId,
+          chainName: names.get(scan.chainId) ?? scan.chainId,
+        });
+      }
+    }
+    return rows;
+  }, [discovery.rows, filter, names]);
+
+  const visibleScans = useMemo(
+    () =>
+      filter === "all"
+        ? discovery.rows
+        : discovery.rows.filter((row) => row.chainId === filter),
+    [discovery.rows, filter],
+  );
+
   const detail = useTokenDetails({
-    chainId,
     collections,
     withOffChainMetadata: media.enabled,
     reloadToken: contractsToken,
@@ -249,25 +283,25 @@ export function NftScreen({
     if (supported.length === 0) {
       return {
         title: "None of your networks can hold NFTs",
-        body: `CW721 needs CosmWasm, and none of your ${chains.length} enabled network${
+        body: `None of your ${chains.length} enabled network${
           chains.length === 1 ? "" : "s"
-        } declares it in the chain registry. Enable a CosmWasm chain from Networks and this screen will read it.`,
+        } exposes CosmWasm or the nft module. Enable a network that does and Zunia will list what you own.`,
       };
     }
     if (!liveReads) {
       return {
         title: "Live reads are off",
-        body: "Finding NFTs means querying each collection's contract on the chain. Turn on live balances in Settings, Preferences and Zunia will look.",
+        body: "Finding NFTs means asking each chain who this address owns. Turn on live balances in Settings, Preferences and Zunia will look.",
       };
     }
-    if (!owner) {
+    if (supported.every((row) => !row.address)) {
       return {
-        title: "No address on this network",
-        body: `Zunia could not derive your ${chain?.entry.chainName ?? "chain"} address, so it has no owner to ask about. Unlock the wallet and try again.`,
+        title: "No address on these networks",
+        body: "Zunia could not derive your address on any CosmWasm network, so it has no owner to ask about. Unlock the wallet and try again.",
       };
     }
     return null;
-  }, [chains.length, supported.length, liveReads, owner, chain]);
+  }, [chains.length, supported, liveReads]);
 
   /* ------------------------------------------------------------------ *
    * Cards
@@ -278,9 +312,11 @@ export function NftScreen({
   // token has no artwork", which is not what "we have not looked yet" means.
   const artworkReady = media.enabled && !detail.loading;
 
-  function itemsFor(collection: NftCollectionView): NftCardItem[] {
+  function itemsFor(collection: NftCollectionRow): NftCardItem[] {
     return collection.tokenIds.map((tokenId) => {
-      const view = detail.details.get(tokenKey(collection.contractAddress, tokenId));
+      const view = detail.details.get(
+        tokenKey(collection.chainId, collection.contractAddress, tokenId),
+      );
       const image = media.enabled ? mediaTargetFor(view?.token.imageUri).url : null;
       return {
         tokenId,
@@ -323,10 +359,6 @@ export function NftScreen({
     ).flatMap((hit) => byId.get(hit.id) ?? []);
     return hits.length > 0 ? [{ collection, items: hits }] : [];
   });
-  // The chain the rendered collections came from, which is the discovery run's
-  // chain and not the picker's: those differ for one render after a switch, and
-  // opening a token against the wrong chain would query the wrong contract.
-  const activeChainId = discovery.result?.chainId ?? chainId ?? "";
 
   return (
     <ScreenScaffold
@@ -349,35 +381,32 @@ export function NftScreen({
       }
     >
       <div className="flex flex-col gap-3 pt-1">
-        {/* Chain picker. Only CosmWasm chains are listed; the rest are named
-            underneath with the reason, so a missing chain is never a mystery. */}
         {supported.length > 0 ? (
-          <section>
-            <PickerTrigger
-              className="rounded-[13px] py-2"
-              expanded={pickerOpen}
-              onClick={() => setPickerOpen(true)}
-              aria-label={`Network: ${chain?.entry.chainName ?? "pick a network"}`}
-              icon={
-                <span className="flex size-[26px] items-center justify-center rounded-[9px] border border-[var(--z-line)] text-fg-muted">
-                  <IconNft width={15} height={15} />
-                </span>
-              }
-              title={chain?.entry.chainName ?? "Pick a network"}
-              subtitle={owner ? truncateAddress(owner, 8, 6) : "no address"}
-            />
-            <ChainSheet
-              open={pickerOpen}
-              onClose={() => setPickerOpen(false)}
-              title="NFT network"
-              chains={supported}
-              selectedId={chainId}
-              onSelect={(id) => {
-                setPicked(id);
+          <div
+            className="-mx-1 flex gap-1 overflow-x-auto px-1 pb-0.5"
+            role="tablist"
+            aria-label="NFT network"
+          >
+            <FilterChip
+              label="All"
+              selected={filter === "all"}
+              onSelect={() => {
+                setFilter("all");
                 setQuery("");
               }}
             />
-          </section>
+            {supported.map((row) => (
+              <FilterChip
+                key={row.chainId}
+                label={row.entry.chainName}
+                selected={filter === row.chainId}
+                onSelect={() => {
+                  setFilter(row.chainId);
+                  setQuery("");
+                }}
+              />
+            ))}
+          </div>
         ) : null}
 
         {blocked ? (
@@ -408,39 +437,27 @@ export function NftScreen({
           </>
         ) : null}
 
-        {/* The artwork switch, with the sentence that explains what it costs.
-            Rendered here rather than inside each grid so one decision covers
-            the whole screen. */}
-        {!blocked ? (
-          <section className="flex flex-col gap-1.5 rounded-[13px] border border-[var(--z-line)] px-3 py-2.5">
-            <Checkbox
-              checked={media.enabled}
-              disabled={!media.togglable}
-              onCheckedChange={(next) => media.setEnabled(next === true)}
-              label={
-                <span className="text-[11.5px] text-fg">
-                  Load artwork and off-chain details
-                </span>
-              }
+        {visibleScans
+          .filter((row) => row.error)
+          .map((row) => (
+            <Callout
+              key={`err-${row.chainId}`}
+              tone="danger"
+              title={`Could not read ${names.get(row.chainId) ?? row.chainId}`}
+            >
+              {row.error}
+            </Callout>
+          ))}
+
+        {visibleScans
+          .filter((row) => row.result)
+          .map((row) => (
+            <ScanDisclosure
+              key={`scan-${row.chainId}`}
+              result={row.result!}
+              chainName={names.get(row.chainId) ?? row.chainId}
             />
-            <p className="m-0 text-[10px] leading-snug text-fg-muted">
-              {media.blockedReason ?? NFT_MEDIA_PRIVACY_NOTE}
-            </p>
-          </section>
-        ) : null}
-
-        {discovery.error ? (
-          <Callout tone="danger" title="Could not read this chain">
-            {discovery.error}
-          </Callout>
-        ) : null}
-
-        {discovery.result ? (
-          <ScanDisclosure
-            result={discovery.result}
-            chainName={chain?.entry.chainName ?? discovery.result.chainId}
-          />
-        ) : null}
+          ))}
 
         {/* One grid per collection: the collection is the unit a user thinks
             in, and a flat grid of tokens from three contracts is unreadable at
@@ -460,7 +477,10 @@ export function NftScreen({
         ) : null}
 
         {visible.map(({ collection, items }) => (
-          <section key={collection.contractAddress} className="flex flex-col gap-2">
+          <section
+            key={`${collection.chainId}:${collection.contractAddress}`}
+            className="flex flex-col gap-2"
+          >
             <div className="flex items-baseline gap-2">
               <span className="min-w-0 flex-1">
                 <span className="block truncate text-[12.5px] font-medium text-fg">
@@ -468,19 +488,14 @@ export function NftScreen({
                     truncateAddress(collection.contractAddress, 8, 6)}
                 </span>
                 <span className="block truncate font-mono text-[9px] text-fg-dim">
-                  {collection.tokenIds.length} held
+                  {collection.chainName}
+                  {` · ${collection.tokenIds.length} held`}
                   {collection.info?.symbol ? ` · ${collection.info.symbol}` : ""}
                   {collection.truncated ? " · list cut short" : ""}
                 </span>
               </span>
               <SourcePill source={collection.source} />
             </div>
-            {collection.infoError ? (
-              <p className="m-0 text-[10px] leading-snug text-[var(--z-warning)]">
-                Collection details could not be read ({collection.infoError}), so
-                only the contract address is shown.
-              </p>
-            ) : null}
             {/* No `onToggleMedia` / `onRequestMedia` here on purpose: the
                 artwork decision is one decision for the whole screen and it is
                 made above, next to the sentence that explains what it
@@ -495,7 +510,7 @@ export function NftScreen({
               minItemWidth={140}
               onSelect={(item) =>
                 onOpenToken({
-                  chainId: activeChainId,
+                  chainId: collection.chainId,
                   collectionAddress: collection.contractAddress,
                   tokenId: item.tokenId,
                 })
@@ -508,25 +523,17 @@ export function NftScreen({
             queried. `ScanDisclosure` owns the other case and says nothing was
             asked, so this sentence is never a claim the wallet cannot make. */}
         {!blocked &&
-        discovery.result &&
+        !discovery.loading &&
         collections.length === 0 &&
-        !discovery.result.scan.queriedNothing ? (
+        visibleScans.some((row) => row.result && !row.result.scan.queriedNothing) ? (
           <EmptyState
             icon={<IconNft width={16} height={16} />}
-            title="Nothing found in the collections Zunia asked"
-            description={NFT_LIST_LIMITATION}
+            title="No NFTs on these networks"
           />
         ) : null}
 
-        {discovery.loading && !discovery.result ? (
-          <TileSkeleton tiles={4} label="Asking each collection" />
-        ) : null}
-
-        {detail.notRead > 0 ? (
-          <p className="m-0 text-[10px] leading-snug text-fg-muted">
-            Details were read for the first {NFT_DETAIL_PREFETCH} of {total} tokens.
-            The rest show their token id; open one to read it in full.
-          </p>
+        {discovery.loading && collections.length === 0 ? (
+          <NftGallerySkeleton collections={2} tiles={4} label="Asking each collection" />
         ) : null}
 
         {detail.errors.length > 0 ? (
@@ -539,31 +546,8 @@ export function NftScreen({
           </Callout>
         ) : null}
 
-        {chain ? (
-          <ContractManager chainId={chain.chainId} onChanged={onContractsChanged} />
-        ) : null}
-
-        {unsupported.length > 0 ? (
-          <section className="flex flex-col gap-1.5">
-            <p className="m-0 font-mono text-[9px] uppercase tracking-[0.16em] text-fg-dim">
-              Networks without NFTs
-            </p>
-            <ul className="flex flex-col gap-1">
-              {unsupported.map(({ chain: row, support }) => (
-                <li
-                  key={row.chainId}
-                  className="rounded-[11px] border border-[var(--z-line)] px-2.5 py-2"
-                >
-                  <span className="block truncate text-[11.5px] text-fg">
-                    {row.entry.chainName}
-                  </span>
-                  <span className="mt-0.5 block text-[10px] leading-snug text-fg-muted">
-                    {support.reason}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </section>
+        {supported.length > 0 ? (
+          <ContractManager chains={supported} onChanged={onContractsChanged} />
         ) : null}
       </div>
     </ScreenScaffold>

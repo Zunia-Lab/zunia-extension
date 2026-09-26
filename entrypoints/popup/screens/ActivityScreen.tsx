@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
-  Avatar,
   Button,
+  TokenLogo,
   Callout,
   EmptyState,
   ScreenScaffold,
@@ -342,7 +342,15 @@ function NetworkFilter({
         label: chain.entry.chainName,
         sublabel: `${chain.entry.coinDenom} · ${chain.chainId}`,
         keywords: [chain.entry.coinDenom, chain.chainId],
-        icon: <Avatar src={chain.iconUrl} fallback={chain.entry.chainName} size={26} />,
+        icon: (
+          <TokenLogo
+            src={chain.iconUrl}
+            symbol={chain.entry.chainName}
+            size={26}
+            verified={chain.entry.inCosmosRegistry}
+            verifiedLabel="Listed in the Cosmos chain registry"
+          />
+        ),
       })),
     ],
     [chains],
@@ -363,7 +371,13 @@ function NetworkFilter({
         )}
       >
         {active ? (
-          <Avatar src={active.iconUrl} fallback={active.entry.chainName} size={16} />
+          <TokenLogo
+            src={active.iconUrl}
+            symbol={active.entry.chainName}
+            size={16}
+            verified={active.entry.inCosmosRegistry}
+            verifiedLabel="Listed in the Cosmos chain registry"
+          />
         ) : null}
         <span className="max-w-[92px] truncate text-[11px] text-fg-muted">
           {active?.entry.chainName ?? "All networks"}
@@ -391,10 +405,12 @@ function NetworkFilter({
 export function ActivityScreen({
   chains,
   balances,
+  initialChainId,
   onOpenTx,
 }: {
   chains: ChainAccountView[];
   balances: Record<string, ChainBalance>;
+  initialChainId?: string;
   onOpenTx: (item: ActivityItem, transfer?: PendingTransfer) => void;
 }) {
   const { settings, hidden } = usePrefs();
@@ -405,7 +421,7 @@ export function ActivityScreen({
   useLiveRefresh(feed.refresh, live);
   const inFlight = useInFlightTransfers();
   const [filter, setFilter] = useState<FilterId>("all");
-  const [network, setNetwork] = useState<string | null>(null);
+  const [network, setNetwork] = useState<string | null>(initialChainId ?? null);
   const [query, setQuery] = useState("");
   // A network that was turned off since it was picked filters nothing.
   const networkFilter = network && chainIds.includes(network) ? network : null;

@@ -225,11 +225,6 @@ export function WalletsScreen({
             );
           })}
         </ul>
-
-        <Callout tone="neutral" title="One phrase, many accounts">
-          Every account here is a different BIP-44 index derived from the same
-          recovery phrase, so one backup restores all of them.
-        </Callout>
       </div>
     </ScreenScaffold>
   );

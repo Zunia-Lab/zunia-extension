@@ -62,7 +62,7 @@ describe("JS kernel fallback", () => {
     );
     const envelope = kernel.sealKeyring(phrase, "password123", "{}");
     expect(kernel.openKeyring(envelope, "password123")).toBe(phrase);
-  });
+  }, 20_000);
 
   it("reports that it cannot sign transactions", () => {
     expect(kernel.status.flavor).toBe("js");

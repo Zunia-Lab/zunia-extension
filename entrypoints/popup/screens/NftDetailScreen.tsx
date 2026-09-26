@@ -36,7 +36,7 @@ import type { BuiltMsg, IbcChannelOption } from "@zunialab/interchain";
 import { explorerTxUrl } from "../../../config/interchain";
 import type { AddressBookEntry } from "../../../lib/address-book";
 import { findCatalogEntry } from "../../../lib/chain-catalog";
-import { formatUnits, isBech32, prefixOf } from "../../../lib/format";
+import { isBech32, prefixOf } from "../../../lib/format";
 import { describeInterchainError } from "../../../lib/interchain";
 import {
   buildCrossChainNftTransfer,
@@ -66,6 +66,8 @@ import {
   useNftChains,
   useNftMediaGate,
 } from "./nft-ui";
+import { GasFeePrefs } from "../components/GasFeePrefs";
+import { usePrefs } from "../state/Prefs";
 import { signingError, useSignedSend } from "../state/SigningPassword";
 
 type Phase = "view" | "transfer" | "confirm" | "sent";
@@ -99,6 +101,7 @@ export function NftDetailScreen({
   onBack: () => void;
 }) {
   const signedSend = useSignedSend();
+  const { settings } = usePrefs();
   const media = useNftMediaGate();
   const kernel = useKernelSigning();
   const { supported } = useNftChains(chains);
@@ -405,6 +408,8 @@ export function NftDetailScreen({
         chainId,
         signerAddress: owner,
         msgs: [msg],
+        feeSpeed: settings.feeSpeed,
+        gasAdjustment: settings.gasAdjustment,
       });
       setPending({
         msg,
@@ -437,6 +442,7 @@ export function NftDetailScreen({
         chainId: pending.chainId,
         signerAddress: pending.signerAddress,
         msgs: [pending.msg],
+        memo: preview.preview.memo,
         fee: preview.fee,
         accountNumber: preview.accountNumber,
         sequence: preview.sequence,
@@ -532,16 +538,19 @@ export function NftDetailScreen({
             ))}
           </section>
 
-          <section className="flex flex-col gap-1.5 rounded-[13px] border border-[var(--z-line)] px-3 py-3">
-            <KeyValueRow
-              label="Network fee"
-              value={
-                feeCoin
-                  ? `${formatUnits(feeCoin.amount, entry?.feeDecimals ?? 6)} ${entry?.feeDenom ?? feeCoin.denom}`
-                  : "none"
-              }
+          <section className="flex flex-col gap-1.5 rounded-[12px] border border-[var(--z-line)] px-2.5 py-2">
+            <GasFeePrefs
+              feeAmount={feeCoin?.amount}
+              feeDecimals={entry?.feeDecimals ?? 6}
+              feeSymbol={entry?.feeDenom ?? feeCoin?.denom ?? ""}
+              onChanged={() => {
+                void review();
+              }}
             />
             <KeyValueRow label="Gas" value={preview.fee.gas_limit} />
+            {preview.preview.memo ? (
+              <KeyValueRow label="Memo" value={preview.preview.memo} />
+            ) : null}
             <KeyValueRow
               label="Sign bytes"
               value={`${preview.preview.signBytesHash.slice(0, 12)}…`}
@@ -865,9 +874,7 @@ export function NftDetailScreen({
     return (
       <ScreenScaffold title="NFT" onBack={onBack}>
         <div className="pt-3">
-          <Callout tone="neutral" title="NFTs are not available on this chain">
-            {support.reason}
-          </Callout>
+          <Callout tone="neutral" title="NFTs are not available on this chain" />
         </div>
       </ScreenScaffold>
     );
@@ -908,30 +915,11 @@ export function NftDetailScreen({
           owner={token?.owner ?? null}
           traits={traits}
           loadMedia={media.enabled && !loading}
-          onRequestMedia={media.togglable ? () => media.setEnabled(true) : undefined}
           tokenUri={token?.tokenUri ?? null}
           loading={loading}
           error={current?.error ?? null}
           actions={
             <div className="flex w-full flex-col gap-1.5">
-              {view?.metadataError ? (
-                <p className="m-0 text-[10px] leading-snug text-[var(--z-warning)]">
-                  Off-chain metadata could not be read ({view.metadataError}), so
-                  only what the contract stores on chain is shown.
-                </p>
-              ) : null}
-              {view?.metadataSource === "chain" ? (
-                <p className="m-0 text-[10px] leading-snug text-fg-muted">
-                  Everything above comes from the contract&rsquo;s own state. No
-                  off-chain host was contacted.
-                </p>
-              ) : null}
-              {view?.metadataSource === "none" && !media.enabled && token?.tokenUri ? (
-                <p className="m-0 text-[10px] leading-snug text-fg-muted">
-                  This token stores no metadata on chain. Its name and artwork
-                  live at the address above and were not fetched.
-                </p>
-              ) : null}
               <Button
                 size="sm"
                 variant="secondary"

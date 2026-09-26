@@ -409,13 +409,20 @@ function parseChain(chainJson: string): ChainSpec {
     // Fall through to Cosmos Hub defaults.
   }
   const bip44 = raw.bip44 as { coinType?: number } | undefined;
+  const bech32Config = raw.bech32Config as
+    | { bech32PrefixAccAddr?: string }
+    | undefined;
   const coinType =
     (typeof raw.coinType === "number" ? raw.coinType : undefined) ??
     bip44?.coinType ??
     118;
+  const prefix =
+    (typeof raw.bech32Prefix === "string" ? raw.bech32Prefix : undefined) ??
+    (typeof bech32Config?.bech32PrefixAccAddr === "string"
+      ? bech32Config.bech32PrefixAccAddr
+      : undefined);
   return {
-    bech32Prefix:
-      typeof raw.bech32Prefix === "string" ? raw.bech32Prefix : "cosmos",
+    bech32Prefix: prefix ?? "cosmos",
     coinType,
     ethermint: raw.addressScheme === "ethermint" || coinType === 60,
   };

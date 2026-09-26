@@ -35,6 +35,7 @@ import {
   isInterchainError,
   InterchainError,
   lcdEndpointsFromChain,
+  listOwnedTokenIds,
   NFT_DISCOVERY_LIMITATION,
   resolveTokenUri,
   supportsCosmWasm,
@@ -62,6 +63,11 @@ import {
   NFT_KNOWN_CONTRACTS,
   NFT_MAX_CONTRACTS,
   NFT_MAX_TOKENS_PER_CONTRACT,
+  NFT_SDK_MODULE_CHAINS,
+  NFT_WASM_SCAN_MAX_CODES,
+  NFT_WASM_SCAN_MAX_CONTRACTS,
+  NFT_WASM_SCAN_MAX_CONTRACTS_PER_CODE,
+  NFT_WASM_SCAN_TTL_MS,
   NFT_METADATA_MAX_BYTES,
   NFT_METADATA_TIMEOUT_MS,
 } from "../config/nft";
@@ -74,6 +80,7 @@ import {
   lcdFor,
   READS_DISABLED_MESSAGE,
 } from "./interchain";
+import { getSettings } from "./settings";
 import { STORAGE_KEYS } from "./storage-keys";
 
 /* -------------------------------------------------------------------------- *
@@ -114,7 +121,7 @@ export function nftChainSupport(chainId: string): NftChainSupport {
       reason: `${chainId} is not in this wallet's chain list, so nothing can be read from it.`,
     };
   }
-  if (supportsCosmWasm(entry)) {
+  if (supportsCosmWasm(entry) || NFT_SDK_MODULE_CHAINS.includes(chainId)) {
     return { chainId, chainName: entry.chainName, supported: true, reason: null };
   }
   const reason =
@@ -208,6 +215,32 @@ export async function addUserContract(
   return { ok: true, contracts: store[chainId] };
 }
 
+/**
+ * Ask the chain whether this address is a collection, before it is saved.
+ * A passing test is `collection_info` (or the nft module class) answering.
+ */
+export async function probeUserContract(
+  chainId: string,
+  address: string,
+): Promise<{ ok: true; name: string | null } | { ok: false; error: string }> {
+  const entry = findCatalogEntry(chainId);
+  if (!entry) return { ok: false, error: "That network is not in this wallet." };
+  const trimmed = address.trim();
+  if (!trimmed) return { ok: false, error: "Enter a contract address." };
+  if (!trimmed.startsWith(`${entry.bech32Prefix}1`)) {
+    return {
+      ok: false,
+      error: `Addresses on ${entry.chainName} start with ${entry.bech32Prefix}1.`,
+    };
+  }
+  try {
+    const info = await loadCollection(chainId, trimmed);
+    return { ok: true, name: info.name?.trim() || null };
+  } catch (error) {
+    return { ok: false, error: describeInterchainError(error) };
+  }
+}
+
 /** Forget one contract address. */
 export async function removeUserContract(
   chainId: string,
@@ -228,7 +261,7 @@ export async function removeUserContract(
 /** One collection the owner holds something in, plus what we know about it. */
 export interface NftCollectionView {
   readonly contractAddress: string;
-  readonly source: NftDiscoverySource;
+  readonly source: NftCollectionSource;
   readonly tokenIds: readonly string[];
   /** True when the per-contract cap cut the id list short. */
   readonly truncated: boolean;
@@ -239,21 +272,64 @@ export interface NftCollectionView {
 }
 
 /**
+ * Where one collection came from.
+ *
+ * `module` is the Cosmos SDK `x/nft` module answering `nfts?owner=`, which is a
+ * chain-level index of everything this address holds and is the only path that
+ * can be complete without a third party. The engine's three sources - a shipped
+ * list, a chain indexer, the user's own address - cannot express that, so it is
+ * added here rather than mislabelled as "indexed".
+ */
+export type NftCollectionSource = NftDiscoverySource | "module";
+
+/**
  * Which discovery paths actually ran, so the UI can never imply it looked
  * everywhere.
  *
  * This is the piece the mobile app got wrong: it rendered "you own no NFTs"
- * after querying nothing at all. Each count here is a number of contracts that
- * were really asked, and `indexer` is the name of a service that really
- * answered.
+ * after querying nothing at all. Every number here is something that was really
+ * asked, and each is reported separately because they are different facts with
+ * different fixes: an `x/nft` chain that answered needs nothing from the user,
+ * while a CosmWasm chain whose codes are all non-CW721 needs a pasted address.
  */
 export interface NftScanReport {
+  /** True when `x/nft` answered. False on the chains that do not run it. */
+  readonly moduleAnswered: boolean;
+  /** Classes `x/nft` named for this owner. */
+  readonly moduleClasses: number;
+  /** False when the module answered but paging stopped before the end. */
+  readonly moduleComplete: boolean;
+  /** Wasm codes whose query interface is known, from this run or a past one. */
+  readonly codesScanned: number;
+  /** Codes the chain says it has in total. `null` when it did not say. */
+  readonly codesTotal: number | null;
+  /** Of {@link codesScanned}, how many answer the CW721 `tokens` query. */
+  readonly cw721Codes: number;
+  /**
+   * CW721 contracts in this run's list, every one of which is asked `tokens`
+   * unless the engine's per-run cap cut the list short.
+   */
+  readonly cw721Probed: number;
+  /**
+   * Contracts that answered "I do not implement that query".
+   *
+   * Counted rather than listed. A contract rejecting `tokens` is not a failure
+   * the user can act on - it means the address is not a CW721 collection - and
+   * fifty of those rendered as errors is the defect this field exists to stop.
+   */
+  readonly notCw721: number;
+  /** Why the chain-wide CW721 scan did not run, or `null` when it did. */
+  readonly scanSkipped: NftScanSkip | null;
+  /** True when the CW721 contract list was reused from the stored scan. */
+  readonly fromCache: boolean;
   /** Contracts from `config/nft.ts` for this chain. */
   readonly known: number;
   /** Contracts the user added for this chain. */
   readonly user: number;
   /** Indexer name when one answered, else `null`. */
   readonly indexer: string | null;
+  /** True when the chain's own `x/nft` or wasm code list was asked. */
+  readonly onChain: boolean;
   /** True when no contract and no indexer was consulted: nothing was queried. */
   readonly queriedNothing: boolean;
 }
@@ -263,11 +339,18 @@ export interface NftListResult {
   readonly chainId: string;
   readonly owner: string;
   readonly collections: readonly NftCollectionView[];
-  readonly sources: readonly NftDiscoverySource[];
+  readonly sources: readonly NftCollectionSource[];
   /** True only when an indexer answered cleanly. Never true for a contract scan. */
   readonly complete: boolean;
   /** The engine's sentence about why a scan can never be complete. */
   readonly limitation: string | null;
+  /**
+   * Lookups that failed in a way the user can act on.
+   *
+   * A contract saying "not a CW721" is not one of these; it is counted in
+   * `scan.notCw721`. What lands here is a node that would not answer, an
+   * indexer that errored, or the live-reads gate refusing the read.
+   */
   readonly issues: readonly NftDiscoveryIssue[];
   readonly scan: NftScanReport;
 }
@@ -275,74 +358,755 @@ export interface NftListResult {
 /**
  * Find the collections an address holds tokens in, on one chain.
  *
- * All three paths the engine exposes are used, and {@link NftScanReport} says
- * which of them contributed. A run that consulted nothing at all is reported as
- * such: an empty grid under "we asked nobody" is a different screen from an
- * empty grid under "we asked and you hold none", and conflating them is how a
- * wallet tells its user they own nothing when it never looked.
+ * Three paths, tried in order of how much they can promise:
+ *
+ * 1. `x/nft`, the Cosmos SDK module. One request, complete for the chains that
+ *    run it, and unambiguous because the chain itself keeps the owner index.
+ * 2. a chain indexer, when the host configured one for this chain.
+ * 3. CW721 contracts - shipped, scanned off the chain's own wasm code list, and
+ *    the ones the user pasted. Never complete, and said so.
+ *
+ * {@link NftScanReport} says which of them ran. A run that consulted nothing at
+ * all is reported as such: an empty grid under "we asked nobody" is a different
+ * screen from an empty grid under "we asked and you hold none", and conflating
+ * them is how a wallet tells its user they own nothing when it never looked.
  */
 export async function discoverCollections(
   chainId: string,
   owner: string,
-  options: { signal?: AbortSignal } = {},
+  options: { signal?: AbortSignal; force?: boolean } = {},
 ): Promise<NftListResult> {
-  const ctx = contextFor(chainId);
+  const entry = requireChain(chainId);
+  const wasm = supportsCosmWasm(entry);
   const knownContracts = NFT_KNOWN_CONTRACTS[chainId] ?? [];
   const userContracts = await listUserContracts(chainId);
-  const indexer = NFT_INDEXERS[chainId];
+  const hostedIndexer = NFT_INDEXERS[chainId];
+  const autoScan = (await getSettings()).nftAutoScan;
+  const signal = options.signal;
 
-  const result = await discoverNfts(ctx, owner, {
-    knownContracts,
-    userContracts,
-    ...(indexer ? { indexer } : {}),
-    maxContracts: NFT_MAX_CONTRACTS,
-    maxTokensPerContract: NFT_MAX_TOKENS_PER_CONTRACT,
-    ...(options.signal ? { signal: options.signal } : {}),
-  });
+  const module_ = await listSdkOwnerNfts(chainId, owner, signal);
 
-  // Collection metadata is one extra query per collection the owner actually
-  // holds something in, which is a small number. A failure here leaves the
-  // collection on screen under its address rather than removing tokens the
-  // owner demonstrably holds.
-  const collections: NftCollectionView[] = [];
-  for (const holding of result.holdings) {
-    let info: NftCollection | null = null;
-    let infoError: string | null = null;
-    try {
-      info = await getCollectionInfo(ctx, holding.contractAddress, {
-        ...(options.signal ? { signal: options.signal } : {}),
-      });
-    } catch (error) {
-      if (isInterchainError(error) && error.code === "aborted") throw error;
-      infoError = describeInterchainError(error);
+  // The wasm scan is the expensive path, so it is skipped whenever something
+  // better already covers the chain. Each reason is reported, because "we did
+  // not scan" and "we scanned and found nothing" are different answers.
+  const scanSkipped: NftScanSkip | null = !wasm
+    ? "no-cosmwasm"
+    : hostedIndexer
+      ? "indexer"
+      : !autoScan
+        ? "preference"
+        : null;
+  const scan =
+    scanSkipped === null
+      ? await scanCw721Contracts(chainId, owner, {
+          ...(signal ? { signal } : {}),
+          force: options.force === true,
+        })
+      : NO_CW721_SCAN;
+
+  const holdings = new Map<
+    string,
+    { source: NftCollectionSource; tokenIds: string[]; truncated: boolean }
+  >();
+  const issues: NftDiscoveryIssue[] = [...module_.issues, ...scan.issues];
+  const sources = new Set<NftCollectionSource>();
+  let notCw721 = 0;
+
+  for (const [classId, tokenIds] of module_.byClass) {
+    holdings.set(classId, { source: "module", tokenIds, truncated: false });
+    sources.add("module");
+  }
+
+  const scanned = new Set(scan.addresses);
+  let cw721Probed = 0;
+
+  if (wasm) {
+    const ctx = contextFor(chainId);
+    const candidates = [...knownContracts, ...scan.addresses];
+    const result = await discoverNfts(ctx, owner, {
+      knownContracts: candidates,
+      userContracts,
+      ...(hostedIndexer ? { indexer: hostedIndexer } : {}),
+      maxContracts: Math.max(NFT_MAX_CONTRACTS, scan.addresses.length),
+      maxTokensPerContract: NFT_MAX_TOKENS_PER_CONTRACT,
+      ...(signal ? { signal } : {}),
+    });
+    cw721Probed = new Set([...candidates, ...userContracts]).size;
+    for (const issue of result.issues) {
+      // A scanned address that rejects a CW721 query is not a failure: it is
+      // the answer "this is not a collection". Counted, not shown.
+      if (
+        issue.contractAddress !== null &&
+        scanned.has(issue.contractAddress) &&
+        !userContracts.includes(issue.contractAddress) &&
+        isNotCw721Message(issue.message)
+      ) {
+        notCw721 += 1;
+        continue;
+      }
+      issues.push(issue);
     }
+    for (const source of result.sources) sources.add(source);
+    for (const holding of result.holdings) {
+      const existing = holdings.get(holding.contractAddress);
+      if (existing) {
+        const seen = new Set(existing.tokenIds);
+        for (const id of holding.tokenIds) {
+          if (!seen.has(id)) existing.tokenIds.push(id);
+        }
+        existing.truncated = existing.truncated || holding.truncated;
+        continue;
+      }
+      holdings.set(holding.contractAddress, {
+        source: holding.source,
+        tokenIds: [...holding.tokenIds],
+        truncated: holding.truncated,
+      });
+    }
+  }
+
+  const collections: NftCollectionView[] = [];
+  for (const [contractAddress, holding] of holdings) {
+    const meta = await readCollectionMeta(
+      chainId,
+      contractAddress,
+      wasm && holding.source !== "module",
+      signal,
+    );
     collections.push({
-      contractAddress: holding.contractAddress,
+      contractAddress,
       source: holding.source,
       tokenIds: holding.tokenIds,
       truncated: holding.truncated,
-      info,
-      infoError,
+      info: meta.info,
+      infoError: meta.infoError,
     });
   }
 
-  const indexerName = result.sources.includes("indexer") ? (indexer?.name ?? null) : null;
+  const indexerAnswered = hostedIndexer !== undefined && sources.has("indexer");
+  const onChainAsked = module_.answered || scan.codesScanned > 0;
+  // "Nothing was queried" has to mean exactly that. A scan that classified wasm
+  // codes and found no CW721 among them did query - it learned something - and
+  // must not be reported as a screen that never looked.
+  const queriedNothing =
+    !onChainAsked &&
+    !indexerAnswered &&
+    knownContracts.length === 0 &&
+    userContracts.length === 0;
+
   return {
     chainId,
     owner,
     collections,
-    sources: result.sources,
-    complete: result.complete,
-    limitation: result.limitation,
-    issues: result.issues,
+    sources: [...sources],
+    complete: indexerAnswered && issues.length === 0,
+    limitation:
+      indexerAnswered || queriedNothing ? null : NFT_DISCOVERY_LIMITATION,
+    issues,
     scan: {
-      known: knownContracts.length,
+      moduleAnswered: module_.answered,
+      moduleClasses: module_.byClass.size,
+      moduleComplete: module_.complete,
+      codesScanned: scan.codesScanned,
+      codesTotal: scan.codesTotal,
+      cw721Codes: scan.cw721Codes,
+      cw721Probed,
+      notCw721,
+      scanSkipped,
+      fromCache: scan.fromCache,
+      known: knownContracts.length + scan.addresses.length,
       user: userContracts.length,
-      indexer: indexerName,
-      queriedNothing:
-        knownContracts.length === 0 && userContracts.length === 0 && indexer === undefined,
+      indexer: indexerAnswered ? (hostedIndexer?.name ?? null) : null,
+      onChain: onChainAsked,
+      queriedNothing,
     },
   };
+}
+
+async function readCollectionMeta(
+  chainId: string,
+  contractAddress: string,
+  wasm: boolean,
+  signal?: AbortSignal,
+): Promise<{ info: NftCollection | null; infoError: string | null }> {
+  if (wasm) {
+    try {
+      return {
+        info: await getCollectionInfo(contextFor(chainId), contractAddress, {
+          ...(signal ? { signal } : {}),
+        }),
+        infoError: null,
+      };
+    } catch (error) {
+      if (isInterchainError(error) && error.code === "aborted") throw error;
+    }
+  }
+  const sdk = await loadSdkNftClass(chainId, contractAddress, signal);
+  if (sdk.info) return sdk;
+  return {
+    info: null,
+    infoError: wasm
+      ? "Collection details could not be read from the contract or the nft module."
+      : sdk.infoError,
+  };
+}
+
+function isModuleMissing(error: unknown): boolean {
+  if (!isInterchainError(error)) return false;
+  // Gateways with no x/nft registered answer 400, 404, or 501. A 400 here is
+  // "this query is not served", not a request we built wrong: the path is fixed.
+  if (error.httpStatus === 400 || error.httpStatus === 404 || error.httpStatus === 501) {
+    return true;
+  }
+  return /not found|unknown query|no handler|not implemented|module.*not found/i.test(
+    error.message,
+  );
+}
+
+async function lcdGet(
+  chainId: string,
+  path: string,
+  signal?: AbortSignal,
+): Promise<unknown> {
+  const chain = chainRegistry().get(chainId);
+  if (!chain) {
+    throw new InterchainError(
+      "unsupported-chain",
+      `${chainId} is not in this wallet's chain list`,
+      { chainId },
+    );
+  }
+  return lcdFor(chain).getJson(path, {
+    cacheTtlMs: 0,
+    ...(signal ? { signal } : {}),
+  });
+}
+
+/* -------------------------------------------------------------------------- *
+ * The Cosmos SDK nft module
+ * -------------------------------------------------------------------------- */
+
+/** What `safrochaind query nft nfts --owner` had to say. */
+interface SdkOwnerNfts {
+  /** True only when the module really answered. False when it is not there. */
+  readonly answered: boolean;
+  /** False when paging stopped early, so the class list may be short. */
+  readonly complete: boolean;
+  readonly byClass: Map<string, string[]>;
+  readonly issues: NftDiscoveryIssue[];
+}
+
+/** Rows per page of `/cosmos/nft/v1beta1/nfts`. */
+const SDK_NFT_PAGE_LIMIT = 100;
+
+/**
+ * Pages read before the walk stops.
+ *
+ * `next_key` is node-controlled, so a budget is the only thing standing between
+ * a misbehaving node and an endless loop in a popup. Stopping early sets
+ * `complete: false` rather than quietly returning a short list.
+ */
+const SDK_NFT_MAX_PAGES = 10;
+
+/** The `pagination.next_key` of a Cosmos SDK list response, when there is one. */
+function nextPageKey(body: unknown): string | null {
+  const page = asPlainRecord(asPlainRecord(body)?.pagination);
+  const key = page?.next_key ?? page?.nextKey;
+  return typeof key === "string" && key.length > 0 ? key : null;
+}
+
+/**
+ * Every class this owner holds a token in, from `x/nft`.
+ *
+ * Paged to the end, because the sentence the screen shows about this path -
+ * "the chain's own index answered, so these are all of them" - is only true if
+ * every page was read. A first page taken for the whole answer is the quiet
+ * kind of wrong: it looks like a complete list and is not one.
+ */
+async function listSdkOwnerNfts(
+  chainId: string,
+  owner: string,
+  signal?: AbortSignal,
+): Promise<SdkOwnerNfts> {
+  const byClass = new Map<string, string[]>();
+  const issues: NftDiscoveryIssue[] = [];
+  let key: string | null = null;
+
+  for (let page = 0; page < SDK_NFT_MAX_PAGES; page++) {
+    const params = new URLSearchParams({
+      owner,
+      "pagination.limit": String(SDK_NFT_PAGE_LIMIT),
+    });
+    if (key !== null) params.set("pagination.key", key);
+    try {
+      const body = await lcdGet(
+        chainId,
+        `/cosmos/nft/v1beta1/nfts?${params.toString()}`,
+        signal,
+      );
+      collectSdkNfts(body, byClass);
+      key = nextPageKey(body);
+      if (key === null) return { answered: true, complete: true, byClass, issues };
+    } catch (error) {
+      if (isInterchainError(error) && error.code === "aborted") throw error;
+      // No nft module on this chain. Not a failure and not worth a word to the
+      // user: most Cosmos chains do not run it.
+      if (isModuleMissing(error)) {
+        return { answered: false, complete: true, byClass, issues };
+      }
+      issues.push({
+        contractAddress: null,
+        message: `nft module: ${describeInterchainError(error)}`,
+      });
+      return { answered: page > 0, complete: false, byClass, issues };
+    }
+  }
+  return { answered: true, complete: false, byClass, issues };
+}
+
+function collectSdkNfts(body: unknown, into: Map<string, string[]>): void {
+  const root = asPlainRecord(body);
+  const rows = Array.isArray(root?.nfts) ? root.nfts : [];
+  for (const row of rows) {
+    const item = asPlainRecord(row);
+    const classId =
+      (typeof item?.class_id === "string" && item.class_id) ||
+      (typeof item?.classId === "string" && item.classId) ||
+      "";
+    const id =
+      (typeof item?.id === "string" && item.id) ||
+      (typeof item?.token_id === "string" && item.token_id) ||
+      "";
+    if (!classId || !id) continue;
+    const current = into.get(classId) ?? [];
+    if (!current.includes(id)) current.push(id);
+    into.set(classId, current);
+  }
+}
+
+/* -------------------------------------------------------------------------- *
+ * The CW721 code scan
+ * -------------------------------------------------------------------------- */
+
+/** Why the chain-wide CW721 scan did not run. */
+export type NftScanSkip = "no-cosmwasm" | "indexer" | "preference";
+
+/** Whether a wasm code answers the CW721 `tokens` query. */
+type CodeKind = "cw721" | "other";
+
+/** One chain's half of `STORAGE_KEYS.nftWasmScan`. */
+interface WasmScanRecord {
+  /** code id → verdict. Permanent: wasm code is immutable. */
+  readonly codes: Record<string, CodeKind>;
+  /** CW721 contract addresses the last completed scan found. */
+  readonly contracts: readonly string[];
+  /** When `contracts` was built. 0 when no scan has completed. */
+  readonly contractsAt: number;
+  /** `pagination.total` of the code list, when the node reported it. */
+  readonly codesTotal: number | null;
+}
+
+/** What one scan of a chain's wasm codes produced. */
+interface Cw721Scan {
+  readonly addresses: readonly string[];
+  readonly codesScanned: number;
+  readonly cw721Codes: number;
+  readonly codesTotal: number | null;
+  readonly fromCache: boolean;
+  readonly issues: readonly NftDiscoveryIssue[];
+}
+
+/** The report for a scan that was deliberately not run. */
+const NO_CW721_SCAN: Cw721Scan = {
+  addresses: [],
+  codesScanned: 0,
+  cw721Codes: 0,
+  codesTotal: null,
+  fromCache: false,
+  issues: [],
+};
+
+const EMPTY_SCAN_RECORD: WasmScanRecord = {
+  codes: {},
+  contracts: [],
+  contractsAt: 0,
+  codesTotal: null,
+};
+
+/** Bumped when the record shape changes, which discards every stored verdict. */
+const WASM_SCAN_VERSION = 1;
+
+function asScanRecord(value: unknown): WasmScanRecord {
+  const row = asPlainRecord(value);
+  if (!row) return EMPTY_SCAN_RECORD;
+  const codes: Record<string, CodeKind> = {};
+  for (const [codeId, kind] of Object.entries(asPlainRecord(row.codes) ?? {})) {
+    if (kind === "cw721" || kind === "other") codes[codeId] = kind;
+  }
+  const contracts = Array.isArray(row.contracts)
+    ? row.contracts.filter((v): v is string => typeof v === "string" && v.length > 0)
+    : [];
+  return {
+    codes,
+    contracts,
+    contractsAt: typeof row.contractsAt === "number" ? row.contractsAt : 0,
+    codesTotal: typeof row.codesTotal === "number" ? row.codesTotal : null,
+  };
+}
+
+async function readScanStore(): Promise<Record<string, unknown>> {
+  const raw = (await browser.storage.local.get(STORAGE_KEYS.nftWasmScan))[
+    STORAGE_KEYS.nftWasmScan
+  ];
+  const row = asPlainRecord(raw);
+  if (!row || row.version !== WASM_SCAN_VERSION) return {};
+  return asPlainRecord(row.chains) ?? {};
+}
+
+async function readWasmScan(chainId: string): Promise<WasmScanRecord> {
+  try {
+    return asScanRecord((await readScanStore())[chainId]);
+  } catch {
+    // A scan cache that cannot be read is a slow screen, never a broken one.
+    return EMPTY_SCAN_RECORD;
+  }
+}
+
+/**
+ * Serialised writes to the scan cache.
+ *
+ * Every enabled chain scans in parallel and they all write one storage key, so
+ * an unguarded read-modify-write loses whichever verdicts finished first - and
+ * losing them means re-probing forty wasm codes on the next open.
+ */
+let scanWrites: Promise<unknown> = Promise.resolve();
+
+async function writeWasmScan(chainId: string, record: WasmScanRecord): Promise<void> {
+  const run = async () => {
+    try {
+      const chains = await readScanStore();
+      await browser.storage.local.set({
+        [STORAGE_KEYS.nftWasmScan]: {
+          version: WASM_SCAN_VERSION,
+          chains: { ...chains, [chainId]: record },
+        },
+      });
+    } catch {
+      // Storage is a cache here. Failing to write it costs requests, not truth.
+    }
+  };
+  const next = scanWrites.then(run, run);
+  scanWrites = next;
+  return next;
+}
+
+/** Forget every stored verdict, so the next run re-classifies from scratch. */
+export async function clearNftScanCache(): Promise<void> {
+  await browser.storage.local.remove(STORAGE_KEYS.nftWasmScan);
+}
+
+/**
+ * True when a failure means "this contract does not implement that query".
+ *
+ * wasmd answers a query a contract cannot parse with HTTP 400 carrying the
+ * serde error, which the engine reclassifies as `contract-error`. That is an
+ * answer, not an outage: the contract is not a CW721. A cancelled read and a
+ * refused-by-preference read are neither, and must never be read as one.
+ */
+function isNotCw721(error: unknown): boolean {
+  if (!isInterchainError(error)) return false;
+  if (error.code === "aborted" || error.code === "reads-disabled") return false;
+  if (error.code === "contract-error" || error.code === "malformed-response") {
+    return true;
+  }
+  return error.httpStatus === 400;
+}
+
+/** The same verdict, read off the message the engine put in an issue. */
+function isNotCw721Message(message: string): boolean {
+  return /^(contract-error|malformed-response):/.test(message);
+}
+
+/** One page of `/cosmwasm/wasm/v1/code/{id}/contracts`. */
+async function listCodeContracts(
+  chainId: string,
+  codeId: string,
+  signal?: AbortSignal,
+): Promise<string[]> {
+  const body = await lcdGet(
+    chainId,
+    `/cosmwasm/wasm/v1/code/${encodeURIComponent(codeId)}/contracts` +
+      `?pagination.limit=${NFT_WASM_SCAN_MAX_CONTRACTS_PER_CODE}&pagination.reverse=true`,
+    signal,
+  );
+  const rows = asPlainRecord(body)?.contracts;
+  return Array.isArray(rows)
+    ? rows.filter((v): v is string => typeof v === "string" && v.length > 0)
+    : [];
+}
+
+/**
+ * Wasm code ids, newest first, with the chain's total when it reports one.
+ *
+ * `pagination.reverse` and `pagination.count_total` are standard `PageRequest`
+ * fields, but a node behind a trimming proxy can still reject them, so a
+ * rejection is retried once with neither. Losing "newest first" degrades the
+ * scan; failing the whole screen over a query string would not be a trade.
+ */
+async function listWasmCodeIds(
+  chainId: string,
+  signal?: AbortSignal,
+): Promise<{ ids: string[]; total: number | null }> {
+  const base = `/cosmwasm/wasm/v1/code?pagination.limit=${NFT_WASM_SCAN_MAX_CODES}`;
+  let body: unknown;
+  try {
+    body = await lcdGet(
+      chainId,
+      `${base}&pagination.reverse=true&pagination.count_total=true`,
+      signal,
+    );
+  } catch (error) {
+    if (isInterchainError(error) && error.code === "aborted") throw error;
+    if (isInterchainError(error) && error.code === "reads-disabled") throw error;
+    body = await lcdGet(chainId, base, signal);
+  }
+  const root = asPlainRecord(body);
+  const rows = Array.isArray(root?.code_infos) ? root.code_infos : [];
+  const ids: string[] = [];
+  for (const row of rows) {
+    const info = asPlainRecord(row);
+    const codeId = String(info?.code_id ?? info?.id ?? "");
+    if (!codeId || codeId === "undefined" || ids.includes(codeId)) continue;
+    ids.push(codeId);
+  }
+  const total = Number(asPlainRecord(root?.pagination)?.total ?? NaN);
+  return { ids, total: Number.isFinite(total) && total > 0 ? total : null };
+}
+
+/**
+ * Decide whether a wasm code is a CW721 by asking one of its instances.
+ *
+ * The probe is the exact `tokens` query discovery will send, so a code that
+ * passes costs nothing extra - the LCD client serves the real read from its
+ * response cache - and a code that fails is never asked again for any of its
+ * instances. Two instances are tried before giving up, so one dead contract
+ * cannot condemn a whole collection's code.
+ *
+ * Returns `null` when the node would not answer either way: a verdict must not
+ * be cached from an outage, because the cache is permanent.
+ */
+async function classifyCode(
+  ctx: NftChainContext,
+  contracts: readonly string[],
+  owner: string,
+  signal?: AbortSignal,
+): Promise<CodeKind | null> {
+  for (const address of contracts.slice(0, 2)) {
+    try {
+      await listOwnedTokenIds(ctx, address, owner, {
+        ...(signal ? { signal } : {}),
+      });
+      return "cw721";
+    } catch (error) {
+      if (isInterchainError(error) && error.code === "aborted") throw error;
+      if (isInterchainError(error) && error.code === "reads-disabled") throw error;
+      if (isNotCw721(error)) return "other";
+    }
+  }
+  return null;
+}
+
+/**
+ * The CW721 contracts on a chain, found from the chain's own wasm code list.
+ *
+ * This is what replaced probing every contract the chain has ever instantiated.
+ * That version sent a `tokens` query to pools, multisigs, hooks and fee
+ * splitters, and rendered each HTTP 400 as a failure the user was asked to do
+ * something about - fifty red lines on Osmosis saying nothing except that
+ * Osmosis runs contracts which are not NFT collections.
+ *
+ * Contracts of one code all run the same bytecode, so the question "does this
+ * answer `tokens`?" is a question about the code, not the contract. Asking it
+ * once per code turns fifty wrong answers into forty right ones, and because
+ * wasm code is immutable the answer is cached for good: later runs list
+ * instances only for the codes that turned out to be collections.
+ */
+async function scanCw721Contracts(
+  chainId: string,
+  owner: string,
+  options: { signal?: AbortSignal; force?: boolean },
+): Promise<Cw721Scan> {
+  const stored = await readWasmScan(chainId);
+  const cached = Object.keys(stored.codes);
+  if (
+    options.force !== true &&
+    stored.contractsAt > 0 &&
+    Date.now() - stored.contractsAt < NFT_WASM_SCAN_TTL_MS
+  ) {
+    return {
+      addresses: stored.contracts,
+      codesScanned: cached.length,
+      cw721Codes: cached.filter((id) => stored.codes[id] === "cw721").length,
+      codesTotal: stored.codesTotal,
+      fromCache: true,
+      issues: [],
+    };
+  }
+
+  const signal = options.signal;
+  const issues: NftDiscoveryIssue[] = [];
+  const codes: Record<string, CodeKind> = { ...stored.codes };
+  const addresses: string[] = [];
+  let codesTotal = stored.codesTotal;
+  let cw721Codes = 0;
+  let scanned = 0;
+
+  try {
+    const ctx = contextFor(chainId);
+    const listed = await listWasmCodeIds(chainId, signal);
+    codesTotal = listed.total ?? codesTotal;
+
+    for (const codeId of listed.ids) {
+      if (addresses.length >= NFT_WASM_SCAN_MAX_CONTRACTS) break;
+      // A code already known not to be a CW721 costs nothing: its instances are
+      // never listed and never asked.
+      if (codes[codeId] === "other") {
+        scanned += 1;
+        continue;
+      }
+      let instances: string[] = [];
+      try {
+        instances = await listCodeContracts(chainId, codeId, signal);
+      } catch (error) {
+        if (isInterchainError(error) && error.code === "aborted") throw error;
+        if (isInterchainError(error) && error.code === "reads-disabled") throw error;
+        continue;
+      }
+      if (instances.length === 0) continue;
+
+      const verdict =
+        codes[codeId] ?? (await classifyCode(ctx, instances, owner, signal));
+      if (verdict === null) continue;
+      codes[codeId] = verdict;
+      scanned += 1;
+      if (verdict !== "cw721") continue;
+      cw721Codes += 1;
+      for (const address of instances) {
+        if (addresses.includes(address)) continue;
+        addresses.push(address);
+        if (addresses.length >= NFT_WASM_SCAN_MAX_CONTRACTS) break;
+      }
+    }
+
+    await writeWasmScan(chainId, {
+      codes,
+      contracts: addresses,
+      contractsAt: Date.now(),
+      codesTotal,
+    });
+    return {
+      addresses,
+      codesScanned: scanned,
+      cw721Codes,
+      codesTotal,
+      fromCache: false,
+      issues,
+    };
+  } catch (error) {
+    if (isInterchainError(error) && error.code === "aborted") throw error;
+    // No wasm module, or a node that will not list codes. Neither is something
+    // the user can fix by reading a stack of contract addresses, so the scan
+    // reports what it managed and the screen says a scan did not complete.
+    if (!isModuleMissing(error)) {
+      issues.push({
+        contractAddress: null,
+        message: `wasm codes: ${describeInterchainError(error)}`,
+      });
+    }
+    return {
+      addresses,
+      codesScanned: scanned,
+      cw721Codes,
+      codesTotal,
+      fromCache: false,
+      issues,
+    };
+  }
+}
+
+async function loadSdkNftClass(
+  chainId: string,
+  classId: string,
+  signal?: AbortSignal,
+): Promise<{ info: NftCollection | null; infoError: string | null }> {
+  try {
+    const body = await lcdGet(
+      chainId,
+      `/cosmos/nft/v1beta1/classes/${encodeURIComponent(classId)}`,
+      signal,
+    );
+    const root = asPlainRecord(body);
+    const row = asPlainRecord(root?.class) ?? root;
+    if (!row) return { info: null, infoError: "Class response was empty." };
+    return {
+      info: {
+        chainId,
+        contractAddress: classId,
+        name: typeof row.name === "string" ? row.name : null,
+        symbol: typeof row.symbol === "string" ? row.symbol : null,
+        description: typeof row.description === "string" ? row.description : null,
+        imageUri: typeof row.uri === "string" ? row.uri : null,
+        tokenCount: null,
+        creator: null,
+      },
+      infoError: null,
+    };
+  } catch (error) {
+    if (isInterchainError(error) && error.code === "aborted") throw error;
+    return {
+      info: null,
+      infoError: isModuleMissing(error) ? null : describeInterchainError(error),
+    };
+  }
+}
+
+async function loadSdkNftToken(
+  chainId: string,
+  classId: string,
+  tokenId: string,
+  options: { collectionName?: string | null; signal?: AbortSignal } = {},
+): Promise<NftTokenView> {
+  const body = await lcdGet(
+    chainId,
+    `/cosmos/nft/v1beta1/nfts/${encodeURIComponent(classId)}/${encodeURIComponent(tokenId)}`,
+    options.signal,
+  );
+  const root = asPlainRecord(body);
+  const row = asPlainRecord(root?.nft) ?? root;
+  const uri = typeof row?.uri === "string" ? row.uri : null;
+  return {
+    token: {
+      tokenId,
+      name: options.collectionName ? `${options.collectionName} #${tokenId}` : `#${tokenId}`,
+      description: null,
+      imageUri: uri,
+      animationUri: null,
+      attributes: [],
+      collectionAddress: classId,
+      chainId,
+      owner: null,
+      tokenUri: uri,
+    },
+    collectionName: options.collectionName ?? null,
+    metadataSource: uri ? "chain" : "none",
+    metadataError: null,
+  };
+}
+
+function asPlainRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
 }
 
 /** The sentence the engine wants shown whenever a list is not provably complete. */
@@ -380,10 +1144,23 @@ export async function loadCollection(
   contractAddress: string,
   options: { signal?: AbortSignal } = {},
 ): Promise<NftCollection> {
-  const ctx = contextFor(chainId);
-  return getCollectionInfo(ctx, contractAddress, {
-    ...(options.signal ? { signal: options.signal } : {}),
-  });
+  const entry = requireChain(chainId);
+  if (supportsCosmWasm(entry)) {
+    try {
+      return await getCollectionInfo(contextFor(chainId), contractAddress, {
+        ...(options.signal ? { signal: options.signal } : {}),
+      });
+    } catch (error) {
+      if (isInterchainError(error) && error.code === "aborted") throw error;
+    }
+  }
+  const sdk = await loadSdkNftClass(chainId, contractAddress, options.signal);
+  if (sdk.info) return sdk.info;
+  throw new InterchainError(
+    "contract-error",
+    sdk.infoError ?? `No collection at ${contractAddress} on ${entry.chainName}.`,
+    { chainId },
+  );
 }
 
 /** Read one token's on-chain state, and optionally its off-chain metadata. */
@@ -398,10 +1175,21 @@ export async function loadToken(
     readonly signal?: AbortSignal;
   } = {},
 ): Promise<NftTokenView> {
-  const ctx = contextFor(chainId);
-  const base = await getNftToken(ctx, contractAddress, tokenId, {
-    ...(options.signal ? { signal: options.signal } : {}),
-  });
+  const entry = requireChain(chainId);
+  let base: NftToken;
+  try {
+    if (!supportsCosmWasm(entry)) throw new Error("no-cosmwasm");
+    const ctx = contextFor(chainId);
+    base = await getNftToken(ctx, contractAddress, tokenId, {
+      ...(options.signal ? { signal: options.signal } : {}),
+    });
+  } catch (error) {
+    if (isInterchainError(error) && error.code === "aborted") throw error;
+    return loadSdkNftToken(chainId, contractAddress, tokenId, {
+      collectionName: options.collectionName ?? null,
+      signal: options.signal,
+    });
+  }
   const hasChainMetadata =
     base.name !== null ||
     base.description !== null ||

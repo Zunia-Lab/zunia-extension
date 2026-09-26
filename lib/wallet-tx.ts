@@ -14,7 +14,10 @@ import {
 } from "./amino-tx";
 import {
   broadcastTx,
+  expectedSequenceOf,
   fetchAccountNumberSequence,
+  isSequenceMismatch,
+  waitForInclusion,
   type BroadcastResult,
 } from "./broadcast";
 import { findCatalogEntry } from "./chain-catalog";
@@ -31,7 +34,9 @@ import {
   getSessionMnemonic,
   touchSession,
 } from "./session";
+import { getSettings } from "./settings";
 import { rememberRecipient } from "./signing";
+import { resolveTxMemo } from "./tx-memo";
 
 export interface SignAndBroadcastInput {
   chainId: string;
@@ -50,17 +55,26 @@ export interface SignAndBroadcastResult extends BroadcastResult {
 function defaultGas(msgs: AminoMsg[]): number {
   if (msgs.some((m) => m.type === "cosmos-sdk/MsgTransfer")) return 250_000;
   if (msgs.length > 1) return 200_000 + msgs.length * 80_000;
-  if (msgs.some((m) => m.type.includes("Delegate") || m.type.includes("Withdraw"))) {
+  if (
+    msgs.some(
+      (m) =>
+        m.type.includes("Delegate") ||
+        m.type.includes("Undelegate") ||
+        m.type.includes("Withdraw"),
+    )
+  ) {
     return 250_000;
   }
   return 200_000;
 }
 
-function feeForChain(chainId: string, gasLimit: number): StdFee {
+async function feeForChain(chainId: string, gasLimit: number): Promise<StdFee> {
   const entry = findCatalogEntry(chainId);
+  const prefs = await getSettings();
   const denom = entry?.feeMinimalDenom ?? entry?.coinMinimalDenom ?? "uatom";
-  const gasPrice = entry?.gasPriceStep?.average ?? 0.025;
-  return estimateFee({ gasLimit, gasPrice, denom });
+  const gasPrice = entry?.gasPriceStep?.[prefs.feeSpeed] ?? 0.025;
+  const adjusted = Math.max(1, Math.ceil(gasLimit * prefs.gasAdjustment));
+  return estimateFee({ gasLimit: adjusted, gasPrice, denom });
 }
 
 /**
@@ -74,21 +88,7 @@ export async function signAndBroadcast(
   if (!mnemonic) throw new Error("Wallet is locked");
 
   const gasLimit = input.gasLimit ?? defaultGas(input.msgs);
-  const fee = input.fee ?? feeForChain(input.chainId, gasLimit);
-  const { accountNumber, sequence } = await fetchAccountNumberSequence(
-    input.chainId,
-    input.signerAddress,
-  );
-
-  const signDoc = makeStdSignDoc({
-    chainId: input.chainId,
-    accountNumber,
-    sequence,
-    fee,
-    msgs: input.msgs,
-    memo: input.memo,
-  });
-
+  const fee = input.fee ?? (await feeForChain(input.chainId, gasLimit));
   const kernel = await loadKernel();
   const accountIndex = await getActiveAccountIndex();
   const chainJson = chainJsonFor(input.chainId);
@@ -103,33 +103,57 @@ export async function signAndBroadcast(
     derived.algo === "eth_secp256k1" ||
     findCatalogEntry(input.chainId)?.coinType === 60;
 
-  const signatureHex = kernel.signCosmos(
-    mnemonic,
-    "",
-    chainJson,
-    accountIndex,
-    bytesToHex(signDocBytes(signDoc)),
-  );
-  const signature = hexToBytes(signatureHex);
-  const txRaw = assembleAminoTxRaw({
-    signDoc,
-    pubKey: derived.pubKey,
-    signature,
-    ethKeyType,
-  });
+  let lastError: unknown;
+  let forcedSequence: string | null = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const live = await fetchAccountNumberSequence(
+      input.chainId,
+      input.signerAddress,
+    );
+    const accountNumber = live.accountNumber;
+    const sequence = forcedSequence ?? live.sequence;
+    const signDoc = makeStdSignDoc({
+      chainId: input.chainId,
+      accountNumber,
+      sequence,
+      fee,
+      msgs: input.msgs,
+      memo: resolveTxMemo(input.memo, input.msgs),
+    });
+    const signatureHex = kernel.signCosmos(
+      mnemonic,
+      "",
+      chainJson,
+      accountIndex,
+      bytesToHex(signDocBytes(signDoc)),
+    );
+    const txRaw = assembleAminoTxRaw({
+      signDoc,
+      pubKey: derived.pubKey,
+      signature: hexToBytes(signatureHex),
+      ethKeyType,
+    });
 
-  for (const msg of input.msgs) {
-    const to = msg.value?.to_address;
-    if (typeof to === "string" && to) await rememberRecipient(to);
+    for (const msg of input.msgs) {
+      const to = msg.value?.to_address;
+      if (typeof to === "string" && to) await rememberRecipient(to);
+    }
+
+    await touchSession();
+    try {
+      const result = await broadcastTx({
+        chainId: input.chainId,
+        txBytes: txRaw,
+      });
+      const included = await waitForInclusion(input.chainId, result.txhash);
+      return { ...included, signDoc };
+    } catch (error) {
+      lastError = error;
+      if (!isSequenceMismatch(error) || attempt === 1) throw error;
+      forcedSequence = expectedSequenceOf(error);
+    }
   }
-
-  await touchSession();
-  const result = await broadcastTx({
-    chainId: input.chainId,
-    txBytes: txRaw,
-  });
-
-  return { ...result, signDoc };
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
 /** Encode already-signed amino result (e.g. from provider) into tx_bytes. */
