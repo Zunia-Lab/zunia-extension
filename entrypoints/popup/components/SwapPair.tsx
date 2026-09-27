@@ -4,9 +4,9 @@
  */
 
 import { useId, useMemo, useState, type ReactNode } from "react";
-import { Avatar, cn, focusRing } from "@zunialab/ui";
+import { TokenLogo, cn, focusRing } from "@zunialab/ui";
 
-import { formatUnitsExact } from "../../../lib/format";
+import { decimalText, formatUnitsExact } from "../../../lib/format";
 import { fieldFocusWithin } from "./field-focus";
 import { PickerSheet, type PickerItem } from "./PickerSheet";
 import { usePickerMemory } from "../hooks/usePickerMemory";
@@ -23,6 +23,7 @@ function SwapLeg({
   amount,
   onAmountChange,
   readOnly,
+  quoting,
   emptyLabel,
   renderLimit,
   fiat,
@@ -36,6 +37,8 @@ function SwapLeg({
   amount: string;
   onAmountChange?: (value: string) => void;
   readOnly?: boolean;
+  /** Route and price are still being fetched for the amount the user typed. */
+  quoting?: boolean;
   emptyLabel: string;
   renderLimit?: number;
   fiat?: string | null;
@@ -56,10 +59,12 @@ function SwapLeg({
           ...(option.note ? [option.note] : []),
         ],
         icon: (
-          <Avatar
+          <TokenLogo
             src={option.iconUrl ?? option.chainIconUrl}
-            fallback={option.symbol}
+            symbol={option.symbol}
             size={24}
+            verified={option.verified}
+            verifiedLabel="Listed in the Cosmos chain registry"
           />
         ),
         trailing:
@@ -74,6 +79,7 @@ function SwapLeg({
 
   return (
     <section
+      aria-busy={quoting || undefined}
       className={cn(
         "rounded-[18px] border border-[var(--z-line)] bg-[var(--z-surface-raised)] px-3.5 py-3",
         !readOnly && fieldFocusWithin,
@@ -105,7 +111,7 @@ function SwapLeg({
           placeholder="0"
           value={amount}
           readOnly={readOnly}
-          onChange={(event) => onAmountChange?.(event.target.value)}
+          onChange={(event) => onAmountChange?.(decimalText(event.target.value))}
           className={cn(
             "min-w-0 flex-1 bg-transparent text-left text-[28px] font-semibold leading-none tracking-[-0.04em] tabular-nums outline-none",
             readOnly ? "text-fg-muted" : "text-fg",
@@ -126,10 +132,12 @@ function SwapLeg({
             focusRing,
           )}
         >
-          <Avatar
+          <TokenLogo
             src={asset?.iconUrl ?? asset?.chainIconUrl}
-            fallback={asset?.symbol ?? "?"}
+            symbol={asset?.symbol ?? "?"}
             size={22}
+            verified={asset?.verified}
+            verifiedLabel="Listed in the Cosmos chain registry"
           />
           <span className="max-w-[88px] truncate text-[13px] font-semibold tracking-tight text-fg">
             {asset?.symbol ?? emptyLabel}
@@ -154,6 +162,16 @@ function SwapLeg({
           }}
         />
       </div>
+
+      {quoting ? (
+        <p className="mt-1.5 flex items-center gap-1 font-mono text-[10px] leading-none tracking-[0.01em] text-fg-dim">
+          <span
+            className="size-2 shrink-0 animate-spin rounded-full border border-[var(--z-line-strong)] border-t-[var(--z-accent)]"
+            aria-hidden
+          />
+          Finding route and price
+        </p>
+      ) : null}
 
       <div className="mt-2 flex items-center justify-between gap-2">
         <span className="font-mono text-[11px] tabular-nums text-fg-dim">
@@ -185,6 +203,7 @@ export function SwapPair({
   toFiat,
   maxLabel,
   onMax,
+  quoting,
 }: {
   from: AssetOption | undefined;
   to: AssetOption | undefined;
@@ -203,6 +222,7 @@ export function SwapPair({
   toFiat?: string | null;
   maxLabel: string | null;
   onMax: () => void;
+  quoting?: boolean;
 }) {
   return (
     <div className="relative flex flex-col">
@@ -235,7 +255,7 @@ export function SwapPair({
         }
       />
 
-      <div className="relative z-10 -my-3 flex justify-center">
+      <div className="relative z-20 -my-3 flex justify-center">
         <button
           type="button"
           onClick={onFlip}
@@ -243,14 +263,17 @@ export function SwapPair({
           aria-label={flipLabel}
           title={flipLabel}
           className={cn(
-            "flex size-9 items-center justify-center rounded-full border border-[var(--z-line)] bg-bg text-fg",
-            "shadow-[0_4px_12px_color-mix(in_srgb,var(--z-fg)_12%,transparent)]",
-            "transition-colors duration-[var(--z-duration-base)] hover:border-[var(--z-line-strong)]",
+            "flex size-10 items-center justify-center rounded-full border border-[var(--z-line-strong)] bg-bg text-fg",
+            // The page-colored ring covers the focused card's border, which
+            // otherwise cuts straight through this control.
+            "shadow-[0_0_0_4px_var(--z-bg),0_6px_16px_color-mix(in_srgb,var(--z-fg)_16%,transparent)]",
+            "transition-[color,border-color,transform] duration-[var(--z-duration-base)]",
+            "hover:border-accent hover:text-accent active:scale-95",
             "disabled:cursor-not-allowed disabled:opacity-40",
             focusRing,
           )}
         >
-          <IconFlip width={15} height={15} />
+          <IconFlip width={16} height={16} />
         </button>
       </div>
 
@@ -262,6 +285,7 @@ export function SwapPair({
         onSelect={onSelectTo}
         amount={receiveAmount}
         readOnly
+        quoting={quoting}
         emptyLabel="No network"
         renderLimit={400}
         fiat={toFiat}

@@ -466,7 +466,11 @@ export function ChainDetailScreen({
                         focusRing,
                       )}
                     >
-                      <ActivityBadge kind={item.kind} success={item.success} />
+                      <ActivityBadge
+                        kind={item.kind}
+                        messageType={item.messageType}
+                        success={item.success}
+                      />
                       <span className="min-w-0 flex-1">
                         <span className="block truncate text-[11.5px] font-medium text-fg">
                           {item.title}

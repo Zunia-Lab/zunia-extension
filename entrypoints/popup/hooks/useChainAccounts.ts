@@ -136,7 +136,8 @@ export function useChainAccounts(unlocked: boolean, activeAccountIndex: number) 
       if (area !== "local") return;
       if (
         changes[STORAGE_KEYS.enabledChains] ||
-        changes[STORAGE_KEYS.customChains]
+        changes[STORAGE_KEYS.customChains] ||
+        changes[STORAGE_KEYS.accounts]
       ) {
         void reload();
       }
@@ -145,9 +146,15 @@ export function useChainAccounts(unlocked: boolean, activeAccountIndex: number) 
     return () => browser.storage.onChanged.removeListener(onChanged);
   }, [reload]);
 
+  const liveIdentity = `${unlocked ? "unlocked" : "locked"}:${activeAccountIndex}`;
+  const settledIdentity = settled
+    ? settled.requestKey.slice(0, settled.requestKey.lastIndexOf(":"))
+    : "";
+  const sameAccount = settledIdentity === liveIdentity;
+
   return {
-    chainIds: settled?.chainIds ?? NO_CHAIN_IDS,
-    accounts: settled?.accounts ?? NO_ACCOUNTS,
+    chainIds: sameAccount && settled ? settled.chainIds : NO_CHAIN_IDS,
+    accounts: sameAccount && settled ? settled.accounts : NO_ACCOUNTS,
     loading: settled?.requestKey !== requestKey,
     reload,
   };

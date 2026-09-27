@@ -18,7 +18,6 @@ import {
   type ReactNode,
 } from "react";
 import {
-  Avatar,
   Button,
   Callout,
   Dialog,
@@ -28,6 +27,7 @@ import {
   SectionLabel,
   SheetContent,
   Spinner,
+  TokenLogo,
   cn,
   focusRing,
 } from "@zunialab/ui";
@@ -53,7 +53,7 @@ import {
   type ChannelVerdict,
   type ChannelVerdictKind,
 } from "../../../lib/channel-verdict";
-import { formatUnits } from "../../../lib/format";
+import { decimalText, formatUnits } from "../../../lib/format";
 import {
   describeInterchainError,
   setSwapContract,
@@ -111,6 +111,8 @@ export interface AssetOption {
   readonly iconUrl?: string;
   /** Extra line in the picker, e.g. the full token name. */
   readonly note?: string;
+  /** Chain is in the Cosmos chain registry, shown as the check on the logo. */
+  readonly verified?: boolean;
 }
 
 /**
@@ -142,6 +144,7 @@ export function spendableAssets(
         decimals: token.decimals,
         amount: token.amount,
         ...(token.iconUrl ? { iconUrl: token.iconUrl } : {}),
+        verified: chain.entry.inCosmosRegistry,
       });
     }
   }
@@ -177,6 +180,7 @@ export function receivableAssets(
       decimals: chain.entry.coinDecimals,
       amount: balances[chain.chainId]?.available ?? "0",
       ...(chain.iconUrl ? { iconUrl: chain.iconUrl } : {}),
+      verified: chain.entry.inCosmosRegistry,
     });
     for (const token of balances[chain.chainId]?.tokens ?? []) {
       const key = `${chain.chainId}:${token.denom}`;
@@ -193,6 +197,7 @@ export function receivableAssets(
         decimals: token.decimals,
         amount: token.amount,
         ...(token.iconUrl ? { iconUrl: token.iconUrl } : {}),
+        verified: chain.entry.inCosmosRegistry,
       });
     }
   }
@@ -214,6 +219,7 @@ export function catalogNativeAssets(): AssetOption[] {
       decimals: entry.coinDecimals,
       amount: "0",
       note: entry.chainName,
+      verified: entry.inCosmosRegistry,
     };
   });
 }
@@ -238,6 +244,7 @@ export function withCatalogAssets(
       ...(!row.chainIconUrl && match.chainIconUrl
         ? { chainIconUrl: match.chainIconUrl }
         : {}),
+      verified: row.verified || match.verified,
     };
   });
   const seen = new Set(out.map((row) => row.key));
@@ -1574,10 +1581,12 @@ export function AssetSide({
           ...(option.note ? [option.note] : []),
         ],
         icon: (
-          <Avatar
+          <TokenLogo
             src={option.iconUrl ?? option.chainIconUrl}
-            fallback={option.symbol}
+            symbol={option.symbol}
             size={24}
+            verified={option.verified}
+            verifiedLabel="Listed in the Cosmos chain registry"
           />
         ),
         trailing:
@@ -1612,7 +1621,7 @@ export function AssetSide({
           placeholder={placeholder ?? "0"}
           value={amount}
           readOnly={readOnly}
-          onChange={(event) => onAmountChange?.(event.target.value)}
+          onChange={(event) => onAmountChange?.(decimalText(event.target.value))}
           className={cn(
             "min-w-0 flex-1 bg-transparent text-left text-[26px] font-semibold leading-none tracking-[-0.04em] tabular-nums outline-none",
             readOnly ? "text-fg-muted" : "text-fg",
@@ -1633,10 +1642,12 @@ export function AssetSide({
             focusRing,
           )}
         >
-          <Avatar
+          <TokenLogo
             src={asset?.iconUrl ?? asset?.chainIconUrl}
-            fallback={asset?.symbol ?? "?"}
+            symbol={asset?.symbol ?? "?"}
             size={24}
+            verified={asset?.verified}
+            verifiedLabel="Listed in the Cosmos chain registry"
           />
           <span className="min-w-0 text-left">
             <span className="block truncate text-[12.5px] font-semibold leading-none tracking-tight text-fg">

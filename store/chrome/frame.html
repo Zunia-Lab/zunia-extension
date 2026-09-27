@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Zunia Chrome listing</title>
+<style>
+  @font-face {
+    font-family: "Grotesk";
+    src: url("../../.output/chrome-mv3/assets/SpaceGrotesk-Regular-DiwaNovu.ttf") format("truetype");
+    font-weight: 400;
+  }
+  @font-face {
+    font-family: "Grotesk";
+    src: url("../../.output/chrome-mv3/assets/SpaceGrotesk-Medium-CaT8-1b4.ttf") format("truetype");
+    font-weight: 500;
+  }
+  @font-face {
+    font-family: "Grotesk";
+    src: url("../../.output/chrome-mv3/assets/SpaceGrotesk-Bold-C4zjX-E1.ttf") format("truetype");
+    font-weight: 700;
+  }
+  @font-face {
+    font-family: "Mono";
+    src: url("../../.output/chrome-mv3/assets/JetBrainsMono-Regular-Bde98o5f.ttf") format("truetype");
+    font-weight: 400;
+  }
+  @font-face {
+    font-family: "Mono";
+    src: url("../../.output/chrome-mv3/assets/JetBrainsMono-Medium-0-JBc1v0.ttf") format("truetype");
+    font-weight: 500;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    background: #0b0a09;
+    color: #f1f0ee;
+    font-family: Grotesk, "Helvetica Neue", sans-serif;
+    overflow: hidden;
+  }
+  .board { display: none; position: relative; overflow: hidden; background: #0b0a09; }
+  .board.on { display: block; }
+  .board.on.shot { display: grid; }
+  .wash {
+    position: absolute; inset: 0; pointer-events: none;
+    background:
+      radial-gradient(520px 420px at 88% 18%, rgba(255, 27, 12, 0.28), transparent 70%),
+      radial-gradient(420px 360px at 72% 88%, rgba(255, 196, 20, 0.12), transparent 72%);
+  }
+  .shot {
+    width: 1280px; height: 800px;
+    display: grid; grid-template-columns: 1fr 460px;
+    align-items: center;
+    padding: 0 72px 0 80px;
+  }
+  .copy { position: relative; z-index: 1; max-width: 620px; }
+  .eyebrow {
+    font-family: Mono, ui-monospace, monospace;
+    font-size: 13px; letter-spacing: 0.18em; text-transform: uppercase;
+    color: #ff8a17; margin-bottom: 18px;
+  }
+  h1 {
+    font-weight: 700; font-size: 64px; line-height: 0.96;
+    letter-spacing: -0.045em; max-width: 9.2ch;
+  }
+  h1 em {
+    font-style: normal;
+    background: linear-gradient(120deg, #ff1b0c 0%, #ff6a10 46%, #ffc414 100%);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .lede {
+    margin-top: 22px; max-width: 42ch;
+    font-size: 20px; line-height: 1.35; color: #c9c6c1; font-weight: 400;
+  }
+  .stage { position: relative; height: 620px; display: flex; align-items: center; justify-content: center; }
+  .glow {
+    position: absolute; width: 380px; height: 380px; border-radius: 50%;
+    background: radial-gradient(circle, rgba(255, 45, 31, 0.45), transparent 68%);
+    filter: blur(6px);
+  }
+  .phone {
+    position: relative; width: 332px; height: 580px;
+    background: #0b0a09; border-radius: 32px;
+    border: 1px solid rgba(241, 240, 238, 0.16);
+    box-shadow: 0 30px 80px rgba(0, 0, 0, 0.55), 0 0 0 8px rgba(11, 10, 9, 0.4);
+    overflow: hidden; display: flex; flex-direction: column;
+  }
+  .status {
+    height: 28px; display: flex; align-items: center; justify-content: space-between;
+    padding: 0 18px; font-family: Mono, monospace; font-size: 10px; color: #8a8a8a;
+  }
+  .app { flex: 1; padding: 8px 14px 0; display: flex; flex-direction: column; min-height: 0; }
+  .top {
+    display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px;
+  }
+  .brand { display: flex; align-items: center; gap: 8px; font-weight: 700; letter-spacing: -0.04em; font-size: 18px; }
+  .gear, .back {
+    width: 28px; height: 28px; border-radius: 999px;
+    border: 1px solid rgba(241, 240, 238, 0.16);
+    display: grid; place-items: center; color: #c9c6c1; font-size: 13px;
+  }
+  .card {
+    background: #1c1814; border: 1px solid rgba(241, 240, 238, 0.14);
+    border-radius: 18px; padding: 12px 14px 11px;
+  }
+  .card.focus { border-color: rgba(255, 106, 16, 0.85); box-shadow: 0 0 0 1px #ff8a17; }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .muted { color: #8a8a8a; font-size: 12px; }
+  .dim { color: #c9c6c1; }
+  .amt { font-size: 32px; font-weight: 700; letter-spacing: -0.04em; line-height: 1; margin-top: 8px; }
+  .fiat { margin-top: 6px; font-family: Mono, monospace; font-size: 11px; color: #8a8a8a; }
+  .pill {
+    display: flex; align-items: center; gap: 6px;
+    background: rgba(241, 240, 238, 0.06);
+    border: 1px solid rgba(241, 240, 238, 0.14);
+    border-radius: 999px; padding: 4px 8px 4px 4px; font-weight: 700; font-size: 13px;
+  }
+  .dot { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font-size: 11px; }
+  .osmo { background: radial-gradient(circle at 30% 30%, #7a5cff, #2a1468); }
+  .atom { background: radial-gradient(circle at 30% 30%, #9ecbff, #1a3d8f); }
+  .usdc { background: radial-gradient(circle at 30% 30%, #7ee0ff, #0b6e8a); }
+  .flipwrap { display: flex; justify-content: center; margin: -12px 0; position: relative; z-index: 2; }
+  .flip {
+    width: 36px; height: 36px; border-radius: 50%; background: #0b0a09;
+    border: 1px solid rgba(241, 240, 238, 0.28);
+    box-shadow: 0 0 0 4px #0b0a09;
+    display: grid; place-items: center; font-size: 14px;
+  }
+  .fees { display: flex; justify-content: space-between; margin: 12px 2px 0; font-size: 12px; color: #c9c6c1; }
+  .fees b { font-weight: 500; font-family: Mono, monospace; font-size: 11px; color: #f1f0ee; }
+  .go {
+    margin-top: 14px; height: 48px; border-radius: 999px; border: 0;
+    background: linear-gradient(120deg, #ff1b0c, #ff6a10 55%, #ffc414);
+    color: #0b0a09; font-family: Grotesk, sans-serif; font-weight: 700; font-size: 16px;
+  }
+  .note { margin-top: 10px; font-size: 11px; line-height: 1.35; color: #8a8a8a; }
+  .finding { margin-top: 6px; font-family: Mono, monospace; font-size: 10px; color: #8a8a8a; display: flex; align-items: center; gap: 6px; }
+  .spin {
+    width: 8px; height: 8px; border-radius: 50%;
+    border: 1px solid rgba(241, 240, 238, 0.28); border-top-color: #ff1b0c;
+  }
+  .nav {
+    margin-top: auto; margin-bottom: 12px;
+    height: 62px; border-radius: 999px;
+    border: 1px solid rgba(241, 240, 238, 0.14);
+    background: #141210;
+    display: grid; grid-template-columns: repeat(4, 1fr); align-items: center;
+    padding: 0 6px;
+  }
+  .nav span { text-align: center; font-size: 9px; letter-spacing: 0.08em; color: #8a8a8a; font-weight: 500; }
+  #swap .status { height: 22px; }
+  #swap .app { padding-top: 2px; }
+  #swap .amt { font-size: 22px; margin-top: 2px; }
+  #swap .fiat { margin-top: 2px; }
+  #swap .card { padding: 6px 10px; }
+  #swap .top { margin-bottom: 6px; }
+  #swap .go { height: 36px; margin-top: 6px; font-size: 14px; }
+  #swap .fees { margin: 6px 2px 0; }
+  #swap .flip { width: 28px; height: 28px; }
+  #swap .nav { height: 48px; margin-bottom: 8px; }
+  #swap .nav span.on { height: 34px; }
+  .nav span.on {
+    color: #f1f0ee; background: #ff1b0c; color: white;
+    height: 46px; border-radius: 999px; display: grid; place-items: center;
+    margin: 0 4px; letter-spacing: 0.06em;
+  }
+  .hero-num { font-size: 40px; font-weight: 700; letter-spacing: -0.045em; }
+  .hero-sub { font-family: Mono, monospace; font-size: 12px; color: #8a8a8a; margin-top: 4px; }
+  .asset { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-top: 1px solid rgba(241, 240, 238, 0.08); }
+  .asset:first-of-type { border-top: 0; }
+  .asset .nm { font-weight: 600; font-size: 14px; }
+  .asset .ch { font-size: 11px; color: #8a8a8a; }
+  .asset .val { margin-left: auto; text-align: right; }
+  .asset .val b { display: block; font-size: 14px; }
+  .asset .val i { font-style: normal; font-family: Mono, monospace; font-size: 10px; color: #8a8a8a; }
+  .field {
+    margin-top: 8px; background: #1c1814; border-radius: 16px;
+    border: 1px solid rgba(241, 240, 238, 0.14); padding: 12px 14px;
+  }
+  .field .big { font-size: 28px; font-weight: 700; letter-spacing: -0.04em; }
+  .addr { font-family: Mono, monospace; font-size: 11px; color: #c9c6c1; margin-top: 8px; }
+  .hops { margin-top: 12px; display: flex; gap: 6px; align-items: center; font-size: 11px; color: #c9c6c1; }
+  .chip { border: 1px solid rgba(241, 240, 238, 0.16); border-radius: 999px; padding: 4px 8px; font-family: Mono, monospace; font-size: 10px; }
+  .approve {
+    margin-top: 8px; border-radius: 16px; padding: 14px;
+    background: #1c1814; border: 1px solid rgba(241, 240, 238, 0.14);
+  }
+  .site { font-weight: 700; font-size: 16px; letter-spacing: -0.03em; }
+  .ask { margin-top: 6px; font-size: 13px; color: #c9c6c1; line-height: 1.35; }
+  .pair { display: flex; gap: 8px; margin-top: 16px; }
+  .pair button {
+    flex: 1; height: 42px; border-radius: 999px; font-family: Grotesk, sans-serif; font-weight: 700; font-size: 14px;
+  }
+  .no { background: transparent; color: #f1f0ee; border: 1px solid rgba(241, 240, 238, 0.22); }
+  .yes { background: linear-gradient(120deg, #ff1b0c, #ff6a10); color: #0b0a09; border: 0; }
+  .reward { display: flex; justify-content: space-between; align-items: center; padding: 12px 0; border-top: 1px solid rgba(241, 240, 238, 0.08); }
+  .reward b { font-size: 14px; }
+  .reward span { display: block; font-size: 11px; color: #8a8a8a; margin-top: 2px; }
+  .pct { font-family: Mono, monospace; color: #ffc414; font-size: 13px; }
+
+  /* promo */
+  .small { width: 440px; height: 280px; position: relative; }
+  .small .inner, .marquee .inner { position: relative; z-index: 1; height: 100%; }
+  .small .inner {
+    display: flex; flex-direction: column; justify-content: flex-end; padding: 28px;
+  }
+  .word { display: flex; align-items: center; gap: 12px; font-weight: 700; letter-spacing: -0.05em; }
+  .small .word { font-size: 54px; }
+  .small .tag {
+    margin-top: 8px; font-family: Mono, monospace; font-size: 13px;
+    letter-spacing: 0.16em; text-transform: uppercase; color: #ffc414;
+  }
+  .slash {
+    position: absolute; right: -40px; top: -30px; width: 220px; height: 220px;
+    background: linear-gradient(140deg, #ff1b0c, #ff6a10 50%, #ffc414);
+    transform: rotate(18deg); border-radius: 28px; opacity: 0.95;
+  }
+  .marquee { width: 1400px; height: 560px; }
+  .marquee .inner {
+    display: grid; grid-template-columns: 1.05fr 0.95fr; align-items: center;
+    padding: 0 72px 0 80px;
+  }
+  .marquee h1 { font-size: 78px; max-width: 10ch; }
+  .marquee .lede { font-size: 22px; max-width: 28ch; }
+  .mini {
+    width: 280px; background: #1c1814; border: 1px solid rgba(241, 240, 238, 0.16);
+    border-radius: 22px; padding: 16px; box-shadow: 0 24px 50px rgba(0,0,0,.45);
+  }
+  .stack { position: relative; height: 420px; }
+  .stack .mini { position: absolute; }
+  .stack .a { left: 36px; top: 36px; transform: rotate(-6deg); }
+  .stack .b { left: 120px; top: 150px; transform: rotate(3deg); width: 300px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+function mark(w, h, uid) {
+  return `<svg width="${w}" height="${h}" viewBox="0 0 96 120" fill="none" aria-hidden="true"><defs><mask id="${uid}" maskUnits="userSpaceOnUse" x="0" y="0" width="96" height="120"><rect width="96" height="120" fill="#fff"/><path d="M26 20 L70 46 L26 72" fill="none" stroke="#000" stroke-width="30" stroke-linecap="round" stroke-linejoin="round"/></mask></defs><g mask="url(#${uid})"><path d="M26 48 L70 74 L26 100" stroke="#F1F0EE" stroke-width="24" stroke-linecap="round" stroke-linejoin="round"/></g><path d="M26 20 L70 46 L26 72" stroke="#F1F0EE" stroke-width="24" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+}
+const MARK = mark(28, 36, "m1");
+const MARK_LG = mark(64, 80, "m2");
+
+function nav(active) {
+  const items = ["HOME", "EARN", "SWAP", "ACTIVITY"];
+  return `<div class="nav">${items.map(i => `<span class="${i === active ? "on" : ""}">${i}</span>`).join("")}</div>`;
+}
+function phone(active, body) {
+  return `<div class="stage"><div class="glow"></div><div class="phone">
+    <div class="status"><span>9:41</span><span>ZUNIA</span></div>
+    <div class="app">${body}${nav(active)}</div>
+  </div></div>`;
+}
+function shot(id, eyebrow, title, lede, active, body) {
+  return `<section class="board shot" id="${id}"><div class="wash"></div>
+    <div class="copy"><div class="eyebrow">${eyebrow}</div><h1>${title}</h1><p class="lede">${lede}</p></div>
+    ${phone(active, body)}
+  </section>`;
+}
+
+const balances = `
+  <div class="top"><div class="brand">${MARK} zunia</div><div class="gear"><svg width="12" height="12" viewBox="0 0 12 12" fill="none"><circle cx="6" cy="6" r="2" stroke="#c9c6c1" stroke-width="1.2"/><path d="M6 1.2v1.4M6 9.4v1.4M1.2 6h1.4M9.4 6h1.4M2.6 2.6l1 .1M8.4 8.4l1 1M9.4 2.6l-1 1M3.6 8.4l-1 1" stroke="#c9c6c1" stroke-width="1.1" stroke-linecap="round"/></svg></div></div>
+  <div class="muted">Total</div>
+  <div class="hero-num">$2,481.20</div>
+  <div class="hero-sub">3 chains · live</div>
+  <div class="card" style="margin-top:16px">
+    <div class="asset"><div class="dot osmo"></div><div><div class="nm">OSMO</div><div class="ch">Osmosis</div></div><div class="val"><b>463.92</b><i>$184.20</i></div></div>
+    <div class="asset"><div class="dot atom"></div><div><div class="nm">ATOM</div><div class="ch">Cosmos Hub</div></div><div class="val"><b>12.40</b><i>$86.55</i></div></div>
+    <div class="asset"><div class="dot usdc"></div><div><div class="nm">USDC</div><div class="ch">Noble</div></div><div class="val"><b>840.00</b><i>$840.00</i></div></div>
+  </div>`;
+
+const swap = `
+  <div class="top"><div><div style="font-weight:700;font-size:20px;letter-spacing:-0.04em">Swap</div><div class="muted">via Osmosis</div></div><div class="gear"><svg width="12" height="12" viewBox="0 0 12 12" fill="none"><circle cx="6" cy="6" r="2" stroke="#c9c6c1" stroke-width="1.2"/><path d="M6 1.2v1.4M6 9.4v1.4M1.2 6h1.4M9.4 6h1.4M2.6 2.6l1 .1M8.4 8.4l1 1M9.4 2.6l-1 1M3.6 8.4l-1 1" stroke="#c9c6c1" stroke-width="1.1" stroke-linecap="round"/></svg></div></div>
+  <div class="card focus">
+    <div class="row"><span class="muted">From</span><span class="muted">Max: 463.92 OSMO</span></div>
+    <div class="row" style="margin-top:6px"><div class="amt">10</div><div class="pill"><div class="dot osmo"></div>OSMO</div></div>
+    <div class="row"><span class="fiat">$3.97</span><span class="muted">On Osmosis</span></div>
+  </div>
+  <div class="flipwrap"><div class="flip"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1.5v11M4 4.2 7 1.5l3 2.7M4 9.8 7 12.5l3-2.7" stroke="#f1f0ee" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></div></div>
+  <div class="card">
+    <div class="row"><span class="muted">To</span></div>
+    <div class="row" style="margin-top:6px"><div class="amt" style="color:#c9c6c1">0.21</div><div class="pill"><div class="dot atom"></div>ATOM</div></div>
+    <div class="row"><span class="fiat">$1.46</span><span class="muted">On Cosmos Hub</span></div>
+  </div>
+  <div class="fees"><span>Fees</span><b>0.042 OSMO</b></div>
+  <button class="go">Swap for 0.21 ATOM</button>`;
+
+const send = `
+  <div class="top"><div class="back">←</div><div style="font-weight:700;letter-spacing:-0.04em">Send</div><div style="width:28px"></div></div>
+  <div class="field">
+    <div class="muted">Amount</div>
+    <div class="row" style="margin-top:6px"><div class="big">25</div><div class="pill"><div class="dot osmo"></div>OSMO</div></div>
+    <div class="fiat">On Osmosis · to Cosmos Hub</div>
+  </div>
+  <div class="field">
+    <div class="muted">Recipient</div>
+    <div class="addr">cosmos1k4p…8w2n</div>
+  </div>
+  <div class="hops"><span class="chip">channel-141</span><span>→</span><span class="chip">Cosmos Hub</span></div>
+  <button class="go" style="margin-top:auto;margin-bottom:12px">Review transfer</button>`;
+
+const approve = `
+  <div class="top"><div class="brand">${MARK} zunia</div></div>
+  <div class="muted" style="letter-spacing:.14em;font-family:Mono,monospace;font-size:11px">CONNECTION</div>
+  <div class="approve">
+    <div class="site">app.osmosis.zone</div>
+    <p class="ask">Asks to connect your Osmosis account and read the address. It cannot sign by itself.</p>
+  </div>
+  <div class="approve" style="margin-top:10px">
+    <div class="muted">Account</div>
+    <div class="addr" style="margin-top:6px">osmo1qf3…9kal</div>
+    <div class="muted" style="margin-top:10px">Chain</div>
+    <div style="margin-top:4px;font-weight:600">Osmosis</div>
+  </div>
+  <div class="pair"><button class="no">Reject</button><button class="yes">Approve</button></div>`;
+
+const earn = `
+  <div class="top"><div style="font-weight:700;font-size:20px;letter-spacing:-0.04em">Earn</div><div class="muted">Cosmos Hub</div></div>
+  <div class="hero-num">12.40 ATOM</div>
+  <div class="hero-sub">staked · rewards ready</div>
+  <div class="card" style="margin-top:16px">
+    <div class="reward" style="border-top:0"><div><b>Cosmos Hub</b><span>Validator · 18.2%</span></div><div class="pct">+0.04</div></div>
+    <div class="reward"><div><b>Osmosis</b><span>Superfluid · OSMO</span></div><div class="pct">+1.12</div></div>
+    <div class="reward"><div><b>Claim</b><span>Rewards waiting</span></div><div class="pct">$3.18</div></div>
+  </div>
+  <button class="go">Claim rewards</button>`;
+
+const small = `<section class="board small" id="small"><div class="wash"></div><div class="slash"></div>
+  <div class="inner"><div class="word">${MARK_LG}<span>zunia</span></div><div class="tag">Cosmos wallet</div></div></section>`;
+
+const marquee = `<section class="board marquee" id="marquee"><div class="wash"></div>
+  <div class="inner">
+    <div>
+      <div class="word" style="font-size:28px;margin-bottom:18px">${MARK}<span>zunia</span></div>
+      <h1>Your Cosmos wallet, <em>in the browser.</em></h1>
+      <p class="lede">Hold, send, swap, and stake. Every signature waits for you.</p>
+    </div>
+    <div class="stack">
+      <div class="mini a"><div class="muted">Total</div><div style="font-size:28px;font-weight:700;letter-spacing:-0.04em;margin-top:4px">$2,481</div><div class="muted" style="margin-top:8px">OSMO · ATOM · USDC</div></div>
+      <div class="mini b"><div class="row"><span class="muted">Swap</span><span class="muted">Osmosis</span></div><div class="row" style="margin-top:10px"><b>10 OSMO</b><span>→</span><b>0.21 ATOM</b></div><div class="finding"><span class="spin"></span> Route and price</div></div>
+    </div>
+  </div></section>`;
+
+const boards = {
+  balances: shot("balances", "Wallet", "One wallet for <em>Cosmos.</em>", "Hold OSMO, ATOM, and the rest of your chains together. The recovery phrase stays in this browser.", "HOME", balances),
+  swap: shot("swap", "Swap", "Price the route <em>before you sign.</em>", "OSMO on Osmosis to ATOM on Cosmos Hub, in one signature. The contract sends the ATOM onward.", "SWAP", swap),
+  send: shot("send", "Send", "Move it to <em>another chain.</em>", "An IBC transfer from the wallet you already use. The channel is on the review, not hidden in a second app.", "HOME", send),
+  approve: shot("approve", "Connect", "Nothing signs <em>until you say so.</em>", "A site can ask for an account. It never sees the phrase, and a signature still needs this screen.", "HOME", approve),
+  earn: shot("earn", "Earn", "Stake, then <em>claim it here.</em>", "Delegate on the chains you hold and read the rewards without exporting a key.", "EARN", earn),
+  small,
+  marquee,
+};
+
+const sizes = {
+  balances: [1280, 800], swap: [1280, 800], send: [1280, 800],
+  approve: [1280, 800], earn: [1280, 800], small: [440, 280], marquee: [1400, 560],
+};
+const id = (location.hash || "#balances").slice(1);
+const key = boards[id] ? id : "balances";
+const [w, h] = sizes[key];
+document.documentElement.style.width = w + "px";
+document.documentElement.style.height = h + "px";
+document.body.style.width = w + "px";
+document.body.style.height = h + "px";
+document.getElementById("root").innerHTML = boards[key];
+document.querySelector(".board").classList.add("on");
+</script>
+</body>
+</html>

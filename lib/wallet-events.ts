@@ -44,7 +44,12 @@ export type WalletEvent =
       readonly unread: number;
     }
   /** Which chains are live on a socket and which fell back to polling. */
-  | { readonly type: "realtime"; readonly health: RealtimeHealth };
+  | { readonly type: "realtime"; readonly health: RealtimeHealth }
+  /**
+   * Drop every remembered row. Account switch and lock: the previous
+   * account's balances must not linger on an open surface.
+   */
+  | { readonly type: "reset"; readonly accountIndex: number };
 
 /**
  * What a newly connected surface is caught up with.
@@ -58,6 +63,8 @@ export interface WalletEventSnapshot {
   notices: readonly Notice[];
   unread: number;
   health: RealtimeHealth;
+  /** Active account the balances belong to. `-1` when unknown or locked. */
+  accountIndex: number;
 }
 
 /* -------------------------------------------------------------------------- *
@@ -73,6 +80,7 @@ const snapshot: WalletEventSnapshot = {
   notices: [],
   unread: 0,
   health: {},
+  accountIndex: -1,
 };
 
 /**
@@ -89,6 +97,7 @@ export function walletEventSnapshot(): WalletEventSnapshot {
     notices: snapshot.notices,
     unread: snapshot.unread,
     health: snapshot.health,
+    accountIndex: snapshot.accountIndex,
   };
 }
 
@@ -127,16 +136,23 @@ export function broadcastWalletEvent(event: WalletEvent): void {
       break;
     case "tx":
       break;
+    case "reset":
+      snapshot.accountIndex = event.accountIndex;
+      break;
   }
   for (const port of ports) post(port, event);
 }
 
 /** Drop everything remembered. Called on lock and on account switch. */
-export function resetWalletEventSnapshot(): void {
+export function resetWalletEventSnapshot(accountIndex = -1): void {
   snapshot.balances = [];
   snapshot.notices = [];
   snapshot.unread = 0;
   snapshot.health = {};
+  snapshot.accountIndex = accountIndex;
+  // Surfaces merge balance patches. An empty `balances` event would leave
+  // the previous account's rows on screen, so this is a replace, not a merge.
+  for (const port of ports) post(port, { type: "reset", accountIndex });
 }
 
 /**
@@ -154,6 +170,7 @@ export function registerWalletEventPort(
     ports.delete(port);
     hooks.onClose?.();
   });
+  post(port, { type: "reset", accountIndex: snapshot.accountIndex });
   post(port, { type: "balances", balances: snapshot.balances });
   post(port, {
     type: "notices",

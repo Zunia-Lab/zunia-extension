@@ -89,9 +89,10 @@ export function RevealPhraseScreen({ onBack }: { onBack: () => void }) {
       }
     >
       <div className="flex flex-col gap-3 pt-1">
-        <Callout tone="danger" title="Anyone with these words owns the wallet">
-          Never type them into a website and never share them. Zunia support
-          will never ask for them.
+        <Callout tone="danger" title="Anyone with these words owns this account">
+          This is the recovery phrase of the account that is active now. Each
+          account has its own words. Never type them into a website and never
+          share them.
         </Callout>
 
         {phrase ? (

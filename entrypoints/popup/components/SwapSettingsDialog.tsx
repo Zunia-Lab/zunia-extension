@@ -97,7 +97,7 @@ export function SwapSettingsDialog({
           />
           <div className="mt-2 flex items-center gap-2">
             <Input
-              type="number"
+              type="text"
               inputMode="decimal"
               min={0.1}
               max={MAX_SLIPPAGE_PERCENT}

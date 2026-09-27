@@ -118,7 +118,7 @@ describe("buildTransferMsgFromPlan", () => {
     expect(msg.value.memo).toBe(memo);
   });
 
-  it("refuses a plan whose first hop is not a transfer the user can sign", () => {
+  it("refuses a swap hop that does not carry an osmosis_swap execute", () => {
     expect(() =>
       buildTransferMsgFromPlan({
         view: view({ kind: "swap" }),
@@ -126,6 +126,33 @@ describe("buildTransferMsgFromPlan", () => {
         amountBaseUnits: "5",
       }),
     ).toThrow(/no transfer/i);
+  });
+
+  it("signs a venue-origin swap as one contract call with the input coin", () => {
+    const contract = "osmo1contract";
+    const swap = {
+      output_denom: "ibc/ATOM",
+      slippage: { twap: { slippage_percentage: "1", window_seconds: 10 } },
+      receiver: "cosmos1recipient",
+      on_failed_delivery: { local_recovery_addr: "osmo1recovery" },
+      next_memo: null,
+    };
+    const msg = buildTransferMsgFromPlan({
+      view: view({
+        kind: "swap",
+        inputDenom: "uosmo",
+        receiver: contract,
+        memo: JSON.stringify({ wasm: { contract, msg: { osmosis_swap: swap } } }),
+      }),
+      sender: "osmo1sender",
+      amountBaseUnits: "63000000",
+    });
+    expect(msg.typeUrl).toBe("/cosmwasm.wasm.v1.MsgExecuteContract");
+    expect(msg.value.sender).toBe("osmo1sender");
+    expect(msg.value.contract).toBe(contract);
+    expect(msg.value.funds).toEqual([{ denom: "uosmo", amount: "63000000" }]);
+    const body = JSON.parse(Buffer.from(String(msg.value.msg), "base64").toString("utf8"));
+    expect(body).toEqual({ osmosis_swap: swap });
   });
 });
 

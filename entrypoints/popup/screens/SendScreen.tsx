@@ -43,6 +43,7 @@ import { estimateFee, msgSend } from "../../../lib/amino-tx";
 import { resolveTxMemo } from "../../../lib/tx-memo";
 import {
   NO_VALUE,
+  decimalText,
   formatUnits,
   formatUnitsExact,
   isBech32,
@@ -1548,7 +1549,7 @@ export function SendScreen({
               inputMode="decimal"
               placeholder="0"
               value={amount}
-              onChange={(e) => setAmount(e.target.value)}
+              onChange={(e) => setAmount(decimalText(e.target.value))}
               className={cn(
                 "min-w-0 flex-1 bg-transparent text-left text-[26px] font-semibold leading-none tracking-[-0.04em] tabular-nums text-fg outline-none",
                 "placeholder:text-fg-faint",

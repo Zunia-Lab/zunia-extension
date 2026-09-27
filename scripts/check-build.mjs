@@ -23,7 +23,7 @@ const KERNEL_FILE = "zunia_core_bg.wasm";
 const WASM_MAGIC = Buffer.from([0x00, 0x61, 0x73, 0x6d]);
 const REQUIRED_FILES = ["background.js", "injected.js", "popup.html", "connect.html", "onboarding.html"];
 const WEB_ACCESSIBLE = ["injected.js", "connect.html"];
-const GECKO_ID = "extension@zunialab.com";
+const GECKO_ID = "wallet@zunialab.com";
 // Firefox shows its own data consent prompt from 140; older versions would need ours.
 const MIN_FIREFOX = 140;
 

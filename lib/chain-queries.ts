@@ -156,6 +156,8 @@ export interface ActivityItem {
   success: boolean;
   from?: string;
   to?: string;
+  /** Short protobuf name, e.g. `MsgUpdateClient`. Drives the row icon. */
+  messageType?: string;
 }
 
 async function getJson(url: string): Promise<unknown> {
@@ -919,6 +921,7 @@ export async function fetchActivity(
         hash,
         timestamp: tx.timestamp ? Date.parse(tx.timestamp) : 0,
         success: (tx.code ?? 0) === 0,
+        messageType: shortTypeName(typeUrlOf(message)),
         ...described,
       });
     }

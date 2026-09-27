@@ -51,7 +51,11 @@ import {
   type KernelStatus,
   type SigningPreview,
 } from "./kernel";
-import { getActiveAccountIndex, getSessionMnemonic, touchSession } from "./session";
+import {
+  getActiveDerivationIndex,
+  getSessionMnemonic,
+  touchSession,
+} from "./session";
 import { getSettings } from "./settings";
 import { resolveTxMemo } from "./tx-memo";
 
@@ -206,7 +210,7 @@ export async function previewTx(request: TxRequest): Promise<TxPreview> {
 
   const mnemonic = await getSessionMnemonic();
   if (!mnemonic) throw new Error("Wallet is locked");
-  const accountIndex = await getActiveAccountIndex();
+  const accountIndex = await getActiveDerivationIndex();
   const derived = kernel.deriveAddress(mnemonic, "", chainJsonFor(request.chainId), accountIndex);
   if (derived.bech32Address !== request.signerAddress) {
     throw new Error(
@@ -337,7 +341,7 @@ export async function signAndBroadcastTx(
 
   const mnemonic = await getSessionMnemonic();
   if (!mnemonic) throw new Error("Wallet is locked");
-  const accountIndex = await getActiveAccountIndex();
+  const accountIndex = await getActiveDerivationIndex();
   const chainJson = chainJsonFor(request.chainId);
   const derived = kernel.deriveAddress(mnemonic, "", chainJson, accountIndex);
   if (derived.bech32Address !== request.signerAddress) {

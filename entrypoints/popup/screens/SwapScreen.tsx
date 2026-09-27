@@ -246,8 +246,15 @@ export function SwapScreen({
   // The source defaults to whatever chain the user came from, the destination
   // to anything on a different chain, so the screen opens with a plausible pair
   // already in it.
+  // Held balances first. A flipped side can be a token this wallet does not
+  // hold yet, and that pick has to stay put so the route is replanned instead
+  // of snapping back to the first balance.
+  const fromChoices = useMemo(() => {
+    const held = new Set(sources.map((asset) => asset.key));
+    return [...sources, ...destinations.filter((asset) => !held.has(asset.key))];
+  }, [sources, destinations]);
   const from =
-    sources.find((asset) => asset.key === fromKey) ??
+    fromChoices.find((asset) => asset.key === fromKey) ??
     sources.find((asset) => asset.chainId === initialChainId) ??
     sources[0];
   const to =
@@ -445,21 +452,30 @@ export function SwapScreen({
   const quoteExpired = quote !== null && quoteSecondsLeft === 0;
 
   const venueChainId = result?.venue?.chainId ?? null;
+  const venueContract = result?.venue?.contractAddress ?? null;
   const venueInputDenom = result?.venueInputDenom ?? null;
   const venueOutputDenom = result?.venueOutputDenom ?? null;
   const amountBase = amountUnits?.toString() ?? null;
   const canRequote = Boolean(
-    planKey && venueChainId && venueInputDenom && venueOutputDenom && amountBase,
+    planKey && venueChainId && venueContract && venueInputDenom && venueOutputDenom && amountBase,
   );
 
   const refreshQuote = useCallback(async () => {
-    if (!planKey || !venueChainId || !venueInputDenom || !venueOutputDenom || !amountBase) {
+    if (
+      !planKey ||
+      !venueChainId ||
+      !venueContract ||
+      !venueInputDenom ||
+      !venueOutputDenom ||
+      !amountBase
+    ) {
       return { quote: null, error: "There is no route to price yet." };
     }
     const key = planKey;
     setRequotingKey(key);
     const next = await requoteSwap({
       venueChainId,
+      venueContract,
       venueInputDenom,
       venueOutputDenom,
       amountBaseUnits: amountBase,
@@ -474,6 +490,7 @@ export function SwapScreen({
   }, [
     planKey,
     venueChainId,
+    venueContract,
     venueInputDenom,
     venueOutputDenom,
     amountBase,
@@ -529,10 +546,8 @@ export function SwapScreen({
     if (from.chainId === to.chainId && from.denom === to.denom) {
       return "Both sides are the same asset on the same chain.";
     }
-    if (from.chainId === VENUE_CHAIN_ID) {
-      return to.chainId === VENUE_CHAIN_ID
-        ? "Both tokens are already on Osmosis, and this screen swaps tokens arriving from another chain."
-        : "Swapping on Osmosis and then transferring takes two signatures, which this screen does not do. Send the token to another chain first, or swap on Osmosis directly.";
+    if (from.chainId === VENUE_CHAIN_ID && to.chainId === VENUE_CHAIN_ID) {
+      return "Both tokens are already on Osmosis, and this screen swaps by sending to another chain after the pool.";
     }
     if (!amount) return "Enter an amount to swap.";
     if (amountUnits === null) return "That amount is not a number this chain can hold.";
@@ -704,16 +719,11 @@ export function SwapScreen({
     });
   }
 
-  // Only a token the wallet holds can become the side it sells.
-  const flipTarget = to ? sources.find((asset) => asset.key === to.key) : undefined;
-  const flipLabel = flipTarget
-    ? "Swap the two sides"
-    : `Cannot swap sides: this wallet holds no ${to?.symbol ?? "token"} on ${to?.chainName ?? "that network"}`;
+  const canFlip = Boolean(from && to && from.key !== to.key);
   function flipSides() {
-    if (!from || !to || !flipTarget) return;
+    if (!from || !to || from.key === to.key) return;
     setFromKey(to.key);
     setToKey(from.key);
-    setAmount("");
     setManual([]);
   }
 
@@ -850,7 +860,7 @@ export function SwapScreen({
           </div>
         }
       >
-        <div className="flex flex-col gap-2 pt-1">
+        <div className="flex min-w-0 flex-col gap-2 pt-1 [overflow-wrap:anywhere]">
           {pending.kind === "swap" && from && to ? (
             <section className="rounded-[14px] border border-[var(--z-line)] bg-[var(--z-glass)] px-3 py-2.5">
               <p className="font-mono text-[9px] uppercase tracking-[0.12em] text-fg-dim">
@@ -911,18 +921,20 @@ export function SwapScreen({
             </section>
           ) : null}
 
-          <section className="rounded-[12px] border border-[var(--z-line)] px-2.5 py-2">
+          <section className="min-w-0 rounded-[12px] border border-[var(--z-line)] px-2.5 py-2">
             {preview.preview.summaries.map((line, index) => (
-              <p key={index} className="text-[11px] leading-snug text-fg">
+              <p key={index} className="min-w-0 break-words text-[11px] leading-snug text-fg [overflow-wrap:anywhere]">
                 {line}
               </p>
             ))}
           </section>
 
           {memo ? (
-            <section className="rounded-[12px] border border-[var(--z-line)] px-2.5 py-2">
+            <section className="min-w-0 rounded-[12px] border border-[var(--z-line)] px-2.5 py-2">
               <SectionLabel>What the memo will do</SectionLabel>
-              <p className="mt-1 text-[11px] leading-snug text-fg">{memo.summary}</p>
+              <p className="mt-1 min-w-0 break-words text-[11px] leading-snug text-fg [overflow-wrap:anywhere]">
+                {memo.summary}
+              </p>
               {memo.xcs ? (
                 <div className="mt-1.5 flex flex-col gap-0.5">
                   <KeyValueRow
@@ -963,7 +975,7 @@ export function SwapScreen({
             </section>
           ) : null}
 
-          <section className="rounded-[12px] border border-[var(--z-line)] px-2.5 py-2">
+          <section className="min-w-0 rounded-[12px] border border-[var(--z-line)] px-2.5 py-2">
             <GasFeePrefs
               feeAmount={feeCoin?.amount}
               feeDecimals={feeChain?.entry.feeDecimals ?? 6}
@@ -1197,7 +1209,11 @@ export function SwapScreen({
         <SwapPair
           from={from}
           to={to}
-          fromOptions={sources}
+          fromOptions={
+            from && !sources.some((asset) => asset.key === from.key)
+              ? [from, ...sources]
+              : sources
+          }
           toOptions={destinations}
           amount={amount}
           receiveAmount={quoteView ? quoteView.outputAmount : ""}
@@ -1212,8 +1228,9 @@ export function SwapScreen({
             setManual([]);
           }}
           onFlip={flipSides}
-          flipLabel={flipLabel}
-          canFlip={Boolean(flipTarget && from)}
+          flipLabel="Swap the two sides"
+          canFlip={canFlip}
+          quoting={planning || refreshing}
           hidden={hidden}
           fromFiat={hidden ? "••••" : pricedFiat(from, amount)}
           toFiat={hidden ? "••••" : pricedFiat(to, quoteView?.outputAmount ?? "")}
@@ -1266,7 +1283,7 @@ export function SwapScreen({
           </p>
         ) : null}
 
-        {expert || quoteError || result?.error || (planning && !quote) ? (
+        {expert || quoteError || result?.error ? (
           <SwapQuotePanel
             compact
             variant={expert ? "expert" : "simple"}
@@ -1274,7 +1291,7 @@ export function SwapScreen({
             quote={quoteView}
             slippagePercent={slippage}
             slippagePresets={SLIPPAGE_PRESETS}
-            loading={planning && !quote}
+            loading={(planning || refreshing) && !quote}
             error={quoteError ?? result?.error ?? null}
             onRetry={() => setRetryToken((n) => n + 1)}
             footer={expert ? quoteFooter : null}

@@ -1,6 +1,11 @@
 import { chainJsonFor } from "./chains";
 import { loadKernel } from "./kernel";
-import { getAccounts, getSessionMnemonic } from "./session";
+import {
+  derivationIndexOf,
+  getAccounts,
+  getSessionMnemonic,
+  getSessionMnemonicMap,
+} from "./session";
 
 export interface AccountAddress {
   index: number;
@@ -24,10 +29,21 @@ export async function getAccountAddresses(
   const kernel = await loadKernel();
   const chainJson = chainJsonFor(chainId);
   const accounts = await getAccounts();
-  return accounts.map((account) => ({
-    index: account.index,
-    name: account.name,
-    address: kernel.deriveAddress(phrase, "", chainJson, account.index)
-      .bech32Address,
-  }));
+  const map = await getSessionMnemonicMap();
+  return accounts.map((account) => {
+    const seed =
+      (account.ownSeed ? map[String(account.index)] : map.primary) ??
+      map.primary ??
+      phrase;
+    return {
+      index: account.index,
+      name: account.name,
+      address: kernel.deriveAddress(
+        seed,
+        "",
+        chainJson,
+        derivationIndexOf(account),
+      ).bech32Address,
+    };
+  });
 }

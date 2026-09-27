@@ -14,16 +14,19 @@
  */
 
 import {
+  buildExecuteContractMsg,
   buildPlanTransferMsg,
   createChannelDirectory,
   planRoute,
   quoteOsmosisSwap,
+  readXcsExecutableRoute,
   validateMemo,
   routeDenomResolver,
   PFM_INTERMEDIATE_RECEIVER,
   TRANSFER_PORT,
   isInterchainError,
   type BuiltMsg,
+  type JsonObject,
   type ChainCapabilities,
   type ChannelDirectory,
   type ChannelLink,
@@ -891,7 +894,9 @@ async function priceSwap(args: {
 }> {
   const { candidate, inboundLinks, lastInbound, input, venueChainId, venueOutputDenom } = args;
 
-  if (!lastInbound) {
+  // A venue-origin swap has no inbound packet. The input denom is already the
+  // venue's name for the coin the user is about to hand the contract.
+  if (!lastInbound && !candidate.venueInputDenom) {
     return {
       quote: null,
       venueInputDenom: null,
@@ -910,7 +915,7 @@ async function priceSwap(args: {
             input.sourceChainId,
             input.inputDenom,
             venueChainId,
-            lastInbound.counterpartyChannelId,
+            lastInbound?.counterpartyChannelId,
             input.signal,
           )
         : { denom: null };
@@ -919,9 +924,11 @@ async function priceSwap(args: {
       quote: null,
       venueInputDenom: null,
       blockedReason: `Zunia could not work out what this token is called on ${chainName(venueChainId)}${
-        lastInbound.counterpartyChannelId
+        lastInbound?.counterpartyChannelId
           ? ""
-          : `, because the far end of ${lastInbound.channelId} is unknown`
+          : lastInbound
+            ? `, because the far end of ${lastInbound.channelId} is unknown`
+            : ""
       }, so it will not price the swap.`,
     };
   }
@@ -936,6 +943,7 @@ async function priceSwap(args: {
 
   const priced = await quoteOnVenue({
     venueChainId,
+    venueContract: input.venue.contractAddress,
     venueInputDenom: venueInput.denom,
     venueOutputDenom,
     amountBaseUnits: input.amountBaseUnits,
@@ -948,12 +956,23 @@ async function priceSwap(args: {
 /** What to price on the venue, once the route has named both sides there. */
 export interface VenueQuoteInput {
   readonly venueChainId: string;
+  /** Crosschain-swaps contract the memo will call. Its route table is the one that executes. */
+  readonly venueContract: string;
   readonly venueInputDenom: string;
   readonly venueOutputDenom: string;
   readonly amountBaseUnits: string;
   readonly slippagePercent: number;
   readonly signal?: AbortSignal;
 }
+
+const NO_CONTRACT_ROUTE =
+  "The Osmosis swap contract has no route for this pair. Signing would send the tokens, the packet would be rejected, and the funds would come back. The swap stays unsigned.";
+
+const ROUTE_UNREADABLE =
+  "Zunia could not confirm the Osmosis swap contract will accept this pair, so the swap stays unsigned.";
+
+const ROUTE_UNPRICED =
+  "The pools on the Osmosis swap contract's route for this pair could not be priced, so the swap stays unsigned.";
 
 async function quoteOnVenue(
   args: VenueQuoteInput,
@@ -962,6 +981,31 @@ async function quoteOnVenue(
   if (!venueChain) {
     return { quote: null, error: `${args.venueChainId} is not in this wallet's chain list.` };
   }
+  const lcd = lcdFor(venueChain);
+  // SQS will price pairs this contract cannot execute. The deployed
+  // crosschain-swaps build has no memo field for a route, so the only path
+  // that can run is the one in the swaprouter table. Price that path, or
+  // refuse the quote.
+  let executable;
+  try {
+    executable = await readXcsExecutableRoute(
+      lcd,
+      args.venueContract,
+      args.venueInputDenom,
+      args.venueOutputDenom,
+      {
+        ...(args.signal ? { signal: args.signal } : {}),
+        retries: 0,
+        timeoutMs: 8_000,
+        cacheTtlMs: 60_000,
+      },
+    );
+  } catch (error) {
+    return { quote: null, error: describeInterchainError(error) };
+  }
+  if (executable.status === "missing") return { quote: null, error: NO_CONTRACT_ROUTE };
+  if (executable.status !== "ready") return { quote: null, error: ROUTE_UNREADABLE };
+
   try {
     const quote = await quoteOsmosisSwap(
       {
@@ -970,18 +1014,17 @@ async function quoteOnVenue(
         tokenOutDenom: args.venueOutputDenom,
         slippagePercent: args.slippagePercent,
         router: swapRouterClient(),
-        // Osmosis SQS `/router/quote` returns the highest-output single path.
-        // Same endpoint Keplr uses for crosschain-swap. Split routes are off
-        // because the memo can execute only one pool path.
-        singleRoute: true,
+        // The contract executes these pools and no others. Asking SQS for its
+        // own best path showed a price for a swap the packet then rejected.
+        route: executable.route,
         ...(args.signal ? { request: { signal: args.signal } } : {}),
       },
-      lcdFor(venueChain),
+      lcd,
     );
     return { quote, error: null };
   } catch (error) {
     const reason = isInterchainError(error) && error.code === "no-route"
-      ? `${chainName(args.venueChainId)} has no pool for this pair, so the swap cannot be priced or executed.`
+      ? ROUTE_UNPRICED
       : describeInterchainError(error);
     return { quote: null, error: reason };
   }
@@ -1011,10 +1054,44 @@ export const VENUE_CHAIN_ID = SWAP_VENUE_CHAIN_ID;
  * -------------------------------------------------------------------------- */
 
 /**
- * `/ibc.applications.transfer.v1.MsgTransfer` for a plan: the channel from
- * `hops[0]`, the receiver from the candidate (the crosschain-swaps contract for
- * a swap, because ibc-hooks only runs when the ICS20 receiver is `""` or the
- * contract), and the memo verbatim.
+ * The execute body of a venue-origin swap.
+ *
+ * The plan stores the same `{wasm:{contract,msg}}` object an inbound packet
+ * would carry, so memo inspection stays one path. When the funds are already
+ * on Osmosis the user signs that inner `msg` as `MsgExecuteContract` and
+ * attaches the coins. Only `osmosis_swap` is accepted: a memo that asks for
+ * any other contract call is not a swap this screen will sign.
+ */
+function venueSwapExecute(memo: string): { contract: string; msg: JsonObject } | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(memo);
+  } catch {
+    return null;
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  const wasm = (parsed as { wasm?: unknown }).wasm;
+  if (wasm === null || typeof wasm !== "object" || Array.isArray(wasm)) return null;
+  const contract = (wasm as { contract?: unknown }).contract;
+  const msg = (wasm as { msg?: unknown }).msg;
+  if (typeof contract !== "string" || contract.trim() === "") return null;
+  if (msg === null || typeof msg !== "object" || Array.isArray(msg)) return null;
+  const keys = Object.keys(msg);
+  if (keys.length !== 1 || keys[0] !== "osmosis_swap") return null;
+  return { contract, msg: msg as JsonObject };
+}
+
+/**
+ * The one message a plan asks the user to sign.
+ *
+ * An inbound route is `/ibc.applications.transfer.v1.MsgTransfer`: the channel
+ * from `hops[0]`, the receiver from the candidate (the crosschain-swaps
+ * contract, because ibc-hooks only runs when the ICS20 receiver is `""` or
+ * the contract), and the memo verbatim.
+ *
+ * A plan that starts with the swap itself has no packet to sign. It is one
+ * `MsgExecuteContract` on the venue, with the input coin attached, and the
+ * contract sends the result onward.
  */
 export function buildTransferMsgFromPlan(args: {
   readonly view: RoutePlanView;
@@ -1022,6 +1099,16 @@ export function buildTransferMsgFromPlan(args: {
   readonly amountBaseUnits: string;
   readonly timeoutMinutes?: number;
 }): BuiltMsg {
+  const hop = args.view.plan.hops[0];
+  const execute = hop?.kind === "swap" ? venueSwapExecute(args.view.plan.memo) : null;
+  if (execute) {
+    return buildExecuteContractMsg({
+      sender: args.sender,
+      contract: execute.contract,
+      msg: execute.msg,
+      funds: [{ denom: args.view.plan.inputDenom, amount: args.amountBaseUnits }],
+    });
+  }
   return buildPlanTransferMsg({
     plan: args.view.plan,
     receiver: args.view.receiver,

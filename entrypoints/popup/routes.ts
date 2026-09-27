@@ -33,6 +33,9 @@ export type PopupRoute =
   | "security"
   | "preferences"
   | "wallets"
+  | "add-account"
+  | "add-create"
+  | "add-import"
   | "reveal"
   | "sites"
   | "approve";

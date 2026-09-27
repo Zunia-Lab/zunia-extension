@@ -17,10 +17,12 @@ export function NetworksScreen({
   onBack,
   onSaved,
   onAddChain,
+  accountName,
 }: {
   onBack: () => void;
   onSaved: () => void;
   onAddChain: () => void;
+  accountName?: string;
 }) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
@@ -41,29 +43,40 @@ export function NetworksScreen({
   const applyChain = useRef(Promise.resolve());
   const applyGeneration = useRef(0);
 
-  useEffect(() => {
+  const loadEnabled = useCallback(() => {
     void sendToBackground<string[]>("GET_ENABLED_CHAINS").then((ids) => {
+      if (applyGeneration.current > 0) return;
       commitSelected(new Set(ids));
     });
   }, [commitSelected]);
 
-  // Stay in sync if another surface (Add Chain, storage) mutates enabled ids
-  // while this screen is open.
+  useEffect(() => {
+    loadEnabled();
+  }, [loadEnabled]);
+
+  // Stay in sync if another surface (Add Chain, account switch) mutates
+  // this account's networks while this screen is open.
   useEffect(() => {
     const onChanged: Parameters<
       typeof browser.storage.onChanged.addListener
     >[0] = (changes, area) => {
-      if (area !== "local") return;
-      if (!changes[STORAGE_KEYS.enabledChains]) return;
-      // Skip while we are writing; the apply result is the source of truth.
       if (applyGeneration.current > 0) return;
-      const value = changes[STORAGE_KEYS.enabledChains].newValue;
-      if (!Array.isArray(value)) return;
-      commitSelected(new Set(value as string[]));
+      if (area === "session" && changes[STORAGE_KEYS.sessionActiveAccount]) {
+        loadEnabled();
+        return;
+      }
+      if (area !== "local") return;
+      if (
+        !changes[STORAGE_KEYS.enabledChains] &&
+        !changes[STORAGE_KEYS.accounts]
+      ) {
+        return;
+      }
+      loadEnabled();
     };
     browser.storage.onChanged.addListener(onChanged);
     return () => browser.storage.onChanged.removeListener(onChanged);
-  }, [commitSelected]);
+  }, [loadEnabled]);
 
   function enqueueApply(mutator: (prev: Set<string>) => Set<string>) {
     const generation = ++applyGeneration.current;
@@ -113,7 +126,7 @@ export function NetworksScreen({
 
   return (
     <ScreenScaffold
-      title="Networks"
+      title={accountName ? `Networks · ${accountName}` : "Networks"}
       onBack={onBack}
       right={<Text variant="labelCaps">{selected.size} on</Text>}
       footer={

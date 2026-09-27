@@ -271,7 +271,13 @@ export function TxDetailScreen({
     <ScreenScaffold
       title={eyebrow}
       onBack={onBack}
-      right={<ActivityBadge kind={kind} success={item.success} />}
+      right={
+        <ActivityBadge
+          kind={kind}
+          messageType={primary?.type ?? item.messageType}
+          success={item.success}
+        />
+      }
       footer={
         <div className="flex gap-2">
           <Button

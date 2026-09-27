@@ -71,7 +71,25 @@ export function useExtensionState(options: { grants?: boolean } = {}) {
       return undefined;
     };
     const onStorage = (changes: Record<string, unknown>, area: string) => {
-      if (area === "session" && STORAGE_KEYS.sessionMnemonic in changes) refresh();
+      if (area !== "session") return;
+      if (STORAGE_KEYS.sessionMnemonic in changes) refresh();
+      if (STORAGE_KEYS.sessionActiveAccount in changes) {
+        const raw = changes[STORAGE_KEYS.sessionActiveAccount] as
+          | { newValue?: unknown }
+          | undefined;
+        const next = raw?.newValue;
+        if (typeof next === "number") {
+          setSnapshot((prev) =>
+            prev?.status
+              ? {
+                  ...prev,
+                  status: { ...prev.status, activeAccountIndex: next },
+                }
+              : prev,
+          );
+        }
+        refresh();
+      }
     };
     browser.runtime.onMessage.addListener(onMessage);
     browser.storage.onChanged.addListener(onStorage);

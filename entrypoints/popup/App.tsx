@@ -58,6 +58,7 @@ import { SettingsScreen } from "./screens/SettingsScreen";
 import { SecurityScreen } from "./screens/SecurityScreen";
 import { PreferencesScreen } from "./screens/PreferencesScreen";
 import { WalletsScreen } from "./screens/WalletsScreen";
+import { AddAccountScreen } from "./screens/AddAccountScreen";
 import { RevealPhraseScreen } from "./screens/RevealPhraseScreen";
 import { ConnectedSitesScreen } from "./screens/ConnectedSitesScreen";
 import { ApproveScreen } from "./screens/ApproveScreen";
@@ -86,6 +87,9 @@ const UNLOCKED_ROUTES: PopupRoute[] = [
   "security",
   "preferences",
   "wallets",
+  "add-account",
+  "add-create",
+  "add-import",
   "reveal",
   "sites",
   "approve",
@@ -173,6 +177,7 @@ function AppBody({ state }: { state: ExtensionState }) {
   const {
     accounts: chains,
     chainIds,
+    loading: chainsLoading,
     reload: reloadChains,
   } = useChainAccounts(unlocked, status?.activeAccountIndex ?? 0);
   const [hostGranted, setHostGranted] = useState(false);
@@ -198,7 +203,7 @@ function AppBody({ state }: { state: ExtensionState }) {
     balances,
     loading: balancesLoading,
     reload: reloadBalances,
-  } = useBalances(chainIds, liveReads);
+  } = useBalances(chainIds, liveReads, status?.activeAccountIndex ?? 0);
   const { prices, reload: reloadPrices } = usePrices(chainIds, liveReads);
 
   // Bumped by the screens that write the address book, so the list reloads
@@ -421,7 +426,7 @@ function AppBody({ state }: { state: ExtensionState }) {
               chains={chains}
               balances={balances}
               prices={prices}
-              balancesLoading={balancesLoading}
+              balancesLoading={balancesLoading || chainsLoading}
               hostGranted={hostGranted}
               onHostGranted={markHostGranted}
               onReloadBalances={() => {
@@ -517,7 +522,7 @@ function AppBody({ state }: { state: ExtensionState }) {
             chain={selectedChain}
             balance={balances[selectedChain.chainId]}
             price={prices[selectedChain.chainId]}
-            loading={balancesLoading}
+            loading={balancesLoading || chainsLoading}
             onBack={back}
             onNavigate={(next, chainId) => go(next, chainId)}
             onOpenTx={openTx}
@@ -565,6 +570,11 @@ function AppBody({ state }: { state: ExtensionState }) {
 
       {route === "networks" ? (
         <NetworksScreen
+          accountName={
+            status?.accounts.find(
+              (row) => row.index === status.activeAccountIndex,
+            )?.name
+          }
           onBack={back}
           onAddChain={() => go("add-chain")}
           onSaved={() => {
@@ -681,6 +691,37 @@ function AppBody({ state }: { state: ExtensionState }) {
           status={status}
           onBack={back}
           onRefresh={() => void refresh()}
+          onAdd={() => go("add-account")}
+        />
+      ) : null}
+
+      {route === "add-account" ? (
+        <AddAccountScreen
+          onBack={back}
+          onCreate={() => go("add-create")}
+          onRestore={() => go("add-import")}
+        />
+      ) : null}
+
+      {route === "add-create" ? (
+        <CreateWalletScreen
+          variant="add"
+          onBack={back}
+          onDone={() => {
+            resetTo({ route: "wallets" });
+            void refresh();
+          }}
+        />
+      ) : null}
+
+      {route === "add-import" ? (
+        <ImportWalletScreen
+          variant="add"
+          onBack={back}
+          onDone={() => {
+            resetTo({ route: "wallets" });
+            void refresh();
+          }}
         />
       ) : null}
 
@@ -701,18 +742,16 @@ function AppBody({ state }: { state: ExtensionState }) {
           requirePassword={Boolean(settings?.requirePasswordOnSign)}
           onDone={(answeredId) => {
             void refresh();
-            // More requests queued: stay here and show the next one.
-            if (approvals.some((item) => item.id !== answeredId)) return;
-            // A window or tab opened only to answer requests closes with the last one.
-            if (initialRouteFromUrl() === "approve") {
-              void closeApprovalSurface();
+            // Leaving an empty queue, without answering one, returns to the wallet.
+            if (!answeredId) {
+              if (override?.route === "approve") back();
+              else setNavigatedAt(Date.now());
               return;
             }
-            // Opened on purpose: go back to where it was opened from. Shown
-            // because a request arrived: mark it seen so the screen underneath
-            // comes back.
-            if (override?.route === "approve") back();
-            else setNavigatedAt(Date.now());
+            // More requests queued: stay here and show the next one.
+            if (approvals.some((item) => item.id !== answeredId)) return;
+            // The popup was opened to answer this site. Close it once the queue is done.
+            void closeApprovalSurface();
           }}
         />
       ) : null}

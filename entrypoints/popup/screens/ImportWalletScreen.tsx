@@ -15,31 +15,39 @@ import { sendToBackground } from "../../../lib/popup-client";
 import { NetworkSelectStep } from "./NetworkSelectStep";
 import { OnboardingStep, StepActions } from "./onboarding-ui";
 
-type Step = "phrase" | "password" | "networks";
+type Step = "phrase" | "password" | "name" | "networks";
 type WordCount = 12 | 24;
+type Variant = "onboard" | "add";
 
-const STEPS: Step[] = ["phrase", "password", "networks"];
+const ONBOARD_STEPS: Step[] = ["phrase", "password", "networks"];
+const ADD_STEPS: Step[] = ["phrase", "name", "networks"];
 const STEP_LABELS: Record<Step, string> = {
   phrase: "Phrase",
   password: "Password",
+  name: "Name",
   networks: "Networks",
 };
 
 /** Step labels in order, for shells that render their own progress rail. */
-export const IMPORT_STEP_LABELS = STEPS.map((s) => STEP_LABELS[s]);
+export const IMPORT_STEP_LABELS = ONBOARD_STEPS.map((s) => STEP_LABELS[s]);
 
 export function ImportWalletScreen({
   onDone,
   onBack,
   onStepChange,
   hideProgress = false,
+  variant = "onboard",
 }: {
   onDone: () => void;
   onBack: () => void;
   /** Zero-based step index, for the full-tab shell's own progress rail. */
   onStepChange?: (index: number) => void;
   hideProgress?: boolean;
+  /** `add` skips password: the wallet is already unlocked. */
+  variant?: Variant;
 }) {
+  const adding = variant === "add";
+  const STEPS = adding ? ADD_STEPS : ONBOARD_STEPS;
   const [step, setStep] = useState<Step>("phrase");
   // What the user picked with the 12 / 24 control. The effective count below
   // follows the phrase they typed or pasted, so this only decides the case
@@ -75,8 +83,8 @@ export function ImportWalletScreen({
   function goBack() {
     setError(null);
     if (step === "phrase") onBack();
-    else if (step === "password") setStep("phrase");
-    else setStep("password");
+    else if (step === "password" || step === "name") setStep("phrase");
+    else setStep(adding ? "name" : "password");
   }
 
   function handlePhraseContinue() {
@@ -85,13 +93,17 @@ export function ImportWalletScreen({
       setError(`Expected ${wordCount} words, found ${wordParts.length}`);
       return;
     }
-    setStep("password");
+    setStep(adding ? "name" : "password");
   }
 
   function handlePasswordContinue() {
     setError(null);
     if (walletName.trim().length === 0) {
-      setError("Give this wallet a name");
+      setError("Give this account a name");
+      return;
+    }
+    if (adding) {
+      setStep("networks");
       return;
     }
     if (password.length < 8) {
@@ -124,12 +136,20 @@ export function ImportWalletScreen({
     }
     setBusy(true);
     try {
-      await sendToBackground("IMPORT_WALLET", {
-        mnemonic: wordParts.join(" "),
-        password,
-        name: walletName.trim(),
-        enabledChainIds: [...selectedChains],
-      });
+      if (adding) {
+        await sendToBackground("ADD_ACCOUNT_SEED", {
+          mnemonic: wordParts.join(" "),
+          name: walletName.trim(),
+          enabledChainIds: [...selectedChains],
+        });
+      } else {
+        await sendToBackground("IMPORT_WALLET", {
+          mnemonic: wordParts.join(" "),
+          password,
+          name: walletName.trim(),
+          enabledChainIds: [...selectedChains],
+        });
+      }
       onDone();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -148,16 +168,21 @@ export function ImportWalletScreen({
         primaryDisabled={wordParts.length === 0}
         onPrimary={handlePhraseContinue}
       />
-    ) : step === "password" ? (
+    ) : step === "password" || step === "name" ? (
       <StepActions
         onBack={goBack}
         primaryLabel="Continue"
+        primaryDisabled={adding && walletName.trim().length === 0}
         onPrimary={handlePasswordContinue}
       />
     ) : (
       <StepActions
         onBack={goBack}
-        primaryLabel={`Restore wallet · ${selectedChains.size}`}
+        primaryLabel={
+          adding
+            ? `Add account · ${selectedChains.size}`
+            : `Restore wallet · ${selectedChains.size}`
+        }
         primaryDisabled={busy || selectedChains.size < 1}
         primaryLoading={busy}
         onPrimary={() => void handleImport()}
@@ -209,39 +234,42 @@ export function ImportWalletScreen({
           </>
         )}
 
-        {step === "password" && (
+        {(step === "password" || step === "name") && (
           <>
             <StepHeading
-              title="Name and password"
-              subtitle="The name is just a label for this device. The password unlocks Zunia here and never recovers your phrase."
+              title={adding ? "Name this account" : "Name and password"}
+              subtitle={
+                adding
+                  ? "A label on this device. The existing password unlocks every account."
+                  : "The name is just a label for this device. The password unlocks Zunia here and never recovers your phrase."
+              }
               className="relative"
             />
             <div className="relative flex flex-col gap-2.5">
-              {/* No autofocus: this step is reached from the footer's Continue
-                  button, which stays mounted, so keyboard focus is still on it
-                  and nothing is lost by leaving it there. Jumping past the
-                  heading would only hide what the password does and does not
-                  do. */}
               <Input
-                label="Wallet name"
-                placeholder="Main"
+                label="Account name"
+                placeholder={adding ? "Account 2" : "Main"}
                 maxLength={32}
                 value={walletName}
                 onChange={(e) => setWalletName(e.target.value)}
               />
-              <PasswordInput
-                label="Password"
-                placeholder="At least 8 characters"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-              />
-              <PasswordInput
-                label="Confirm password"
-                placeholder="Repeat the password"
-                value={confirm}
-                onChange={(e) => setConfirm(e.target.value)}
-              />
-              {password ? <PasswordStrengthMeter password={password} /> : null}
+              {adding ? null : (
+                <>
+                  <PasswordInput
+                    label="Password"
+                    placeholder="At least 8 characters"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                  />
+                  <PasswordInput
+                    label="Confirm password"
+                    placeholder="Repeat the password"
+                    value={confirm}
+                    onChange={(e) => setConfirm(e.target.value)}
+                  />
+                  {password ? <PasswordStrengthMeter password={password} /> : null}
+                </>
+              )}
             </div>
           </>
         )}
@@ -250,7 +278,11 @@ export function ImportWalletScreen({
           <>
             <StepHeading
               title="Choose networks"
-              subtitle="Pick one or more chains. Mainnets and testnets are both available, and you can change this later."
+              subtitle={
+                adding
+                  ? "These networks belong to this account only. Other accounts keep their own list."
+                  : "Pick one or more chains. Mainnets and testnets are both available, and you can change this later."
+              }
               className="relative"
             />
             <div className="relative">

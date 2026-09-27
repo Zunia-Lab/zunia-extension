@@ -66,6 +66,7 @@ import {
 } from "./sign-in";
 import {
   getAccounts,
+  derivationIndexOf,
   getActiveAccountIndex,
   getSessionMnemonic,
   isUnlocked,
@@ -290,12 +291,37 @@ async function activeKey(mnemonic: string, chainId: string): Promise<ActiveKey> 
   return {
     name: account.name,
     index: account.index,
-    derived: kernel.deriveAddress(mnemonic, "", chainJsonFor(chainId), account.index),
+    derived: kernel.deriveAddress(
+      mnemonic,
+      "",
+      chainJsonFor(chainId),
+      derivationIndexOf(account),
+    ),
   };
 }
 
 function originWarnings(origin: string): string[] {
   return assessOrigin(origin).warnings;
+}
+
+/** Pretty JSON for the approval screen. Bytes stay a length, so a Direct doc stays readable. */
+function previewJson(value: unknown): string {
+  let text = "";
+  try {
+    text =
+      JSON.stringify(
+        value,
+        (_key, item) => {
+          if (typeof item === "bigint") return item.toString();
+          if (item instanceof Uint8Array) return `${item.length} bytes`;
+          return item;
+        },
+        2,
+      ) ?? "";
+  } catch {
+    return "";
+  }
+  return text.length > 12_000 ? `${text.slice(0, 12_000)}\n[truncated]` : text;
 }
 
 /** Record a use of the grant. Bookkeeping only: it never fails the request. */
@@ -553,7 +579,12 @@ async function dispatchProviderRequest(input: ProviderRequest): Promise<unknown>
         chainIds: [chainId],
         tabId,
         title: `Sign transaction on ${chainId}`,
-        detail: { signer, summary, ...(feeChoice ? { feeChoice } : {}) },
+        detail: {
+          signer,
+          summary,
+          json: previewJson(signDoc),
+          ...(feeChoice ? { feeChoice } : {}),
+        },
         warnings: [...originWarnings(origin), ...summary.warnings],
       });
 
@@ -622,7 +653,17 @@ async function dispatchProviderRequest(input: ProviderRequest): Promise<unknown>
         chainIds: [chainId],
         tabId,
         title: `Sign transaction on ${chainId}`,
-        detail: { signer, summary, ...(feeChoice ? { feeChoice } : {}) },
+        detail: {
+          signer,
+          summary,
+          json: previewJson({
+            chainId: summary.chainId,
+            memo: summary.memo ?? "",
+            fees: summary.fees,
+            messages: summary.messages,
+          }),
+          ...(feeChoice ? { feeChoice } : {}),
+        },
         warnings: [...originWarnings(origin), ...summary.warnings],
       });
 

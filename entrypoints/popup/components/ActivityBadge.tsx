@@ -1,6 +1,7 @@
 import {
   activityPresentation,
   cn,
+  messageActivityGlyph,
   type ActivityKind,
   type ActivityTone,
 } from "@zunialab/ui";
@@ -30,28 +31,36 @@ const TONE_CLASS: Record<ActivityTone, string> = {
  */
 export function ActivityBadge({
   kind,
+  messageType,
   success = true,
   decorative = false,
   className,
 }: {
   kind: ActivityKind | string | undefined;
+  /** Protobuf name, so a type with no activity kind still has a glyph. */
+  messageType?: string;
   success?: boolean;
   decorative?: boolean;
   className?: string;
 }) {
   const presentation = activityPresentation(kind, success);
+  // A send, swap, or stake already has its own mark. The type glyph fills the
+  // blank circle used for everything else, including types we do not describe.
+  const typed =
+    success && presentation.kind === "other" ? messageActivityGlyph(messageType) : null;
+  const tone = typed?.tone ?? presentation.tone;
+  const icon = typed?.icon ?? presentation.icon;
+  const label = typed?.label ?? presentation.label;
   return (
     <span
       className={cn(
         "flex size-8 shrink-0 items-center justify-center rounded-full border text-[15px] font-semibold leading-none",
-        TONE_CLASS[presentation.tone],
+        TONE_CLASS[tone],
         className,
       )}
-      {...(decorative
-        ? { "aria-hidden": true }
-        : { role: "img", "aria-label": presentation.label })}
+      {...(decorative ? { "aria-hidden": true } : { role: "img", "aria-label": label })}
     >
-      {presentation.icon}
+      {icon}
     </span>
   );
 }

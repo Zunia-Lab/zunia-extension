@@ -72,9 +72,30 @@ export default defineConfig({
     disabled: true,
     chromiumArgs: ["--user-data-dir=./.wxt/chrome-data"],
   },
-  vite: () => ({
+  vite: ({ browser }) => ({
     plugins: [
       tailwindcss(),
+      {
+        // Firefox's add-on linter warns on a dynamic innerHTML write. React
+        // DOM still contains that write for dangerouslySetInnerHTML, which
+        // this extension does not use. Swap it for a parser so the Firefox
+        // package stays warning-free. Chrome is left untouched.
+        name: "zunia-firefox-no-dynamic-innerhtml",
+        apply: "build",
+        generateBundle(_options, bundle) {
+          if (browser !== "firefox") return;
+          const dynamicInnerHtml =
+            /([A-Za-z_$][\w$]*)\.innerHTML=([A-Za-z_$][\w$]*)/g;
+          for (const file of Object.values(bundle)) {
+            if (file.type !== "chunk") continue;
+            file.code = file.code.replace(
+              dynamicInnerHtml,
+              (_, el: string, html: string) =>
+                `(${el}.replaceChildren(),${el}.append(...new DOMParser().parseFromString(String(${html}),"text/html").body.childNodes))`,
+            );
+          }
+        },
+      },
       {
         // The kernel glue's fallback `new URL('zunia_core_bg.wasm',
         // import.meta.url)` makes Vite emit the 600 KB binary again as a hashed
@@ -261,7 +282,7 @@ export default defineConfig({
       ? {
           browser_specific_settings: {
             gecko: {
-              id: "extension@zunialab.com",
+              id: "wallet@zunialab.com",
               /**
                * Firefox's built-in data consent starts at 140 (an ESR). Below it
                * an extension that transmits data must draw its own consent screen.

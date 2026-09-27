@@ -1,6 +1,6 @@
 import { Avatar, Drawer, Segmented, cn, focusRing, interactiveSurface, truncateAddress } from "@zunialab/ui";
 import { NO_VALUE } from "../../../lib/format";
-import type { AccountInfo } from "../../../lib/session";
+import { avatarSeedOf, type AccountInfo } from "../../../lib/session";
 import { usePrefs } from "../state/Prefs";
 import type { PopupRoute } from "../routes";
 import {
@@ -133,7 +133,7 @@ export function MoreDrawer({
     <Drawer open={open} onClose={onClose} title="More">
       <div className="flex items-start gap-2.5">
         <Avatar
-          seed={account?.address ?? account?.name ?? "zunia"}
+          seed={account ? avatarSeedOf(account) : "zunia"}
           fallback={account?.name ?? "Z"}
           size={30}
         />

@@ -1,5 +1,10 @@
 import { SESSION_CONFIG } from "../config/session";
 import { STORAGE_KEYS } from "./storage-keys";
+import {
+  avatarSeedOf,
+  derivationIndexOf,
+  pickAvatarSeed,
+} from "./account-avatar";
 import { chainJsonFor } from "./chains";
 import { hydrateCustomChains } from "./custom-chains";
 import { loadKernel } from "./kernel";
@@ -19,7 +24,18 @@ export interface AccountInfo {
   algo: string;
   /** Hex-encoded compressed pubkey when available. */
   pubKeyHex?: string;
+  /**
+   * This account has its own recovery phrase (not an HD child of the first).
+   * New accounts are always this. Older extras stay HD off the first phrase.
+   */
+  ownSeed?: boolean;
+  /** Stable seed for the 3D orb. Different accounts get different colours. */
+  avatarSeed?: string;
+  /** Networks this account shows. Independent of other accounts. */
+  enabledChainIds?: string[];
 }
+
+export { avatarSeedOf, derivationIndexOf };
 
 export interface WalletMeta {
   createdAt: number;
@@ -85,6 +101,48 @@ export async function getSessionMnemonic(): Promise<string | null> {
   return typeof mnemonic === "string" ? mnemonic : null;
 }
 
+type PhraseMap = Record<string, string>;
+
+export async function getSessionMnemonicMap(): Promise<PhraseMap> {
+  const session = await browser.storage.session.get(STORAGE_KEYS.sessionMnemonics);
+  const raw = session[STORAGE_KEYS.sessionMnemonics];
+  if (raw && typeof raw === "object") return raw as PhraseMap;
+  const single = await getSessionMnemonic();
+  return single ? { primary: single, "0": single } : {};
+}
+
+async function getSessionPassword(): Promise<string | null> {
+  const session = await browser.storage.session.get(STORAGE_KEYS.sessionPassword);
+  const password = session[STORAGE_KEYS.sessionPassword];
+  return typeof password === "string" && password.length > 0 ? password : null;
+}
+
+function phraseFor(account: AccountInfo, map: PhraseMap): string | null {
+  if (account.ownSeed) {
+    return map[String(account.index)] ?? map.primary ?? null;
+  }
+  return map.primary ?? map["0"] ?? null;
+}
+
+export async function getActiveDerivationIndex(): Promise<number> {
+  const accounts = await getAccounts();
+  const active = await getActiveAccountIndex();
+  const account = accounts.find((row) => row.index === active) ?? accounts[0];
+  return account ? derivationIndexOf(account) : 0;
+}
+
+type ExtraEnvelopeMap = Record<string, EnvelopeRecord>;
+
+async function getExtraEnvelopes(): Promise<ExtraEnvelopeMap> {
+  const result = await browser.storage.local.get(STORAGE_KEYS.accountEnvelopes);
+  const raw = result[STORAGE_KEYS.accountEnvelopes];
+  return raw && typeof raw === "object" ? (raw as ExtraEnvelopeMap) : {};
+}
+
+async function persistExtraEnvelopes(map: ExtraEnvelopeMap): Promise<void> {
+  await browser.storage.local.set({ [STORAGE_KEYS.accountEnvelopes]: map });
+}
+
 async function persistAccounts(accounts: AccountInfo[]): Promise<void> {
   await browser.storage.local.set({ [STORAGE_KEYS.accounts]: accounts });
 }
@@ -93,13 +151,18 @@ async function deriveDefaultAccount(
   phrase: string,
   index: number,
   name: string,
+  extras?: {
+    ownSeed?: boolean;
+    avatarSeed?: string;
+    enabledChainIds?: string[];
+  },
 ): Promise<AccountInfo> {
   const kernel = await loadKernel();
   const derived = kernel.deriveAddress(
     phrase,
     "",
     JSON.stringify({ bech32Prefix: "cosmos", chainId: "cosmoshub-4" }),
-    index,
+    extras?.ownSeed ? 0 : index,
   );
   return {
     index,
@@ -109,6 +172,11 @@ async function deriveDefaultAccount(
     pubKeyHex: Array.from(derived.pubKey, (b) =>
       b.toString(16).padStart(2, "0"),
     ).join(""),
+    ...(extras?.ownSeed ? { ownSeed: true } : {}),
+    ...(extras?.avatarSeed ? { avatarSeed: extras.avatarSeed } : {}),
+    ...(extras?.enabledChainIds && extras.enabledChainIds.length > 0
+      ? { enabledChainIds: [...new Set(extras.enabledChainIds)] }
+      : {}),
   };
 }
 
@@ -132,6 +200,8 @@ export async function touchSession(): Promise<void> {
 export async function lockWallet(): Promise<void> {
   await browser.storage.session.remove([
     STORAGE_KEYS.sessionMnemonic,
+    STORAGE_KEYS.sessionMnemonics,
+    STORAGE_KEYS.sessionPassword,
     STORAGE_KEYS.sessionUnlockedAt,
     STORAGE_KEYS.sessionActiveAccount,
   ]);
@@ -142,13 +212,18 @@ export async function lockWallet(): Promise<void> {
 async function unlockWithMnemonic(
   phrase: string,
   activeIndex = 0,
+  extras?: { map?: PhraseMap; password?: string },
 ): Promise<void> {
-  // NEVER write mnemonic to chrome.storage.local.
-  await browser.storage.session.set({
+  // NEVER write mnemonic or password to chrome.storage.local.
+  const map: PhraseMap = extras?.map ?? { primary: phrase, "0": phrase };
+  const next: Record<string, unknown> = {
     [STORAGE_KEYS.sessionMnemonic]: phrase,
+    [STORAGE_KEYS.sessionMnemonics]: map,
     [STORAGE_KEYS.sessionUnlockedAt]: Date.now(),
     [STORAGE_KEYS.sessionActiveAccount]: activeIndex,
-  });
+  };
+  if (extras?.password) next[STORAGE_KEYS.sessionPassword] = extras.password;
+  await browser.storage.session.set(next);
   await scheduleAutoLock();
 }
 
@@ -190,21 +265,33 @@ export async function createWallet(input: {
     input.password,
     JSON.stringify(meta),
   );
+  const enabledChainIds =
+    input.enabledChainIds && input.enabledChainIds.length > 0
+      ? [...new Set(input.enabledChainIds)]
+      : undefined;
   const account = await deriveDefaultAccount(
     mnemonic,
     0,
     cleanName(input.name, "Account 1"),
+    {
+      ownSeed: true,
+      avatarSeed: pickAvatarSeed([]),
+      ...(enabledChainIds ? { enabledChainIds } : {}),
+    },
   );
   await browser.storage.local.set({
     [STORAGE_KEYS.envelope]: { envelope, meta } satisfies EnvelopeRecord,
   });
-  if (input.enabledChainIds && input.enabledChainIds.length > 0) {
+  if (enabledChainIds) {
     await browser.storage.local.set({
-      [STORAGE_KEYS.enabledChains]: [...new Set(input.enabledChainIds)],
+      [STORAGE_KEYS.enabledChains]: enabledChainIds,
     });
   }
   await persistAccounts([account]);
-  await unlockWithMnemonic(mnemonic, 0);
+  await unlockWithMnemonic(mnemonic, 0, {
+    map: { primary: mnemonic, "0": mnemonic },
+    password: input.password,
+  });
   return { mnemonic, account };
 }
 
@@ -230,21 +317,33 @@ export async function importWallet(input: {
     input.password,
     JSON.stringify(meta),
   );
+  const enabledChainIds =
+    input.enabledChainIds && input.enabledChainIds.length > 0
+      ? [...new Set(input.enabledChainIds)]
+      : undefined;
   const account = await deriveDefaultAccount(
     phrase,
     0,
     cleanName(input.name, "Account 1"),
+    {
+      ownSeed: true,
+      avatarSeed: pickAvatarSeed([]),
+      ...(enabledChainIds ? { enabledChainIds } : {}),
+    },
   );
   await browser.storage.local.set({
     [STORAGE_KEYS.envelope]: { envelope, meta } satisfies EnvelopeRecord,
   });
-  if (input.enabledChainIds && input.enabledChainIds.length > 0) {
+  if (enabledChainIds) {
     await browser.storage.local.set({
-      [STORAGE_KEYS.enabledChains]: [...new Set(input.enabledChainIds)],
+      [STORAGE_KEYS.enabledChains]: enabledChainIds,
     });
   }
   await persistAccounts([account]);
-  await unlockWithMnemonic(phrase, 0);
+  await unlockWithMnemonic(phrase, 0, {
+    map: { primary: phrase, "0": phrase },
+    password: input.password,
+  });
   return account;
 }
 
@@ -270,10 +369,18 @@ function openEnvelope(password: string): Promise<string> {
   return serialized(() => openEnvelopeNow(password));
 }
 
-async function openEnvelopeNow(password: string): Promise<string> {
+async function firstSealedEnvelope(): Promise<string> {
   const result = await browser.storage.local.get(STORAGE_KEYS.envelope);
   const record = result[STORAGE_KEYS.envelope] as EnvelopeRecord | undefined;
-  if (!record?.envelope) throw new Error("No wallet found");
+  if (record?.envelope) return record.envelope;
+  const extras = await getExtraEnvelopes();
+  const first = Object.values(extras)[0];
+  if (first?.envelope) return first.envelope;
+  throw new Error("No wallet found");
+}
+
+async function openEnvelopeNow(password: string): Promise<string> {
+  const sealed = await firstSealedEnvelope();
 
   const throttle = await getPasswordThrottle();
   assertNotThrottled(throttle, Date.now());
@@ -281,7 +388,7 @@ async function openEnvelopeNow(password: string): Promise<string> {
   const kernel = await loadKernel();
   let phrase: string;
   try {
-    phrase = kernel.openKeyring(record.envelope, password);
+    phrase = kernel.openKeyring(sealed, password);
   } catch {
     const next = recordFailure(throttle, Date.now());
     await browser.storage.local.set({ [STORAGE_KEYS.passwordThrottle]: next });
@@ -306,14 +413,52 @@ export async function verifyPassword(password: string): Promise<void> {
 }
 
 export async function unlockWallet(password: string): Promise<AccountInfo[]> {
-  const phrase = await openEnvelope(password);
+  const primary = await openEnvelope(password);
+  const kernel = await loadKernel();
+  const extras = await getExtraEnvelopes();
+  const map: PhraseMap = { primary, "0": primary };
+  for (const [key, record] of Object.entries(extras)) {
+    try {
+      map[key] = kernel.openKeyring(record.envelope, password);
+    } catch {
+      throw new Error("Wrong password");
+    }
+  }
+
   let accounts = await getAccounts();
   if (accounts.length === 0) {
-    accounts = [await deriveDefaultAccount(phrase, 0, "Account 1")];
+    accounts = [
+      await deriveDefaultAccount(primary, 0, "Account 1", {
+        ownSeed: true,
+        avatarSeed: pickAvatarSeed([]),
+      }),
+    ];
     await persistAccounts(accounts);
+  } else {
+    accounts = await ensureAvatarSeeds(accounts);
   }
-  await unlockWithMnemonic(phrase, 0);
+
+  const active = accounts.some((row) => row.index === 0) ? 0 : (accounts[0]?.index ?? 0);
+  const activeAccount = accounts.find((row) => row.index === active) ?? accounts[0]!;
+  const activePhrase = phraseFor(activeAccount, map) ?? primary;
+  await unlockWithMnemonic(activePhrase, active, { map, password });
   return accounts;
+}
+
+async function ensureAvatarSeeds(accounts: AccountInfo[]): Promise<AccountInfo[]> {
+  if (accounts.every((row) => row.avatarSeed)) return accounts;
+  const taken: string[] = [];
+  const next = accounts.map((row) => {
+    if (row.avatarSeed) {
+      taken.push(row.avatarSeed);
+      return row;
+    }
+    const seed = pickAvatarSeed(taken);
+    taken.push(seed);
+    return { ...row, avatarSeed: seed };
+  });
+  await persistAccounts(next);
+  return next;
 }
 
 export interface ChainAccount {
@@ -332,7 +477,7 @@ export async function getChainAccounts(
   if (!phrase) throw new Error("Wallet is locked");
   await hydrateCustomChains().catch(() => []);
   const kernel = await loadKernel();
-  const index = await getActiveAccountIndex();
+  const index = await getActiveDerivationIndex();
   // Skip chains that cannot derive (bad catalog row, unsupported scheme) so
   // one broken network does not blank the whole home list after Manage Networks.
   const out: ChainAccount[] = [];
@@ -354,9 +499,25 @@ export async function getChainAccounts(
   return out;
 }
 
-/** Re-open the sealed envelope. Always gated by the password prompt. */
+/** Re-open the sealed envelope of the active account. Always gated by the password. */
 export async function revealMnemonic(password: string): Promise<string> {
-  return openEnvelope(password);
+  await openEnvelope(password);
+  const accounts = await getAccounts();
+  const active = await getActiveAccountIndex();
+  const account = accounts.find((row) => row.index === active) ?? accounts[0];
+  if (!account) throw new Error("No account");
+  if (account.ownSeed && account.index !== 0) {
+    const extras = await getExtraEnvelopes();
+    const record = extras[String(account.index)];
+    if (!record?.envelope) throw new Error("This account has no recovery phrase stored");
+    const kernel = await loadKernel();
+    return kernel.openKeyring(record.envelope, password);
+  }
+  const result = await browser.storage.local.get(STORAGE_KEYS.envelope);
+  const record = result[STORAGE_KEYS.envelope] as EnvelopeRecord | undefined;
+  if (!record?.envelope) throw new Error("No wallet found");
+  const kernel = await loadKernel();
+  return kernel.openKeyring(record.envelope, password);
 }
 
 /**
@@ -369,6 +530,7 @@ export async function resetWallet(password?: string): Promise<void> {
   await lockWallet();
   await browser.storage.local.remove([
     STORAGE_KEYS.envelope,
+    STORAGE_KEYS.accountEnvelopes,
     STORAGE_KEYS.accounts,
     STORAGE_KEYS.permissions,
     STORAGE_KEYS.knownRecipients,
@@ -389,19 +551,102 @@ function cleanName(name: string | undefined, fallback: string): string {
   return trimmed.length > 0 ? trimmed.slice(0, 32) : fallback;
 }
 
-/** Derive the next BIP-44 account index off the same phrase. */
-export async function addAccount(name?: string): Promise<AccountInfo> {
-  const phrase = await getSessionMnemonic();
-  if (!phrase) throw new Error("Wallet is locked");
+/**
+ * Add an independent account: its own recovery phrase, sealed with the
+ * already-unlocked password. Not another HD child of the first wallet.
+ */
+export async function addAccountSeed(input: {
+  mnemonic: string;
+  name?: string;
+  enabledChainIds?: string[];
+}): Promise<AccountInfo> {
+  if (!(await isUnlocked())) throw new Error("Wallet is locked");
+  const password = await getSessionPassword();
+  if (!password) {
+    throw new Error("Unlock the wallet again, then add the account.");
+  }
+  const kernel = await loadKernel();
+  const phrase = input.mnemonic.trim().replace(/\s+/g, " ");
+  if (!kernel.validateMnemonic(phrase)) {
+    throw new Error("Invalid recovery phrase");
+  }
+  const map = await getSessionMnemonicMap();
+  if (Object.values(map).some((existing) => existing === phrase)) {
+    throw new Error("This recovery phrase is already in this wallet.");
+  }
+
   const accounts = await getAccounts();
-  const index = accounts.reduce((max, a) => Math.max(max, a.index), -1) + 1;
+  const index = accounts.reduce((max, row) => Math.max(max, row.index), -1) + 1;
+  const wordCount = (phrase.split(" ").length === 24 ? 24 : 12) as 12 | 24;
+  const meta: WalletMeta = { createdAt: Date.now(), wordCount };
+  const envelope = kernel.sealKeyring(phrase, password, JSON.stringify(meta));
+  const extras = await getExtraEnvelopes();
+  extras[String(index)] = { envelope, meta };
+  await persistExtraEnvelopes(extras);
+
+  const enabledChainIds =
+    input.enabledChainIds && input.enabledChainIds.length > 0
+      ? [...new Set(input.enabledChainIds)]
+      : undefined;
   const account = await deriveDefaultAccount(
     phrase,
     index,
-    cleanName(name, `Account ${index + 1}`),
+    cleanName(input.name, `Account ${index + 1}`),
+    {
+      ownSeed: true,
+      avatarSeed: pickAvatarSeed(accounts.map((row) => avatarSeedOf(row))),
+      ...(enabledChainIds ? { enabledChainIds } : {}),
+    },
   );
   await persistAccounts([...accounts, account]);
+  map[String(index)] = phrase;
+  await unlockWithMnemonic(phrase, index, { map, password });
   return account;
+}
+
+export async function removeAccount(index: number): Promise<AccountInfo[]> {
+  const accounts = await getAccounts();
+  if (accounts.length <= 1) {
+    throw new Error("Keep at least one account. Reset the wallet to remove the last one.");
+  }
+  const target = accounts.find((row) => row.index === index);
+  if (!target) throw new Error("Unknown account");
+
+  const next = accounts.filter((row) => row.index !== index);
+  await persistAccounts(next);
+
+  if (target.ownSeed && target.index !== 0) {
+    const extras = await getExtraEnvelopes();
+    delete extras[String(index)];
+    await persistExtraEnvelopes(extras);
+  }
+  const map = await getSessionMnemonicMap();
+  delete map[String(index)];
+  if (target.index === 0 && target.ownSeed) {
+    const extras = await getExtraEnvelopes();
+    const promoted = Object.entries(extras)[0];
+    if (promoted) {
+      await browser.storage.local.set({
+        [STORAGE_KEYS.envelope]: promoted[1],
+      });
+      delete extras[promoted[0]];
+      await persistExtraEnvelopes(extras);
+      const promotedPhrase = map[promoted[0]];
+      if (promotedPhrase) map.primary = promotedPhrase;
+    }
+  }
+  const active = await getActiveAccountIndex();
+  const fallback = next[0]!;
+  const nextActive = next.some((row) => row.index === active) ? active : fallback.index;
+  const nextAccount = next.find((row) => row.index === nextActive) ?? fallback;
+  const phrase = phraseFor(nextAccount, map);
+  if (!phrase) throw new Error("Wallet is locked");
+  const password = await getSessionPassword();
+  await unlockWithMnemonic(phrase, nextActive, {
+    map,
+    ...(password ? { password } : {}),
+  });
+  return next;
 }
 
 export async function renameAccount(
@@ -422,11 +667,14 @@ export async function renameAccount(
 
 export async function setActiveAccount(index: number): Promise<void> {
   const accounts = await getAccounts();
-  if (!accounts.some((a) => a.index === index)) {
-    throw new Error("Unknown account");
-  }
+  const account = accounts.find((row) => row.index === index);
+  if (!account) throw new Error("Unknown account");
+  const map = await getSessionMnemonicMap();
+  const phrase = phraseFor(account, map) ?? (await getSessionMnemonic());
+  if (!phrase) throw new Error("Wallet is locked");
   await browser.storage.session.set({
     [STORAGE_KEYS.sessionActiveAccount]: index,
+    [STORAGE_KEYS.sessionMnemonic]: phrase,
   });
   await touchSession();
 }

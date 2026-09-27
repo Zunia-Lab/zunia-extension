@@ -23,8 +23,12 @@ const NO_BALANCES: Record<string, ChainBalance> = {};
  * Returns an empty map when the user has not opted in, which keeps every caller
  * on the em-dash placeholder path.
  */
-export function useBalances(chainIds: string[], enabled: boolean) {
-  const key = chainIds.join(",");
+export function useBalances(
+  chainIds: string[],
+  enabled: boolean,
+  accountIndex = 0,
+) {
+  const key = `${accountIndex}:${chainIds.join(",")}`;
   const active = enabled && chainIds.length > 0;
   // `force` rides on the attempt rather than on a call argument that is gone by
   // the time the request goes out: a manual refresh issued while the chain list
@@ -54,13 +58,13 @@ export function useBalances(chainIds: string[], enabled: boolean) {
       })
       .catch(() => {
         if (cancelled) return;
-        // Keep the last good map: a timed-out multi-chain refresh must not
-        // blank the home list to em dashes. Settle the attempt anyway so the
-        // spinner stops instead of running forever.
+        // Keep the last good map only for this account and chain set. A
+        // timed-out refresh must not blank the home list, but a switch must
+        // not keep the previous account's numbers on screen.
         setSettled((prev) => ({
           key,
           attempt: attempt.n,
-          balances: prev?.balances ?? NO_BALANCES,
+          balances: prev?.key === key ? (prev.balances ?? NO_BALANCES) : NO_BALANCES,
         }));
       });
     return () => {
@@ -70,13 +74,17 @@ export function useBalances(chainIds: string[], enabled: boolean) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, key, attempt]);
 
-  const pushed = useRealtime().balances;
+  const realtime = useRealtime();
+  const pushed =
+    realtime.accountIndex === -1 || realtime.accountIndex === accountIndex
+      ? realtime.balances
+      : NO_BALANCES;
 
   const balances = useMemo(() => {
     // Derived, not stored: turning live reads off empties the map on the same
     // render as the switch, with no effect writing {} and forcing a second pass.
     if (!enabled) return NO_BALANCES;
-    const fetched = settled?.balances ?? NO_BALANCES;
+    const fetched = settled?.key === key ? (settled.balances ?? NO_BALANCES) : NO_BALANCES;
     // Scoped to the chains this caller asked about. The worker's picture spans
     // every enabled chain, and a screen showing three of them must not suddenly
     // grow rows for the other twenty.

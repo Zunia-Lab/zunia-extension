@@ -3,47 +3,44 @@ import {
   Avatar,
   Button,
   Callout,
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogTitle,
   Input,
-  Pill,
   ScreenScaffold,
   cn,
   focusRing,
   truncateAddress,
 } from "@zunialab/ui";
-import type { SessionStatus } from "../../../lib/session";
+import { avatarSeedOf, type SessionStatus } from "../../../lib/session";
 import { sendToBackground } from "../../../lib/popup-client";
-import { IconCheck, IconPlus } from "./icons";
+import { IconCheck, IconPlus, IconTrash } from "./icons";
 
 export function WalletsScreen({
   status,
   onBack,
   onRefresh,
+  onAdd,
 }: {
   status: SessionStatus;
   onBack: () => void;
   onRefresh: () => void;
+  onAdd: () => void;
 }) {
   const [editing, setEditing] = useState<number | null>(null);
   const [draft, setDraft] = useState("");
-  const [adding, setAdding] = useState(false);
-  const [newName, setNewName] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const newNameRef = useRef<HTMLInputElement>(null);
+  const [removeIndex, setRemoveIndex] = useState<number | null>(null);
   const draftRef = useRef<HTMLInputElement>(null);
 
-  // Focus follows the disclosure in both cases, moved explicitly rather than
-  // with autoFocus: neither is a page-load jump. The control the user activated
-  // ("Add account", or a row's rename button) is swapped out for the field, so
-  // without this the keyboard user is left on a detached node and tabs from the
-  // top of the list again. Both fields carry an aria-label, so a screen reader
-  // is told which one it landed in.
-  useEffect(() => {
-    if (adding) newNameRef.current?.focus();
-  }, [adding]);
   useEffect(() => {
     if (editing !== null) draftRef.current?.focus();
   }, [editing]);
+
+  const removing = status.accounts.find((row) => row.index === removeIndex);
+  const canRemove = status.accounts.length > 1;
 
   async function run(action: () => Promise<unknown>) {
     setBusy(true);
@@ -68,60 +65,16 @@ export function WalletsScreen({
         </span>
       }
       footer={
-        adding ? (
-          <div className="flex flex-col gap-2">
-            <Input
-              ref={newNameRef}
-              aria-label="Account name"
-              placeholder="Account name"
-              value={newName}
-              maxLength={32}
-              onChange={(e) => setNewName(e.target.value)}
-            />
-            <div className="flex gap-2">
-              <Button
-                variant="secondary"
-                className="flex-1"
-                onClick={() => {
-                  setAdding(false);
-                  setNewName("");
-                }}
-              >
-                Cancel
-              </Button>
-              <Button
-                className="flex-1"
-                loading={busy}
-                onClick={() =>
-                  void run(async () => {
-                    await sendToBackground("ADD_ACCOUNT", {
-                      name: newName.trim() || undefined,
-                    });
-                    setAdding(false);
-                    setNewName("");
-                  })
-                }
-              >
-                Create
-              </Button>
-            </div>
-          </div>
-        ) : (
-          <Button
-            variant="secondary"
-            className="w-full"
-            onClick={() => setAdding(true)}
-          >
-            <IconPlus width={16} height={16} />
-            Add account
-          </Button>
-        )
+        <Button variant="secondary" className="w-full" onClick={onAdd}>
+          <IconPlus width={16} height={16} />
+          Add account
+        </Button>
       }
     >
-      <div className="flex flex-col gap-3 pt-1">
-        {error ? <Callout tone="danger">{error}</Callout> : null}
+      <div className="flex flex-col gap-2 pt-1">
+        {error ? <Callout compact tone="danger">{error}</Callout> : null}
 
-        <ul className="flex flex-col gap-2">
+        <ul className="flex flex-col gap-1.5">
           {status.accounts.map((account) => {
             const active = account.index === status.activeAccountIndex;
             const isEditing = editing === account.index;
@@ -129,33 +82,37 @@ export function WalletsScreen({
               <li
                 key={account.index}
                 className={cn(
-                  "rounded-[14px] border px-3 py-2.5",
+                  "rounded-[10px] border px-2.5 py-2",
                   active
-                    ? "border-[color-mix(in_srgb,var(--z-accent)_55%,transparent)] bg-[var(--z-state-selected)]"
-                    : "border-[var(--z-line)]",
+                    ? "border-[color-mix(in_srgb,var(--z-accent)_50%,transparent)] bg-[var(--z-state-selected)]"
+                    : "border-[var(--z-line)] bg-[var(--z-glass)]",
                 )}
               >
-                <div className="flex items-center gap-2.5">
+                <div className="flex items-center gap-2">
                   <Avatar
-                    seed={account.address}
+                    seed={avatarSeedOf(account)}
                     fallback={account.name}
-                    size={30}
+                    size={26}
                   />
                   <span className="min-w-0 flex-1">
                     <span className="flex items-center gap-1.5">
-                      <span className="truncate text-[12.5px] font-medium text-fg">
+                      <span className="truncate text-[12.5px] font-medium leading-none text-fg">
                         {account.name}
                       </span>
-                      {active ? <Pill tone="accent">active</Pill> : null}
+                      {active ? (
+                        <span className="font-mono text-[8.5px] uppercase tracking-[0.08em] text-accent">
+                          active
+                        </span>
+                      ) : null}
                     </span>
-                    <span className="mt-[3px] block truncate font-mono text-[9.5px] text-fg-dim">
-                      {truncateAddress(account.address, 12, 8)}
+                    <span className="mt-1 block truncate font-mono text-[9.5px] text-fg-dim">
+                      {truncateAddress(account.address, 10, 6)}
                     </span>
                   </span>
                   {active ? (
                     <IconCheck
-                      width={16}
-                      height={16}
+                      width={14}
+                      height={14}
                       className="shrink-0 text-accent"
                     />
                   ) : (
@@ -169,18 +126,31 @@ export function WalletsScreen({
                         )
                       }
                       className={cn(
-                        "shrink-0 rounded-full border border-[var(--z-line)] px-2.5 py-1 text-[10.5px] text-fg-muted",
-                        "transition-colors duration-[var(--z-duration-base)] hover:text-fg",
+                        "shrink-0 rounded-full px-2 py-0.5 font-mono text-[10px] text-fg-muted",
+                        "hover:text-fg",
                         focusRing,
                       )}
                     >
                       Use
                     </button>
                   )}
+                  <button
+                    type="button"
+                    aria-label={`Remove ${account.name}`}
+                    disabled={!canRemove}
+                    onClick={() => setRemoveIndex(account.index)}
+                    className={cn(
+                      "flex size-7 shrink-0 items-center justify-center rounded-full text-fg-dim",
+                      "hover:text-[var(--z-danger)] disabled:cursor-not-allowed disabled:opacity-30",
+                      focusRing,
+                    )}
+                  >
+                    <IconTrash width={13} height={13} />
+                  </button>
                 </div>
 
                 {isEditing ? (
-                  <div className="mt-2.5 flex gap-2">
+                  <div className="mt-2 flex gap-1.5">
                     <Input
                       ref={draftRef}
                       className="flex-1"
@@ -213,8 +183,8 @@ export function WalletsScreen({
                       setDraft(account.name);
                     }}
                     className={cn(
-                      "mt-2 font-mono text-[9.5px] uppercase tracking-[0.1em] text-fg-dim",
-                      "transition-colors duration-[var(--z-duration-base)] hover:text-fg",
+                      "mt-1.5 font-mono text-[9px] uppercase tracking-[0.1em] text-fg-dim",
+                      "hover:text-fg",
                       focusRing,
                     )}
                   >
@@ -226,6 +196,45 @@ export function WalletsScreen({
           })}
         </ul>
       </div>
+
+      <Dialog
+        open={removeIndex !== null}
+        onOpenChange={(open) => {
+          if (!open) setRemoveIndex(null);
+        }}
+      >
+        <DialogContent className="w-[min(320px,calc(100%-28px))] p-4">
+          <DialogTitle className="text-[16px]">Remove account</DialogTitle>
+          <DialogDescription className="mt-1 text-[12px] leading-snug">
+            {removing
+              ? `Remove ${removing.name} from this device? The recovery phrase is not deleted. You can restore it later.`
+              : "Remove this account from this device?"}
+          </DialogDescription>
+          <div className="mt-4 flex gap-2">
+            <Button
+              variant="secondary"
+              className="flex-1"
+              onClick={() => setRemoveIndex(null)}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="danger"
+              className="flex-1"
+              loading={busy}
+              onClick={() =>
+                void run(async () => {
+                  if (removeIndex === null) return;
+                  await sendToBackground("REMOVE_ACCOUNT", { index: removeIndex });
+                  setRemoveIndex(null);
+                })
+              }
+            >
+              Remove
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </ScreenScaffold>
   );
 }

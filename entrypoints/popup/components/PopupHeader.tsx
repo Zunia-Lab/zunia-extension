@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Avatar, cn, focusRing } from "@zunialab/ui";
-import type { AccountInfo } from "../../../lib/session";
+import { avatarSeedOf, type AccountInfo } from "../../../lib/session";
 import { AccountSwitcherSheet } from "./AccountSwitcherSheet";
 import {
   IconBell,
@@ -83,7 +83,7 @@ export function PopupHeader({
           )}
         >
           <Avatar
-            seed={active?.address ?? active?.name ?? "zunia"}
+            seed={active ? avatarSeedOf(active) : "zunia"}
             fallback={active?.name ?? "Z"}
             size={22}
           />

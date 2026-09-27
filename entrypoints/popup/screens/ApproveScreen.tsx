@@ -127,6 +127,7 @@ function OriginHeader({
   queued,
   secondsLeft,
   suspicious,
+  showSite = true,
 }: {
   origin: string;
   chainIds: string[];
@@ -134,9 +135,11 @@ function OriginHeader({
   queued: number;
   secondsLeft: number | null;
   suspicious: boolean;
+  /** Connection requests draw the site in the body, so the header stays a single line. */
+  showSite?: boolean;
 }) {
   return (
-    <div className="flex flex-col gap-3 border-b border-[var(--z-line)] px-4 pb-3 pt-3">
+    <div className={cn("flex flex-col px-4 pt-3", showSite ? "gap-3 border-b border-[var(--z-line)] pb-3" : "pb-1")}>
       <div className="flex items-center gap-2">
         <SectionLabel>{label}</SectionLabel>
         <span className="ml-auto flex items-center gap-1.5">
@@ -158,7 +161,7 @@ function OriginHeader({
           ) : null}
         </span>
       </div>
-      <div className="flex items-center gap-2.5">
+      {showSite ? <div className="flex items-center gap-2.5">
         <span className="flex size-[34px] shrink-0 items-center justify-center rounded-full border border-[var(--z-line)] text-fg-muted">
           <IconGlobe width={18} height={18} />
         </span>
@@ -177,41 +180,304 @@ function OriginHeader({
               .join(" · ")}
           </span>
         </span>
+      </div> : null}
+    </div>
+  );
+}
+
+const LOCAL_SITE = "This is a site running on your own computer.";
+
+function chainNames(chainIds: string[]): string {
+  return chainIds.map((id) => findCatalogEntry(id)?.chainName ?? id).join(", ");
+}
+
+/** A connection has no transaction. One mark, the site, the account. */
+function ConnectBody({
+  origin,
+  chainIds,
+  accountName,
+  address,
+  local,
+  warnings,
+}: {
+  origin: string;
+  chainIds: string[];
+  accountName: string;
+  address: string;
+  local: boolean;
+  warnings: string[];
+}) {
+  return (
+    <div className="flex flex-col items-center px-1 pt-6 text-center">
+      <span className="flex size-12 items-center justify-center rounded-full border border-[var(--z-line)] bg-[var(--z-glass)] text-fg">
+        <IconGlobe width={22} height={22} />
+      </span>
+      <h1 className="mt-4 max-w-full truncate text-[20px] font-medium tracking-[-0.03em] text-fg">
+        {hostOf(origin)}
+      </h1>
+      <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.14em] text-fg-dim">
+        {chainNames(chainIds)}
+      </p>
+      <p className="mt-4 max-w-[15.5rem] text-[13px] leading-relaxed text-fg-muted">
+        This site can see your address. It cannot move funds.
+      </p>
+      {local ? (
+        <p className="mt-2 text-[11.5px] text-fg-dim">Running on this computer.</p>
+      ) : null}
+      {warnings.length > 0 ? (
+        <div className="mt-3 w-full text-left">
+          <Callout compact tone="warning" title="Check before approving">
+            <ul className="flex flex-col gap-0.5">
+              {warnings.map((warning) => (
+                <li key={warning} className="break-all leading-snug">
+                  {warning}
+                </li>
+              ))}
+            </ul>
+          </Callout>
+        </div>
+      ) : null}
+      <div className="mt-5 w-full rounded-[14px] border border-[var(--z-line)] bg-[var(--z-glass)] px-3.5 py-3 text-left">
+        <div className="font-mono text-[9px] uppercase tracking-[0.14em] text-fg-dim">Account</div>
+        <div className="mt-1 truncate text-[13.5px] font-medium text-fg">{accountName}</div>
+        {address ? <div className="mt-0.5 font-mono text-[11.5px] text-fg-muted">{address}</div> : null}
       </div>
     </div>
   );
 }
 
-function SignInDetails({ signIn, message }: { signIn: SignInMessage; message: string }) {
+/** Sign-in shows the site, the sentence, and the account. The raw message stays one tap away. */
+function SignInBody({
+  origin,
+  network,
+  statement,
+  expires,
+  accountName,
+  address,
+  local,
+  warnings,
+  message,
+}: {
+  origin: string;
+  network: string;
+  statement?: string;
+  expires?: string;
+  accountName: string;
+  address: string;
+  local: boolean;
+  warnings: string[];
+  message: string;
+}) {
   return (
-    <div className="flex flex-col gap-2.5">
-      <p className="flex items-center gap-1.5 text-[11.5px] leading-snug text-fg-muted">
-        <IconCheck width={14} height={14} className="shrink-0 text-[var(--z-success-fg)]" />
-        This request names the site you are on, this network and this account.
+    <div className="flex flex-col items-center px-1 pt-6 text-center">
+      <span className="flex size-12 items-center justify-center rounded-full border border-[var(--z-line)] bg-[var(--z-glass)] text-fg">
+        <IconGlobe width={22} height={22} />
+      </span>
+      <h1 className="mt-4 max-w-full truncate text-[20px] font-medium tracking-[-0.03em] text-fg">
+        {hostOf(origin)}
+      </h1>
+      <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.14em] text-fg-dim">{network}</p>
+      <p className="mt-4 max-w-[16rem] text-[13.5px] leading-relaxed text-fg">
+        {statement || "Sign in with this account."}
       </p>
-      {signIn.statement ? (
-        <p className="rounded-[14px] border border-[var(--z-line)] bg-[var(--z-glass)] px-3 py-2.5 text-[12.5px] leading-snug text-fg">
-          {signIn.statement}
-        </p>
+      <p className="mt-2 max-w-[16rem] text-[12.5px] leading-relaxed text-fg-muted">
+        This proves you control the account below. Nothing is sent.
+      </p>
+      {local ? <p className="mt-2 text-[11.5px] text-fg-dim">Running on this computer.</p> : null}
+      {warnings.length > 0 ? (
+        <div className="mt-3 w-full text-left">
+          <Callout compact tone="warning" title="Check before approving">
+            <ul className="flex flex-col gap-0.5">
+              {warnings.map((warning) => (
+                <li key={warning} className="break-all leading-snug">
+                  {warning}
+                </li>
+              ))}
+            </ul>
+          </Callout>
+        </div>
       ) : null}
-      <div className="flex flex-col gap-2.5 rounded-[14px] border border-[var(--z-line)] px-3 py-3">
-        <KeyValueRow label="Site" value={signIn.domain} />
-        <KeyValueRow
-          label="Network"
-          value={findCatalogEntry(signIn.chainId)?.chainName ?? signIn.chainId}
-        />
-        {signIn.expirationTime ? (
-          <KeyValueRow label="Expires" value={expiryLabel(signIn.expirationTime)} />
+      <div className="mt-5 flex w-full flex-col gap-2.5 rounded-[14px] border border-[var(--z-line)] bg-[var(--z-glass)] px-3.5 py-3 text-left">
+        <div>
+          <div className="font-mono text-[9px] uppercase tracking-[0.14em] text-fg-dim">Account</div>
+          <div className="mt-1 truncate text-[13.5px] font-medium text-fg">{accountName}</div>
+          {address ? <div className="mt-0.5 font-mono text-[11.5px] text-fg-muted">{address}</div> : null}
+        </div>
+        {expires ? (
+          <div className="flex items-baseline justify-between gap-3 border-t border-[var(--z-line)] pt-2.5">
+            <span className="text-[12px] text-fg-dim">Expires</span>
+            <span className="text-[12.5px] text-fg">{expires}</span>
+          </div>
         ) : null}
       </div>
-      <details className="rounded-[14px] border border-[var(--z-line)] px-3 py-2.5">
-        <summary className="cursor-pointer font-mono text-[9.5px] uppercase tracking-[0.08em] text-fg-dim">
-          Full message
-        </summary>
-        <pre className="mt-2 max-h-[180px] overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-fg">
-          {message}
-        </pre>
-      </details>
+      {message ? (
+        <details className="mt-3 w-full rounded-[14px] border border-[var(--z-line)] px-3.5 py-2.5 text-left">
+          <summary className="cursor-pointer select-none text-[12.5px] text-fg-muted">Show the signed message</summary>
+          <pre className="mt-2 max-h-[120px] overflow-auto whitespace-pre-wrap break-words font-mono text-[10.5px] leading-snug text-fg">
+            {message}
+          </pre>
+        </details>
+      ) : null}
+    </div>
+  );
+}
+
+function jsonFrom(approval: ApprovalRequest): string | null {
+  const json = (approval.detail as { json?: unknown } | undefined)?.json;
+  return typeof json === "string" && json.trim() ? json : null;
+}
+
+function TxJson({ json }: { json: string }) {
+  return (
+    <details className="rounded-[14px] border border-[var(--z-line)] px-3.5 py-2.5">
+      <summary className="cursor-pointer select-none text-[12.5px] text-fg-muted">
+        Show transaction JSON
+      </summary>
+      <pre className="mt-2 max-h-[160px] overflow-auto whitespace-pre-wrap break-words font-mono text-[10.5px] leading-snug text-fg">
+        {json}
+      </pre>
+    </details>
+  );
+}
+
+/** "Send 1 uosmo to osmo1..." splits so the address can wrap on its own line. */
+function splitRecipient(summary: string): { lead: string; address?: string } {
+  const at = summary.lastIndexOf(" to ");
+  if (at < 0) return { lead: summary };
+  const address = summary.slice(at + 4);
+  if (!/^[a-z0-9]{20,}$/.test(address)) return { lead: summary };
+  return { lead: summary.slice(0, at), address };
+}
+
+/** A decoded signature: the action, who it pays, then the account. JSON stays closed. */
+function SignTxBody({
+  messages,
+  accountName,
+  address,
+  fees,
+  feeChoice,
+  feePick,
+  onFeePick,
+  memo,
+  json,
+  local,
+  warnings,
+}: {
+  messages: SignSafetySummary["messages"];
+  accountName: string;
+  address: string;
+  fees: Array<{ label: string; value: string }>;
+  feeChoice: FeeChoice | null;
+  feePick: FeePick;
+  onFeePick: (pick: FeePick) => void;
+  memo?: string;
+  json: string | null;
+  local: boolean;
+  warnings: string[];
+}) {
+  const single = messages.length === 1 ? messages[0] : null;
+  const split = single && !single.unknown ? splitRecipient(single.summary) : null;
+
+  return (
+    <div className="flex flex-col gap-3 pt-4">
+      {split ? (
+        <div>
+          <h1 className="text-[20px] font-medium leading-tight tracking-[-0.03em] text-fg [overflow-wrap:anywhere]">
+            {split.lead}
+          </h1>
+          {split.address ? (
+            <p className="mt-2 text-[13px] leading-relaxed text-fg-muted">
+              to{" "}
+              <span className="font-mono text-[12px] text-fg [overflow-wrap:anywhere]">{split.address}</span>
+            </p>
+          ) : null}
+        </div>
+      ) : (
+        <>
+          <h1 className="text-[18px] font-medium leading-tight tracking-[-0.03em] text-fg">
+            {messages.length > 0
+              ? `Approve ${messages.length} message${messages.length === 1 ? "" : "s"}`
+              : "Sign transaction"}
+          </h1>
+          {messages.length > 0 ? (
+            <ol className="flex flex-col gap-2">
+              {messages.map((message, i) => (
+                <li
+                  key={`${message.type}-${i}`}
+                  className={cn(
+                    "rounded-[14px] border px-3.5 py-2.5",
+                    message.unknown
+                      ? "border-[var(--z-danger-line)] bg-[var(--z-danger-fill)]"
+                      : "border-[var(--z-line)] bg-[var(--z-glass)]",
+                  )}
+                >
+                  <span className="block text-[13px] leading-snug text-fg [overflow-wrap:anywhere]">
+                    {message.summary}
+                  </span>
+                  {message.type ? (
+                    <span className="mt-1 block truncate font-mono text-[10px] text-fg-dim">
+                      {message.type}
+                    </span>
+                  ) : null}
+                </li>
+              ))}
+            </ol>
+          ) : null}
+        </>
+      )}
+
+      <p className="text-[12.5px] leading-relaxed text-fg-muted">
+        The site submits this signature to the network.
+      </p>
+      {local ? <p className="text-[11.5px] text-fg-dim">Running on this computer.</p> : null}
+      {warnings.length > 0 ? (
+        <Callout compact tone="warning" title="Check before approving">
+          <ul className="flex flex-col gap-0.5">
+            {warnings.map((warning) => (
+              <li key={warning} className="break-all leading-snug">
+                {warning}
+              </li>
+            ))}
+          </ul>
+        </Callout>
+      ) : null}
+
+      <div className="flex flex-col gap-2.5 rounded-[14px] border border-[var(--z-line)] bg-[var(--z-glass)] px-3.5 py-3">
+        <div>
+          <div className="font-mono text-[9px] uppercase tracking-[0.14em] text-fg-dim">Account</div>
+          <div className="mt-1 truncate text-[13.5px] font-medium text-fg">{accountName}</div>
+          {address ? <div className="mt-0.5 font-mono text-[11.5px] text-fg-muted">{address}</div> : null}
+        </div>
+        {fees.map((fee) => (
+          <div
+            key={fee.label}
+            className="flex items-baseline justify-between gap-3 border-t border-[var(--z-line)] pt-2.5"
+          >
+            <span className="text-[12px] text-fg-dim">{fee.label}</span>
+            <span className="text-right text-[12.5px] text-fg">{fee.value}</span>
+          </div>
+        ))}
+        {feeChoice ? (
+          <div className="flex flex-col gap-1.5 border-t border-[var(--z-line)] pt-2.5">
+            <Segmented<FeePick>
+              size="sm"
+              className="w-full"
+              options={FEE_OPTIONS}
+              value={feePick}
+              onChange={onFeePick}
+            />
+            <p className="text-[10.5px] leading-snug text-fg-dim">{FEE_HINT[feePick]}</p>
+          </div>
+        ) : null}
+        {memo ? (
+          <div className="border-t border-[var(--z-line)] pt-2.5">
+            <div className="text-[12px] text-fg-dim">Memo</div>
+            <div className="mt-1 text-[12.5px] leading-snug text-fg [overflow-wrap:anywhere]">{memo}</div>
+          </div>
+        ) : null}
+      </div>
+
+      {json ? <TxJson json={json} /> : null}
     </div>
   );
 }
@@ -319,11 +585,22 @@ export function ApproveScreen({
   const unsupported = current.kind === "sendTx";
   const blocked = Boolean(summary?.requiresBlindSigning);
   const signIn = signInFrom(current);
+  const txJson = jsonFrom(current);
+  const localSite = warnings.includes(LOCAL_SITE);
+  const restWarnings = localSite ? warnings.filter((warning) => warning !== LOCAL_SITE) : warnings;
   const effect = signIn ? SIGN_IN_EFFECT : KIND_EFFECT[current.kind];
   const needsPassword = requirePassword && SIGNING_KINDS.has(current.kind);
   const signer = (current.detail as { signer?: unknown } | undefined)?.signer;
   const draft = (current.detail as { draft?: CustomChainDraft } | undefined)?.draft;
   const expired = secondsLeft === 0;
+  const connecting = current.kind === "enable" && !suspicious && !expired && !unsupported;
+  const signingIn = Boolean(signIn) && !suspicious && !expired && !blocked;
+  const signingTx =
+    (current.kind === "signAmino" || current.kind === "signDirect") &&
+    !suspicious &&
+    !expired &&
+    !blocked &&
+    Boolean(summary && summary.messages.length > 0);
 
   async function approve() {
     setBusy("approve");
@@ -362,6 +639,7 @@ export function ApproveScreen({
           queued={approvals.length}
           secondsLeft={secondsLeft}
           suspicious={suspicious}
+          showSite={!connecting && !signingIn}
         />
       }
       footer={
@@ -416,14 +694,62 @@ export function ApproveScreen({
                 }
                 onClick={() => void approve()}
               >
-                {signIn ? "Sign in" : needsPassword ? "Sign" : "Approve"}
+                {connecting ? "Connect" : signIn ? "Sign in" : needsPassword ? "Sign" : "Approve"}
               </Button>
             </div>
           </div>
         )
       }
     >
-      <div className="flex flex-col gap-3 pt-3">
+      {connecting ? (
+        <ConnectBody
+          origin={current.origin}
+          chainIds={current.chainIds}
+          accountName={active?.name ?? "No account"}
+          address={
+            active
+              ? truncateAddress(typeof signer === "string" ? signer : active.address, 10, 6)
+              : ""
+          }
+          local={localSite}
+          warnings={restWarnings}
+        />
+      ) : signingIn && signIn ? (
+        <SignInBody
+          origin={current.origin}
+          network={findCatalogEntry(signIn.signIn.chainId)?.chainName ?? signIn.signIn.chainId}
+          statement={signIn.signIn.statement}
+          expires={signIn.signIn.expirationTime ? expiryLabel(signIn.signIn.expirationTime) : undefined}
+          accountName={active?.name ?? "No account"}
+          address={
+            active
+              ? truncateAddress(typeof signer === "string" ? signer : active.address, 10, 6)
+              : ""
+          }
+          local={localSite}
+          warnings={restWarnings}
+          message={signIn.message}
+        />
+      ) : signingTx && summary ? (
+        <SignTxBody
+          messages={summary.messages}
+          accountName={active?.name ?? "No account"}
+          address={
+            active
+              ? truncateAddress(typeof signer === "string" ? signer : active.address, 10, 6)
+              : ""
+          }
+          fees={feeRows}
+          feeChoice={feeChoice}
+          feePick={feePick}
+          onFeePick={setFeePick}
+          memo={summary.memo}
+          json={txJson}
+          local={localSite}
+          warnings={restWarnings}
+        />
+      ) : (
+      <div className="flex flex-col gap-2.5 pt-3">
         {suspicious ? (
           <Callout tone="danger" title="This site's address looks suspicious">
             <p className="break-all font-mono text-[10.5px]">{current.origin}</p>
@@ -439,9 +765,11 @@ export function ApproveScreen({
         ) : null}
 
         <h1 className="text-[17px] font-medium leading-tight tracking-[-0.025em] text-fg">
-          {summary && summary.messages.length > 0
-            ? `Approve ${summary.messages.length} message${summary.messages.length === 1 ? "" : "s"}`
-            : current.title}
+          {signIn
+            ? "Sign in"
+            : summary && summary.messages.length > 0
+              ? `Approve ${summary.messages.length} message${summary.messages.length === 1 ? "" : "s"}`
+              : current.title}
         </h1>
 
         {unsupported ? (
@@ -472,11 +800,13 @@ export function ApproveScreen({
           </Callout>
         ) : null}
 
-        {warnings.length > 0 && !blocked ? (
-          <Callout tone="warning" title="Check before approving">
-            <ul className="flex flex-col gap-1">
-              {warnings.map((w) => (
-                <li key={w}>{w}</li>
+        {restWarnings.length > 0 && !blocked ? (
+          <Callout compact tone="warning" title="Check before approving">
+            <ul className="flex flex-col gap-0.5">
+              {restWarnings.map((w) => (
+                <li key={w} className="break-all leading-snug">
+                  {w}
+                </li>
               ))}
             </ul>
           </Callout>
@@ -500,7 +830,7 @@ export function ApproveScreen({
                   {i + 1}
                 </span>
                 <span className="min-w-0 flex-1">
-                  <span className="block text-[12.5px] leading-snug text-fg">
+                  <span className="block text-[12.5px] leading-snug text-fg [overflow-wrap:anywhere]">
                     {message.summary}
                   </span>
                   {message.type ? (
@@ -514,7 +844,18 @@ export function ApproveScreen({
           </ol>
         ) : null}
 
-        {signIn ? <SignInDetails signIn={signIn.signIn} message={signIn.message} /> : null}
+        {signIn?.signIn.statement ? (
+          <p className="text-[13px] leading-snug text-fg">{signIn.signIn.statement}</p>
+        ) : null}
+        {signIn?.message ? (
+          <details className="rounded-[12px] border border-[var(--z-line)] px-3 py-2.5">
+            <summary className="cursor-pointer select-none text-[12.5px] text-fg-muted">Show the signed message</summary>
+            <pre className="mt-2 max-h-[120px] overflow-auto whitespace-pre-wrap break-words font-mono text-[10.5px] leading-snug text-fg">
+              {signIn.message}
+            </pre>
+          </details>
+        ) : null}
+        {txJson && !signIn ? <TxJson json={txJson} /> : null}
 
         {current.kind === "signArbitrary" && !signIn ? (
           <div className="rounded-[14px] border border-[var(--z-line)] bg-[var(--z-glass)] px-3 py-2.5">
@@ -570,6 +911,7 @@ export function ApproveScreen({
           Signed locally, key never leaves this device
         </p>
       </div>
+      )}
     </ScreenScaffold>
   );
 }

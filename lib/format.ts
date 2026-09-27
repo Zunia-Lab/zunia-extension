@@ -3,6 +3,26 @@
 import { bech32PrefixOf, isValidBech32Address } from "@zunialab/interchain";
 
 /**
+ * Digits and one decimal point. Letters, signs, and extra dots are dropped,
+ * so an amount field cannot hold anything `toBaseUnits` would reject.
+ */
+export function decimalText(value: string): string {
+  let seenDot = false;
+  let out = "";
+  for (const char of value) {
+    if (char >= "0" && char <= "9") {
+      out += char;
+      continue;
+    }
+    if (char === "." && !seenDot) {
+      seenDot = true;
+      out += ".";
+    }
+  }
+  return out;
+}
+
+/**
  * Compact magnitude: 2 decimals + k / M / Bn.
  * Examples: 20.34k, 1.50M, 2.10Bn, 12.50
  */

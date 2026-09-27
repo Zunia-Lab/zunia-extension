@@ -35,6 +35,8 @@ export interface RealtimeSnapshot {
   readonly lastTx: TxNotice | null;
   /** False until the port has delivered its first message. */
   readonly connected: boolean;
+  /** Account the worker's balances belong to. `-1` when unknown or locked. */
+  readonly accountIndex: number;
 }
 
 const EMPTY: RealtimeSnapshot = {
@@ -45,6 +47,7 @@ const EMPTY: RealtimeSnapshot = {
   txSeq: 0,
   lastTx: null,
   connected: false,
+  accountIndex: -1,
 };
 
 let snapshot: RealtimeSnapshot = EMPTY;
@@ -83,6 +86,9 @@ function apply(event: WalletEvent): void {
         lastTx: event.notice,
         connected: true,
       });
+      return;
+    case "reset":
+      emit({ ...EMPTY, connected: true, accountIndex: event.accountIndex });
       return;
   }
 }

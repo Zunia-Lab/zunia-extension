@@ -116,16 +116,30 @@ async function openNow(): Promise<void> {
 }
 
 /**
+ * True when `url` is a page of this extension. Safari's toolbar popup reports
+ * the front website from `tabs.getCurrent()`, so a bare tab id is not enough
+ * to know the call is running inside the approval tab.
+ */
+function isOwnExtensionPage(url: string | undefined): boolean {
+  if (!url) return false;
+  const base = browser.runtime.getURL("");
+  const prefix = base.endsWith("/") ? base : `${base}/`;
+  return url === base || url.startsWith(prefix);
+}
+
+/**
  * Close the window or tab that {@link openApprovalUi} opened, from the page
  * inside it. Browsers only promise that `window.close()` closes what a script
- * opened, so the page removes its own tab first, which also closes a popup
- * window, and falls back to `window.close()`.
+ * opened, so an approval tab removes itself, which also closes a popup
+ * window, and falls back to `window.close()`. The removed tab has to be this
+ * extension: Safari hands `tabs.getCurrent()` the website in front, and
+ * removing that id closes the page the user was testing.
  */
 export async function closeApprovalSurface(): Promise<void> {
   releaseHeldPort?.();
   try {
     const tab = await browser.tabs.getCurrent();
-    if (tab?.id !== undefined) {
+    if (tab?.id !== undefined && isOwnExtensionPage(tab.url)) {
       await browser.tabs.remove(tab.id);
       return;
     }

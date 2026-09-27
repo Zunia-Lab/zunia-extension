@@ -30,7 +30,7 @@ import {
   toBase64,
 } from "./kernel";
 import {
-  getActiveAccountIndex,
+  getActiveDerivationIndex,
   getSessionMnemonic,
   touchSession,
 } from "./session";
@@ -90,7 +90,7 @@ export async function signAndBroadcast(
   const gasLimit = input.gasLimit ?? defaultGas(input.msgs);
   const fee = input.fee ?? (await feeForChain(input.chainId, gasLimit));
   const kernel = await loadKernel();
-  const accountIndex = await getActiveAccountIndex();
+  const accountIndex = await getActiveDerivationIndex();
   const chainJson = chainJsonFor(input.chainId);
   const derived = kernel.deriveAddress(mnemonic, "", chainJson, accountIndex);
   if (derived.bech32Address !== input.signerAddress) {

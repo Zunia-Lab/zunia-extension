@@ -1,6 +1,11 @@
 export const STORAGE_KEYS = {
   /** Sealed keyring envelope in chrome.storage.local only. */
   envelope: "zunia.envelope",
+  /**
+   * Extra sealed envelopes, one per added account that has its own mnemonic.
+   * Keyed by account index. The first wallet stays in `envelope`.
+   */
+  accountEnvelopes: "zunia.accountEnvelopes",
   /** Account metadata (no secrets) in chrome.storage.local. */
   accounts: "zunia.accounts",
   /** Per-origin / per-chain grants. */
@@ -11,7 +16,10 @@ export const STORAGE_KEYS = {
   settings: "zunia.settings",
   /** Suggested / custom chains. */
   suggestedChains: "zunia.suggestedChains",
-  /** Chains enabled in the wallet UI after onboarding. */
+  /**
+   * Legacy global network list. New writes live on each account
+   * (`AccountInfo.enabledChainIds`). Kept as a one-time migration seed.
+   */
   enabledChains: "zunia.enabledChains",
   /** Short-lived cache of REST balance reads. */
   balanceCache: "zunia.balanceCache",
@@ -68,8 +76,12 @@ export const STORAGE_KEYS = {
   passwordThrottle: "zunia.passwordThrottle",
   /** Favorite and recent picks per picker kind (chain, token, contact ids). */
   pickerMemory: "zunia.pickerMemory",
-  /** Unlocked mnemonic ONLY in chrome.storage.session. */
+  /** Unlocked mnemonic of the active account ONLY in chrome.storage.session. */
   sessionMnemonic: "zunia.session.mnemonic",
+  /** All unlocked phrases, keyed by seed id (`primary` or account index). */
+  sessionMnemonics: "zunia.session.mnemonics",
+  /** Password kept only while unlocked, so an add-account can seal a new seed. */
+  sessionPassword: "zunia.session.password",
   sessionUnlockedAt: "zunia.session.unlockedAt",
   sessionActiveAccount: "zunia.session.activeAccount",
   /** Tab id to the origin of the page that made provider calls in it. */

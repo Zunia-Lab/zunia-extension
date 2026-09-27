@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { messageActivityGlyph } from "../../../zunia-ui/packages/ui/src/wallet/activity";
 
 import {
   baseDenomOf,
@@ -31,6 +32,19 @@ const UPDATE_CLIENT = {
   "@type": "/ibc.core.client.v1.MsgUpdateClient",
   client_id: "07-tendermint-1",
 };
+
+describe("messageActivityGlyph", () => {
+  it("gives IBC client upkeep and unknown messages a mark", () => {
+    expect(messageActivityGlyph("MsgUpdateClient")?.icon).toBe("↻");
+    expect(messageActivityGlyph("/ibc.core.client.v1.MsgCreateClient")?.icon).toBe("↻");
+    expect(messageActivityGlyph("MsgTimeout")?.icon).toBe("⏱");
+    expect(messageActivityGlyph("MsgAcknowledgement")?.icon).toBe("↩");
+    expect(messageActivityGlyph("MsgExecuteContract")?.icon).toBe("λ");
+    expect(messageActivityGlyph("MsgSomethingNew")?.icon).toBe("✳");
+    expect(messageActivityGlyph("MsgSend")).toBeNull();
+    expect(messageActivityGlyph("MsgTransfer")).toBeNull();
+  });
+});
 
 describe("baseDenomOf", () => {
   it("strips every port and channel pair in front of the base denom", () => {
@@ -115,6 +129,13 @@ describe("describeMessage", () => {
     expect(described.denom).toBe(VOUCHER);
     expect(described.decimals).toBe(0);
     expect(described.symbol).not.toBe("OSMO");
+  });
+
+  it("names an IBC client update instead of leaving the row unmarked", () => {
+    const described = describeMessage(UPDATE_CLIENT, ME, "osmosis-1");
+    expect(described.kind).toBe("other");
+    expect(described.title).toBe("Update Client");
+    expect(described.summary).toContain("07-tendermint-1");
   });
 
   it("names governance votes", () => {

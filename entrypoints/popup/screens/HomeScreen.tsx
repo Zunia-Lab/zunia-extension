@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Button,
   Callout,
@@ -358,7 +358,7 @@ function ActivityRow({
         focusRing,
       )}
     >
-      <ActivityBadge kind={item.kind} success={item.success} />
+      <ActivityBadge kind={item.kind} messageType={item.messageType} success={item.success} />
       <span className="min-w-0 flex-1">
         <span className="block truncate text-[11.5px] font-medium text-fg">
           {item.title}
@@ -486,6 +486,26 @@ export function HomeScreen({
   const [query, setQuery] = useState("");
   const [heldOnly, setHeldOnly] = useState(false);
   const toast = useToast();
+  const connectedDomain = grants[0] ? hostOf(grants[0].origin) : "";
+  const [showConnected, setShowConnected] = useState(false);
+  // A site that is already connected when the wallet opens stays quiet.
+  // The bar only flashes when a new site connects while this screen is open.
+  const announcedDomain = useRef<string | null>(null);
+  useEffect(() => {
+    if (!connectedDomain) {
+      announcedDomain.current = null;
+      setShowConnected(false);
+      return;
+    }
+    if (announcedDomain.current === null || announcedDomain.current === connectedDomain) {
+      announcedDomain.current = connectedDomain;
+      return;
+    }
+    announcedDomain.current = connectedDomain;
+    setShowConnected(true);
+    const timer = window.setTimeout(() => setShowConnected(false), 4_000);
+    return () => window.clearTimeout(timer);
+  }, [connectedDomain]);
   const { settings, update, hidden, toggleHidden } = usePrefs();
   const active =
     status.accounts.find((a) => a.index === status.activeAccountIndex) ??
@@ -622,13 +642,12 @@ export function HomeScreen({
           networkCount={chains.length}
           pendingCount={pendingCount}
           onSelectAccount={(index) => {
-            void sendToBackground("SET_ACTIVE_ACCOUNT", { index }).then(
-              onRefresh,
-            );
+            void sendToBackground("SET_ACTIVE_ACCOUNT", { index }).then(() => {
+              onRefresh();
+              onReloadBalances();
+            });
           }}
-          onAddAccount={() => {
-            void sendToBackground("ADD_ACCOUNT").then(onRefresh);
-          }}
+          onAddAccount={() => onNavigate("add-account")}
           onManageWallets={() => onNavigate("wallets")}
           onNetworks={() => onNavigate("networks")}
           onNotifications={() => onNavigate("notifications")}
@@ -636,11 +655,8 @@ export function HomeScreen({
         />
       }
     >
-      {grants[0] ? (
-        <ConnectedBanner
-          domain={hostOf(grants[0].origin)}
-          onManage={() => onNavigate("sites")}
-        />
+      {showConnected && connectedDomain ? (
+        <ConnectedBanner domain={connectedDomain} onManage={() => onNavigate("sites")} />
       ) : null}
       <div className="flex flex-col gap-4 pt-4">
         <section>

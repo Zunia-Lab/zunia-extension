@@ -68,7 +68,7 @@ import {
   type SenderKind,
 } from "../lib/sender-policy";
 import {
-  addAccount,
+  addAccountSeed,
   createWallet,
   generateMnemonicPhrase,
   getAccounts,
@@ -79,6 +79,7 @@ import {
   importWallet,
   lockWallet,
   registerSessionLifecycle,
+  removeAccount,
   renameAccount,
   resetWallet,
   revealMnemonic,
@@ -399,12 +400,50 @@ async function routeMessage(
         }
         const payload = message.payload as { index: number };
         await setActiveAccount(payload.index);
+        resetWalletEventSnapshot(payload.index);
+        void clearArrivals()
+          .then(() => syncRealtime())
+          .then(() => primeSurface())
+          .catch(() => undefined);
         return { ok: true };
       }
 
-      case "ADD_ACCOUNT": {
-        const payload = message.payload as { name?: string } | undefined;
-        return { ok: true, data: await addAccount(payload?.name) };
+      case "ADD_ACCOUNT":
+      case "ADD_ACCOUNT_SEED": {
+        const payload = message.payload as
+          | { mnemonic?: string; name?: string; enabledChainIds?: string[] }
+          | undefined;
+        if (!payload?.mnemonic) {
+          return {
+            ok: false,
+            error: "Add an account by creating or restoring a recovery phrase.",
+          };
+        }
+        const account = await addAccountSeed({
+          mnemonic: payload.mnemonic,
+          ...(payload.name ? { name: payload.name } : {}),
+          ...(payload.enabledChainIds && payload.enabledChainIds.length > 0
+            ? { enabledChainIds: payload.enabledChainIds }
+            : {}),
+        });
+        resetWalletEventSnapshot(account.index);
+        void clearArrivals()
+          .then(() => syncRealtime())
+          .then(() => primeSurface())
+          .catch(() => undefined);
+        return { ok: true, data: account };
+      }
+
+      case "REMOVE_ACCOUNT": {
+        const payload = message.payload as { index: number };
+        const accounts = await removeAccount(payload.index);
+        void deliverToConnectedSites("accountsChanged");
+        resetWalletEventSnapshot(await getActiveAccountIndex());
+        void clearArrivals()
+          .then(() => syncRealtime())
+          .then(() => primeSurface())
+          .catch(() => undefined);
+        return { ok: true, data: accounts };
       }
 
       case "RENAME_ACCOUNT": {
@@ -917,12 +956,16 @@ export default defineBackground(() => {
         stopRealtime();
         resetWalletEventSnapshot();
         void refreshNotices().catch(() => undefined);
-      } else if (!wasOpen && isOpen) {
+        return;
+      }
+      if (!wasOpen && isOpen) {
         void deliverToConnectedSites("accountsChanged");
         void syncRealtime().catch(() => undefined);
         void primeSurface().catch(() => undefined);
+        return;
       }
-      return;
+      // Phrase swapped while staying unlocked (account switch). Fall through
+      // so the new account's sockets and balances replace the old ones now.
     }
     const account = changes[STORAGE_KEYS.sessionActiveAccount];
     if (
@@ -934,7 +977,7 @@ export default defineBackground(() => {
       // A different account is a different set of addresses: the old one's
       // arrivals and balances are not this one's, and `syncRealtime` closes
       // every socket whose watched address no longer matches.
-      resetWalletEventSnapshot();
+      resetWalletEventSnapshot(account.newValue);
       void clearArrivals()
         .then(() => syncRealtime())
         .then(() => primeSurface())
@@ -979,7 +1022,13 @@ export default defineBackground(() => {
   // allowed and opens what now is, so neither needs its own handler.
   browser.storage.onChanged.addListener((changes, area) => {
     if (area !== "local") return;
-    if (!changes[STORAGE_KEYS.enabledChains] && !changes[STORAGE_KEYS.settings]) return;
+    if (
+      !changes[STORAGE_KEYS.enabledChains] &&
+      !changes[STORAGE_KEYS.settings] &&
+      !changes[STORAGE_KEYS.accounts]
+    ) {
+      return;
+    }
     void syncRealtime().catch(() => undefined);
   });
   // A worker that was just restarted by an alarm, a message or a port has to

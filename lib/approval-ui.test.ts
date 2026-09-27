@@ -12,6 +12,8 @@ type Stub = {
   openPopup?: () => Promise<void>;
   windowsCreate?: (opts: unknown) => Promise<unknown>;
   tabsCreate: (opts: unknown) => Promise<unknown>;
+  tabsGetCurrent?: () => Promise<{ id?: number; url?: string } | undefined>;
+  tabsRemove?: (id: number) => Promise<void>;
 };
 
 function installBrowser(stub: Stub): void {
@@ -19,7 +21,11 @@ function installBrowser(stub: Stub): void {
     action: stub.openPopup ? { openPopup: stub.openPopup } : {},
     runtime: { getURL: (path: string) => POPUP_URL.replace("popup.html", path) },
     windows: stub.windowsCreate ? { create: stub.windowsCreate } : undefined,
-    tabs: { create: stub.tabsCreate },
+    tabs: {
+      create: stub.tabsCreate,
+      getCurrent: stub.tabsGetCurrent,
+      remove: stub.tabsRemove,
+    },
   });
 }
 
@@ -77,5 +83,55 @@ describe("openApprovalUi", () => {
     const { openApprovalUi } = await freshModule();
     await Promise.all([openApprovalUi(), openApprovalUi(), openApprovalUi()]);
     expect(tabsCreate).toHaveBeenCalledOnce();
+  });
+});
+
+describe("closeApprovalSurface", () => {
+  it("leaves the website tab alone when Safari reports it as the current tab", async () => {
+    const tabsRemove = vi.fn(async (_id: number) => undefined);
+    const close = vi.fn();
+    vi.stubGlobal("window", { close });
+    installBrowser({
+      tabsCreate: vi.fn(),
+      tabsGetCurrent: async () => ({ id: 7, url: "http://localhost:5174/" }),
+      tabsRemove,
+    });
+    const { closeApprovalSurface } = await freshModule();
+    await closeApprovalSurface();
+    expect(tabsRemove).not.toHaveBeenCalled();
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it("closes an approval tab that belongs to the extension", async () => {
+    const tabsRemove = vi.fn(async (_id: number) => undefined);
+    const close = vi.fn();
+    vi.stubGlobal("window", { close });
+    installBrowser({
+      tabsCreate: vi.fn(),
+      tabsGetCurrent: async () => ({
+        id: 9,
+        url: `${POPUP_URL}?approve=1`,
+      }),
+      tabsRemove,
+    });
+    const { closeApprovalSurface } = await freshModule();
+    await closeApprovalSurface();
+    expect(tabsRemove).toHaveBeenCalledWith(9);
+    expect(close).not.toHaveBeenCalled();
+  });
+
+  it("closes the toolbar popup when getCurrent returns no tab", async () => {
+    const tabsRemove = vi.fn(async (_id: number) => undefined);
+    const close = vi.fn();
+    vi.stubGlobal("window", { close });
+    installBrowser({
+      tabsCreate: vi.fn(),
+      tabsGetCurrent: async () => undefined,
+      tabsRemove,
+    });
+    const { closeApprovalSurface } = await freshModule();
+    await closeApprovalSurface();
+    expect(tabsRemove).not.toHaveBeenCalled();
+    expect(close).toHaveBeenCalledOnce();
   });
 });

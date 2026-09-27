@@ -23,8 +23,9 @@ import { NetworkSelectStep } from "./NetworkSelectStep";
 import { OnboardingStep, StepActions } from "./onboarding-ui";
 import { IconCheck, IconCopy, IconEye, IconEyeOff } from "./icons";
 
-type Step = "phrase" | "verify" | "password" | "networks";
+type Step = "phrase" | "verify" | "password" | "name" | "networks";
 type WordCount = 12 | 24;
+type Variant = "onboard" | "add";
 
 /** Result of the one background call this screen makes before the user acts. */
 type PhraseState =
@@ -32,16 +33,18 @@ type PhraseState =
   | { status: "ready"; mnemonic: string }
   | { status: "failed"; message: string };
 
-const STEPS: Step[] = ["phrase", "verify", "password", "networks"];
+const ONBOARD_STEPS: Step[] = ["phrase", "verify", "password", "networks"];
+const ADD_STEPS: Step[] = ["phrase", "verify", "name", "networks"];
 const STEP_LABELS: Record<Step, string> = {
   phrase: "Recovery phrase",
   verify: "Verify",
   password: "Password",
+  name: "Name",
   networks: "Networks",
 };
 
 /** Step labels in order, for shells that render their own progress rail. */
-export const CREATE_STEP_LABELS = STEPS.map((s) => STEP_LABELS[s]);
+export const CREATE_STEP_LABELS = ONBOARD_STEPS.map((s) => STEP_LABELS[s]);
 
 const DISTRACTORS = [
   "ocean",
@@ -85,13 +88,18 @@ export function CreateWalletScreen({
   onBack,
   onStepChange,
   hideProgress = false,
+  variant = "onboard",
 }: {
   onDone: () => void;
   onBack: () => void;
   /** Zero-based step index, for the full-tab shell's own progress rail. */
   onStepChange?: (index: number) => void;
   hideProgress?: boolean;
+  /** `add` skips password: the wallet is already unlocked. */
+  variant?: Variant;
 }) {
+  const adding = variant === "add";
+  const STEPS = adding ? ADD_STEPS : ONBOARD_STEPS;
   const [step, setStep] = useState<Step>("phrase");
   const [wordCount, setWordCount] = useState<WordCount>(12);
   const [phrase, setPhrase] = useState<PhraseState>({ status: "generating" });
@@ -117,7 +125,7 @@ export function CreateWalletScreen({
   // transition and not a page load; the field is labelled "Wallet name", so a
   // screen reader announces where it has been put.
   useEffect(() => {
-    if (step === "password") walletNameRef.current?.focus();
+    if (step === "password" || step === "name") walletNameRef.current?.focus();
   }, [step]);
 
   // Generation state as one value rather than a mnemonic plus a spinner flag:
@@ -187,8 +195,8 @@ export function CreateWalletScreen({
     setError(null);
     if (step === "phrase") onBack();
     else if (step === "verify") setStep("phrase");
-    else if (step === "password") setStep("verify");
-    else setStep("password");
+    else if (step === "password" || step === "name") setStep("verify");
+    else setStep(adding ? "name" : "password");
   }
 
   function handlePhraseContinue() {
@@ -220,7 +228,7 @@ export function CreateWalletScreen({
     }
     setError(null);
     if (cursor + 1 >= verifyIdx.length) {
-      setStep("password");
+      setStep(adding ? "name" : "password");
       return;
     }
     setCursor((c) => c + 1);
@@ -229,7 +237,11 @@ export function CreateWalletScreen({
   function handlePasswordContinue() {
     setError(null);
     if (walletName.trim().length === 0) {
-      setError("Give this wallet a name");
+      setError("Give this account a name");
+      return;
+    }
+    if (adding) {
+      setStep("networks");
       return;
     }
     if (password.length < 8) {
@@ -262,13 +274,21 @@ export function CreateWalletScreen({
     }
     setBusy(true);
     try {
-      await sendToBackground("CREATE_WALLET", {
-        password,
-        wordCount,
-        mnemonic,
-        name: walletName.trim(),
-        enabledChainIds: [...selectedChains],
-      });
+      if (adding) {
+        await sendToBackground("ADD_ACCOUNT_SEED", {
+          mnemonic,
+          name: walletName.trim(),
+          enabledChainIds: [...selectedChains],
+        });
+      } else {
+        await sendToBackground("CREATE_WALLET", {
+          password,
+          wordCount,
+          mnemonic,
+          name: walletName.trim(),
+          enabledChainIds: [...selectedChains],
+        });
+      }
       onDone();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -289,16 +309,21 @@ export function CreateWalletScreen({
       />
     ) : step === "verify" ? (
       <StepActions onBack={goBack} />
-    ) : step === "password" ? (
+    ) : step === "password" || step === "name" ? (
       <StepActions
         onBack={goBack}
         primaryLabel="Continue"
+        primaryDisabled={adding && walletName.trim().length === 0}
         onPrimary={handlePasswordContinue}
       />
     ) : (
       <StepActions
         onBack={goBack}
-        primaryLabel={`Create wallet · ${selectedChains.size}`}
+        primaryLabel={
+          adding
+            ? `Add account · ${selectedChains.size}`
+            : `Create wallet · ${selectedChains.size}`
+        }
         primaryDisabled={busy || selectedChains.size < 1}
         primaryLoading={busy}
         onPrimary={() => void handleCreate()}
@@ -404,35 +429,43 @@ export function CreateWalletScreen({
           </>
         )}
 
-        {step === "password" && (
+        {(step === "password" || step === "name") && (
           <>
             <StepHeading
-              title="Name and password"
-              subtitle="The name is just a label for this device. The password unlocks Zunia here and never recovers your phrase."
+              title={adding ? "Name this account" : "Name and password"}
+              subtitle={
+                adding
+                  ? "A label on this device. The existing password unlocks every account."
+                  : "The name is just a label for this device. The password unlocks Zunia here and never recovers your phrase."
+              }
               className="relative"
             />
             <div className="relative flex flex-col gap-2.5">
               <Input
                 ref={walletNameRef}
-                label="Wallet name"
-                placeholder="Main"
+                label="Account name"
+                placeholder={adding ? "Account 2" : "Main"}
                 maxLength={32}
                 value={walletName}
                 onChange={(e) => setWalletName(e.target.value)}
               />
-              <PasswordInput
-                label="Password"
-                placeholder="At least 8 characters"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-              />
-              <PasswordInput
-                label="Confirm password"
-                placeholder="Repeat the password"
-                value={confirm}
-                onChange={(e) => setConfirm(e.target.value)}
-              />
-              {password ? <PasswordStrengthMeter password={password} /> : null}
+              {adding ? null : (
+                <>
+                  <PasswordInput
+                    label="Password"
+                    placeholder="At least 8 characters"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                  />
+                  <PasswordInput
+                    label="Confirm password"
+                    placeholder="Repeat the password"
+                    value={confirm}
+                    onChange={(e) => setConfirm(e.target.value)}
+                  />
+                  {password ? <PasswordStrengthMeter password={password} /> : null}
+                </>
+              )}
             </div>
           </>
         )}
@@ -441,7 +474,11 @@ export function CreateWalletScreen({
           <>
             <StepHeading
               title="Choose networks"
-              subtitle="Pick one or more chains. Mainnets and testnets are both available, and you can change this later."
+              subtitle={
+                adding
+                  ? "These networks belong to this account only. Other accounts keep their own list."
+                  : "Pick one or more chains. Mainnets and testnets are both available, and you can change this later."
+              }
               className="relative"
             />
             <div className="relative">
