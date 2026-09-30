@@ -10,7 +10,9 @@
 import { parseDenomTrace } from "@zunialab/interchain";
 import {
   catalogIconFor,
-  findCatalogByMinimalDenom,
+  chainTicker,
+  displayCoinSymbol,
+  findCurrency,
   findCatalogEntry,
 } from "./chain-catalog";
 import { OPTIONAL_HOST_PERMISSIONS, REALTIME_HOST_PERMISSIONS } from "../config/hosts";
@@ -294,17 +296,18 @@ export function classifyToken(
       ...(native.iconUrl ? { iconUrl: native.iconUrl } : {}),
     };
   }
-  // Known base denoms held as local bank coins (rare, but cheap to resolve).
-  const known = findCatalogByMinimalDenom(denom);
+  // Known base denoms held as local bank coins, including `erc20:` rows.
+  const known = findCurrency(denom);
   if (known) {
+    const symbol = displayCoinSymbol(known.currency.coinDenom, known.entry.bech32Prefix);
     return {
       denom,
       amount,
       kind: "other",
-      symbol: known.coinDenom,
-      displayName: known.coinDenom,
-      decimals: known.coinDecimals,
-      iconUrl: catalogIconFor(known),
+      symbol,
+      displayName: symbol,
+      decimals: known.currency.coinDecimals,
+      iconUrl: catalogIconFor(known.entry),
       baseDenom: denom,
     };
   }
@@ -379,17 +382,18 @@ async function resolveIbcToken(
 
     const base = traced.baseDenom;
     const path = traced.path;
-    const known = findCatalogByMinimalDenom(base);
+    const known = findCurrency(base);
     if (known) {
+      const symbol = displayCoinSymbol(known.currency.coinDenom, known.entry.bech32Prefix);
       return {
         ...token,
-        symbol: known.coinDenom,
-        displayName: `${known.coinDenom}/IBC`,
-        decimals: known.coinDecimals,
-        iconUrl: catalogIconFor(known),
+        symbol,
+        displayName: `${symbol}/IBC`,
+        decimals: known.currency.coinDecimals,
+        iconUrl: catalogIconFor(known.entry),
         baseDenom: base,
         ...(path ? { ibcPath: path } : {}),
-        originChainName: known.chainName,
+        originChainName: known.entry.chainName,
       };
     }
 
@@ -505,7 +509,7 @@ async function fetchChainBalance(
   const iconUrl = entry ? catalogIconFor(entry) : undefined;
   const native = {
     denom: entry?.coinMinimalDenom ?? "",
-    symbol: entry?.coinDenom ?? chainId,
+    symbol: entry ? chainTicker(entry) : chainId,
     decimals: entry?.coinDecimals ?? 6,
     iconUrl,
   };

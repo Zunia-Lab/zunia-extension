@@ -10,7 +10,7 @@ import {
   validatorWebsite,
   type ValidatorInfo,
 } from "../../../lib/chain-queries";
-import { catalogLogoSlugs, findCatalogEntry } from "../../../lib/chain-catalog";
+import { catalogLogoSlugs, chainTicker, findCatalogEntry } from "../../../lib/chain-catalog";
 import { formatUnits } from "../../../lib/format";
 import { useToast } from "../state/Toasts";
 import { IconCopy } from "./icons";
@@ -88,7 +88,7 @@ export function ValidatorDetailScreen({
           votingPower={`${(validator.votingPower * 100).toFixed(2)}%`}
           bonded={
             chain
-              ? `${formatUnits(validator.tokens, chain.coinDecimals, 2)} ${chain.coinDenom}`
+              ? `${formatUnits(validator.tokens, chain.coinDecimals, 2)} ${chainTicker(chain)}`
               : undefined
           }
           website={

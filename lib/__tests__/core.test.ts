@@ -247,18 +247,60 @@ describe("local kernel", () => {
     expect(osmo.bech32Address).not.toContain("qqqqqq");
   });
 
-  it("derives ethermint (coin type 60) without treating the pubkey as a scalar", () => {
+  it("does not treat coin type 60 alone as an Ethereum account", () => {
     const phrase = `${"abandon ".repeat(11)}about`;
-    const inj = kernel.deriveAddress(
+    const swapped = kernel.deriveAddress(
       phrase,
       "",
       JSON.stringify({ bech32Prefix: "inj", coinType: 60 }),
       0,
     );
-    expect(inj.algo).toBe("eth_secp256k1");
-    expect(inj.path).toBe("m/44'/60'/0'/0/0");
-    expect(inj.bech32Address.startsWith("inj1")).toBe(true);
-    expect(inj.pubKey).toHaveLength(33);
+    expect(swapped.algo).toBe("secp256k1");
+    expect(swapped.path).toBe("m/44'/60'/0'/0/0");
+    expect(swapped.pubKey).toHaveLength(33);
+
+    const eth = kernel.deriveAddress(
+      phrase,
+      "",
+      JSON.stringify({
+        bech32Prefix: "inj",
+        coinType: 60,
+        features: ["eth-address-gen", "eth-key-sign"],
+      }),
+      0,
+    );
+    expect(eth.algo).toBe("eth_secp256k1");
+    expect(eth.bech32Address.startsWith("inj1")).toBe(true);
+    expect(eth.bech32Address).not.toBe(swapped.bech32Address);
+  });
+
+  it("hashes eth-key-sign with keccak256 and leaves other chains on SHA-256", () => {
+    const phrase = `${"abandon ".repeat(11)}about`;
+    const sha = kernel.signCosmos(
+      phrase,
+      "",
+      JSON.stringify({
+        bech32Prefix: "inj",
+        coinType: 60,
+        features: ["eth-address-gen"],
+      }),
+      0,
+      "deadbeef",
+    );
+    const keccak = kernel.signCosmos(
+      phrase,
+      "",
+      JSON.stringify({
+        bech32Prefix: "inj",
+        coinType: 60,
+        features: ["eth-address-gen", "eth-key-sign"],
+      }),
+      0,
+      "deadbeef",
+    );
+    expect(sha).toHaveLength(128);
+    expect(keccak).toHaveLength(128);
+    expect(keccak).not.toBe(sha);
   });
 
   it("produces a 64-byte compact signature", () => {

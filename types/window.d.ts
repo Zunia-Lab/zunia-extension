@@ -10,6 +10,11 @@ export interface ZuniaKey {
   bech32Address: string;
   isNanoLedger?: boolean;
   isKeystone?: boolean;
+  /**
+   * Same 20-byte account as `bech32Address`, EIP-55 hex. Present only on
+   * chains that derive an Ethereum-style address.
+   */
+  ethereumHexAddress?: string;
 }
 
 export interface ZuniaOfflineSigner {

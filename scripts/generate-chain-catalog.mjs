@@ -33,6 +33,30 @@ function parseArgs(argv) {
 
 const TESTNET_HINT = /(testnet|devnet|test-net|-test\b|localnet)/i;
 
+function catalogCurrencies(raw) {
+  const rows = Array.isArray(raw.currencies) ? raw.currencies : [];
+  return rows
+    .filter(
+      (row) =>
+        row &&
+        typeof row.coinDenom === "string" &&
+        row.coinDenom &&
+        typeof row.coinMinimalDenom === "string" &&
+        row.coinMinimalDenom,
+    )
+    .map((row) => {
+      const currency = {
+        coinDenom: row.coinDenom,
+        coinMinimalDenom: row.coinMinimalDenom,
+        coinDecimals: typeof row.coinDecimals === "number" ? row.coinDecimals : 6,
+      };
+      if (typeof row.coinGeckoId === "string" && row.coinGeckoId) {
+        currency.coinGeckoId = row.coinGeckoId;
+      }
+      return currency;
+    });
+}
+
 function isTestnet(fileName, chain) {
   return (
     TESTNET_HINT.test(fileName) ||
@@ -233,6 +257,11 @@ function readRegistry(registryDir, official, cosmostation) {
       // empty list. `undefined` stays distinct from `[]`: 19 registry rows
       // publish no feature list at all, and "absent" is not "declared none".
       features: Array.isArray(raw.features) ? raw.features : undefined,
+      currencies: catalogCurrencies(raw),
+      ethPubKeyTypeUrl:
+        typeof raw.ethPubKeyTypeUrl === "string" && raw.ethPubKeyTypeUrl.startsWith("/")
+          ? raw.ethPubKeyTypeUrl
+          : undefined,
       // Only ~40% of the registry carries a price id; the rest stay unpriced.
       coinGeckoId: currency.coinGeckoId ?? raw.stakeCurrency?.coinGeckoId,
       rpc: raw.rpc,
@@ -275,6 +304,12 @@ function serialize(entries) {
     // keeps meaning "this chain publishes no list" rather than "no features".
     if (e.features) {
       parts.push(`features: ${JSON.stringify(e.features)}`);
+    }
+    if (e.ethPubKeyTypeUrl) {
+      parts.push(`ethPubKeyTypeUrl: ${JSON.stringify(e.ethPubKeyTypeUrl)}`);
+    }
+    if (e.currencies?.length) {
+      parts.push(`currencies: ${JSON.stringify(e.currencies)}`);
     }
     if (e.coinGeckoId) {
       parts.push(`coinGeckoId: ${JSON.stringify(e.coinGeckoId)}`);

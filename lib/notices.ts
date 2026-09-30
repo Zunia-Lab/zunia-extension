@@ -17,7 +17,7 @@
 import type { ApprovalRequest } from "./approvals";
 import type { ChainBalance } from "./balances";
 import { showBrowserAlert } from "./browser-alerts";
-import { findCatalogEntry } from "./chain-catalog";
+import { chainTicker, findCatalogEntry } from "./chain-catalog";
 import type { ActivityItem, ProposalInfo, UnbondingInfo } from "./chain-queries";
 import { formatUnits } from "./format";
 import type { MovedCoin, TxNotice } from "./realtime-protocol";
@@ -109,7 +109,7 @@ export function describeCoin(
   }
   const entry = findCatalogEntry(chainBalance?.chainId ?? "");
   if (entry && coin.denom === entry.coinMinimalDenom) {
-    return `${formatUnits(coin.amount, entry.coinDecimals, 3)} ${entry.coinDenom}`;
+    return `${formatUnits(coin.amount, entry.coinDecimals, 3)} ${chainTicker(entry)}`;
   }
   const short = coin.denom.startsWith("ibc/")
     ? `IBC ${coin.denom.slice(4, 10).toUpperCase()}`

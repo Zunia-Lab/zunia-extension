@@ -3,7 +3,12 @@
  * the history, the transaction detail and the signing prompt.
  */
 
-import { findCatalogByMinimalDenom, findCatalogEntry } from "./chain-catalog";
+import {
+  displayCoinSymbol,
+  findCatalogEntry,
+  findCurrency,
+  type CatalogEntry,
+} from "./chain-catalog";
 import { formatUnitsExact, shortDenom } from "./format";
 
 /** How to show an amount of one denom. */
@@ -24,22 +29,61 @@ export function baseDenomOf(denom: string): string {
  * coins first, then a coin some catalog chain issues. An `ibc/` voucher stays
  * unnamed here; the popup names the ones the wallet holds from its balances.
  */
+function shown(entry: CatalogEntry, coinDenom: string, decimals: number): CoinDisplay {
+  return {
+    symbol: displayCoinSymbol(coinDenom, entry.bech32Prefix),
+    decimals,
+    known: true,
+  };
+}
+
 export function coinDisplay(chainId: string, denom: string): CoinDisplay {
   const entry = findCatalogEntry(chainId);
-  if (entry?.coinMinimalDenom === denom) {
-    return { symbol: entry.coinDenom, decimals: entry.coinDecimals, known: true };
-  }
-  if (entry?.feeMinimalDenom === denom) {
-    return { symbol: entry.feeDenom, decimals: entry.feeDecimals, known: true };
+  if (entry) {
+    const onChain = findCurrency(denom);
+    if (onChain && onChain.entry.chainId === entry.chainId) {
+      return shown(entry, onChain.currency.coinDenom, onChain.currency.coinDecimals);
+    }
+    if (entry.feeMinimalDenom === denom) {
+      return shown(entry, entry.feeDenom, entry.feeDecimals);
+    }
   }
   const base = baseDenomOf(denom);
-  const issuer = base.startsWith("ibc/") ? undefined : findCatalogByMinimalDenom(base);
-  if (issuer) {
-    return issuer.coinMinimalDenom.toLowerCase() === base.toLowerCase()
-      ? { symbol: issuer.coinDenom, decimals: issuer.coinDecimals, known: true }
-      : { symbol: issuer.feeDenom, decimals: issuer.feeDecimals, known: true };
+  if (!base.startsWith("ibc/")) {
+    const issued = findCurrency(base);
+    if (issued) {
+      return shown(issued.entry, issued.currency.coinDenom, issued.currency.coinDecimals);
+    }
   }
   return { symbol: shortDenom(denom), decimals: 0, known: false };
+}
+
+/** Gas floor for an IBC transfer of an `erc20:` bank denom, before the user's adjustment. */
+export const ERC20_IBC_GAS_FLOOR = "800000";
+
+export function erc20TransferGasFloor(
+  msgs: readonly { typeUrl: string; value: object }[],
+): string | null {
+  for (const msg of msgs) {
+    if (msg.typeUrl !== "/ibc.applications.transfer.v1.MsgTransfer") continue;
+    const token = "token" in msg.value ? (msg.value as { token?: unknown }).token : undefined;
+    if (!token || typeof token !== "object" || Array.isArray(token)) continue;
+    const denom = (token as { denom?: unknown }).denom;
+    if (typeof denom !== "string" || denom.length === 0) continue;
+    const base = baseDenomOf(denom);
+    if (/^erc20:/i.test(denom) || /^erc20:/i.test(base)) return ERC20_IBC_GAS_FLOOR;
+  }
+  return null;
+}
+
+/** Raise simulated gas to the floor before `estimateFee` applies the user's adjustment. */
+export function applyGasFloor(simulated: string, floor: string | null): string {
+  if (!floor) return simulated;
+  try {
+    return BigInt(simulated) >= BigInt(floor) ? simulated : floor;
+  } catch {
+    return floor;
+  }
 }
 
 /** `1.5 ATOM`, or raw base units and the denom when the denom has no name. */

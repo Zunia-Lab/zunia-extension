@@ -10,6 +10,7 @@ import {
   focusRing,
   truncateAddress,
 } from "@zunialab/ui";
+import { chainTicker } from "../../../lib/chain-catalog";
 import type { SessionStatus } from "../../../lib/session";
 import { searchItems } from "../../../lib/picker";
 import { QrCode } from "../components/QrCode";
@@ -49,7 +50,12 @@ export function ReceiveScreen({
         id: row.chainId,
         label: row.entry.chainName,
         sublabel: row.address,
-        keywords: [row.chainId, row.entry.coinDenom, row.entry.bech32Prefix],
+        keywords: [
+          row.chainId,
+          row.entry.coinDenom,
+          chainTicker(row.entry),
+          row.entry.bech32Prefix,
+        ],
       })),
       query,
     ).flatMap((item) => accounts.find((row) => row.chainId === item.id) ?? []);

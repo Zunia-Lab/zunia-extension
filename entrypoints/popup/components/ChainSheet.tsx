@@ -1,5 +1,6 @@
 import { useMemo, type ReactNode } from "react";
 import { TokenLogo, cn, focusRing } from "@zunialab/ui";
+import { chainTicker } from "../../../lib/chain-catalog";
 import type { ChainAccountView } from "../hooks/useChainAccounts";
 import { usePickerMemory } from "../hooks/usePickerMemory";
 import { IconChevronDown } from "../screens/icons";
@@ -50,8 +51,13 @@ export function ChainSheet<T extends ChainOption>({
         return {
           id: chain.chainId,
           label: chain.entry.chainName,
-          sublabel: `${chain.entry.coinDenom} · ${chain.chainId}`,
-          keywords: [chain.entry.coinDenom, chain.chainId, chain.entry.bech32Prefix],
+          sublabel: `${chainTicker(chain.entry)} · ${chain.chainId}`,
+          keywords: [
+            chain.entry.coinDenom,
+            chainTicker(chain.entry),
+            chain.chainId,
+            chain.entry.bech32Prefix,
+          ],
           icon: (
             <TokenLogo
               src={chain.iconUrl}

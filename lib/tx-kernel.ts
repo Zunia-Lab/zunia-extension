@@ -25,7 +25,6 @@ import {
   createLcdPostClient,
   estimateFee,
   getAccount,
-  isEthSecp256k1PubKey,
   lcdEndpointsFromChain,
   simulate,
   validateMemo,
@@ -42,8 +41,9 @@ import {
   fetchAccountNumberSequence,
   isSequenceMismatch,
 } from "./broadcast";
-import { findCatalogEntry } from "./chain-catalog";
+import { chainUsesEthKeySign, ethPubKeyTypeUrlFor } from "./chain-catalog";
 import { chainJsonFor } from "./chains";
+import { applyGasFloor, erc20TransferGasFloor } from "./coin-display";
 import { chainRegistry, lcdFor } from "./interchain";
 import {
   bytesToHex,
@@ -225,10 +225,9 @@ export async function previewTx(request: TxRequest): Promise<TxPreview> {
     request.chainId,
     request.signerAddress,
   );
-  const ethKeyType =
-    derived.algo === "eth_secp256k1" ||
-    isEthSecp256k1PubKey(account.pubKey) ||
-    findCatalogEntry(request.chainId)?.coinType === 60;
+  const ethKeyType = chainUsesEthKeySign(request.chainId);
+  const ethPubKeyTypeUrl = ethPubKeyTypeUrlFor(request.chainId);
+  const gasFloor = erc20TransferGasFloor(request.msgs);
 
   const msgsJson = JSON.stringify(request.msgs);
   const memo = resolveTxMemo(request.memo, request.msgs);
@@ -245,13 +244,16 @@ export async function previewTx(request: TxRequest): Promise<TxPreview> {
       account.sequence,
       publicKeyHex,
       ethKeyType,
+      ethPubKeyTypeUrl,
     );
     const post = createLcdPostClient({ client: lcd, endpoints: lcdEndpointsFromChain(chain) });
     const gasUsed = await simulate(post, request.chainId, hexToBase64(simulateTx));
     const prefs = await getSettings();
     const speed = request.feeSpeed ?? prefs.feeSpeed;
     const gasAdjustment = request.gasAdjustment ?? prefs.gasAdjustment;
-    const estimate = estimateFee(gasUsed, chain, speed, { gasAdjustment });
+    const estimate = estimateFee(applyGasFloor(gasUsed, gasFloor), chain, speed, {
+      gasAdjustment,
+    });
     fee = { amount: estimate.amount, gas_limit: estimate.gasLimit };
   } catch (error) {
     const prefs = await getSettings();
@@ -264,13 +266,14 @@ export async function previewTx(request: TxRequest): Promise<TxPreview> {
         `${chain.chainName} would not simulate this transaction and publishes no gas price, so Zunia cannot work out a fee.`,
       );
     }
-    const estimate = estimateFee(FALLBACK_GAS_LIMIT, chain, speed, {
+    const gasLimit = applyGasFloor(FALLBACK_GAS_LIMIT, gasFloor);
+    const estimate = estimateFee(gasLimit, chain, speed, {
       gasAdjustment: request.gasAdjustment ?? prefs.gasAdjustment,
     });
     fee = { amount: estimate.amount, gas_limit: estimate.gasLimit };
     feeNote = `${chain.chainName} would not simulate this transaction (${
       error instanceof Error ? error.message : String(error)
-    }). The fee below uses a fixed ${FALLBACK_GAS_LIMIT} gas limit and may be wrong.`;
+    }). The fee below uses a fixed ${gasLimit} gas limit and may be wrong.`;
   }
 
   const preview = kernel.previewTx(
@@ -283,6 +286,7 @@ export async function previewTx(request: TxRequest): Promise<TxPreview> {
     publicKeyHex,
     ethKeyType,
     "direct",
+    ethPubKeyTypeUrl,
   );
 
   return {
@@ -353,8 +357,8 @@ export async function signAndBroadcastTx(
   const msgsJson = JSON.stringify(request.msgs);
   const feeJson = JSON.stringify(request.fee);
   const memo = resolveTxMemo(request.memo, request.msgs);
-  const ethKeyType =
-    derived.algo === "eth_secp256k1" || findCatalogEntry(request.chainId)?.coinType === 60;
+  const ethKeyType = chainUsesEthKeySign(request.chainId);
+  const ethPubKeyTypeUrl = ethPubKeyTypeUrlFor(request.chainId);
 
   const previewed = kernel.previewTx(
     request.chainId,
@@ -366,6 +370,7 @@ export async function signAndBroadcastTx(
     bytesToHex(derived.pubKey),
     ethKeyType,
     "direct",
+    ethPubKeyTypeUrl,
   );
   if (previewed.signBytesHash !== request.expectSignBytesHash) {
     throw new Error(

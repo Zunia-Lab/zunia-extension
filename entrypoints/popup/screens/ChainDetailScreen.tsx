@@ -13,6 +13,7 @@ import {
   focusRing,
 } from "@zunialab/ui";
 import type { ChainBalance, TokenBalance } from "../../../lib/balances";
+import { chainTicker } from "../../../lib/chain-catalog";
 import type { ActivityItem } from "../../../lib/chain-queries";
 import type { SpotPrice } from "../../../lib/prices";
 import { toWholeCoins } from "../../../lib/portfolio";
@@ -268,7 +269,7 @@ export function ChainDetailScreen({
                 {loading ? <Spinner /> : show(balance?.available)}
               </span>
               <span className="font-mono text-[10px] uppercase tracking-[0.1em] text-fg-dim">
-                {entry.coinDenom}
+                {chainTicker(entry)}
               </span>
             </div>
             <p className="mt-1.5 flex flex-wrap items-center gap-x-2 font-mono text-[9.5px] uppercase tracking-[0.12em] text-fg-dim">
@@ -350,19 +351,19 @@ export function ChainDetailScreen({
           <Breakdown
             label="Available"
             value={show(balance?.available)}
-            denom={entry.coinDenom}
+            denom={chainTicker(entry)}
             fiat={fiat(balance?.available)}
           />
           <Breakdown
             label="Staked"
             value={show(balance?.staked)}
-            denom={entry.coinDenom}
+            denom={chainTicker(entry)}
             fiat={fiat(balance?.staked)}
           />
           <Breakdown
             label="Rewards"
             value={show(balance?.rewards)}
-            denom={entry.coinDenom}
+            denom={chainTicker(entry)}
             fiat={fiat(balance?.rewards)}
             accent
           />

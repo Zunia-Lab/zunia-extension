@@ -60,8 +60,16 @@ describe("baseDenomOf", () => {
 
 describe("coinDisplay", () => {
   it("names the chain's own coin and a coin another catalog chain issues", () => {
-    expect(coinDisplay("cosmoshub-4", "uatom")).toEqual({ symbol: "ATOM", decimals: 6, known: true });
-    expect(coinDisplay("osmosis-1", "uatom")).toEqual({ symbol: "ATOM", decimals: 6, known: true });
+    expect(coinDisplay("cosmoshub-4", "uatom")).toEqual({
+      symbol: "ATOM.cosmos",
+      decimals: 6,
+      known: true,
+    });
+    expect(coinDisplay("osmosis-1", "uatom")).toEqual({
+      symbol: "ATOM.cosmos",
+      decimals: 6,
+      known: true,
+    });
     expect(coinDisplay("osmosis-1", "transfer/channel-141/uosmo")).toEqual({
       symbol: "OSMO",
       decimals: 6,

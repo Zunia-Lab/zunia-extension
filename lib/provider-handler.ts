@@ -19,6 +19,7 @@ import {
   adr36PayloadIsSafe,
   adr36SignBytesHex,
   bytesToHex,
+  ethereumHexAddress,
   fromBase64,
   hexToBytes,
   loadKernel,
@@ -530,6 +531,9 @@ async function dispatchProviderRequest(input: ProviderRequest): Promise<unknown>
       const mnemonic = await unlockedMnemonic();
       const key = await activeKey(mnemonic, chainId);
       noteUse(origin, { chainId, address: key.derived.bech32Address });
+      const ethHex = findCatalogEntry(chainId)?.features?.includes("eth-address-gen")
+        ? ethereumHexAddress(key.derived.bech32Address)
+        : undefined;
       return {
         name: key.name,
         algo: key.derived.algo,
@@ -537,6 +541,7 @@ async function dispatchProviderRequest(input: ProviderRequest): Promise<unknown>
         address: key.derived.address,
         bech32Address: key.derived.bech32Address,
         isNanoLedger: false,
+        ...(ethHex ? { ethereumHexAddress: ethHex } : {}),
       };
     }
 

@@ -164,6 +164,7 @@ declare module "@zunialab/core" {
     publicKeyHex: string,
     ethKeyType: boolean,
     mode: SignMode,
+    ethPubKeyTypeUrl?: string,
   ): string;
 
   /** The broadcastable `TxRaw`, hex, given a signature over {@link buildSignBytes}. */
@@ -178,6 +179,7 @@ declare module "@zunialab/core" {
     ethKeyType: boolean,
     mode: SignMode,
     signatureHex: string,
+    ethPubKeyTypeUrl?: string,
   ): string;
 
   /** A `TxRaw` carrying a 64-byte zero signature, for `/cosmos/tx/v1beta1/simulate`. */
@@ -190,6 +192,7 @@ declare module "@zunialab/core" {
     sequence: U64Like,
     publicKeyHex: string,
     ethKeyType: boolean,
+    ethPubKeyTypeUrl?: string,
   ): string;
 
   /** derive -> sign bytes -> sign -> assemble, in one call. Returns a hex `TxRaw`. */
@@ -218,5 +221,6 @@ declare module "@zunialab/core" {
     publicKeyHex: string,
     ethKeyType: boolean,
     mode: SignMode,
+    ethPubKeyTypeUrl?: string,
   ): SigningPreview;
 }

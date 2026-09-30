@@ -11,6 +11,7 @@ import {
   focusRing,
   truncateAddress,
 } from "@zunialab/ui";
+import { chainTicker, feeTicker } from "../../../lib/chain-catalog";
 import type { ProposalInfo, ProposalStatus } from "../../../lib/chain-queries";
 import { estimateFee, msgVote, type VoteOption as AminoVote } from "../../../lib/amino-tx";
 import { searchItems } from "../../../lib/picker";
@@ -102,7 +103,7 @@ function NetworkFilter({
         id: chain.chainId,
         label: chain.entry.chainName,
         sublabel: chain.chainId,
-        keywords: [chain.entry.coinDenom, chain.chainId],
+        keywords: [chain.entry.coinDenom, chainTicker(chain.entry), chain.chainId],
         icon: (
           <TokenLogo
             src={chain.iconUrl}
@@ -355,7 +356,7 @@ export function GovernanceScreen({
     [chains],
   );
   const denoms = useMemo(
-    () => new Map(chains.map((c) => [c.chainId, c.entry.coinDenom])),
+    () => new Map(chains.map((c) => [c.chainId, chainTicker(c.entry)])),
     [chains],
   );
   const networkFilter = network && chainIds.includes(network) ? network : null;
@@ -493,7 +494,7 @@ export function GovernanceScreen({
                     <GasFeePrefs
                       feeAmount={fee.amount[0]?.amount}
                       feeDecimals={voterChain?.entry.feeDecimals ?? 6}
-                      feeSymbol={voterChain?.entry.feeDenom ?? "ATOM"}
+                      feeSymbol={voterChain ? feeTicker(voterChain.entry) : "ATOM"}
                     />
                   </div>
                   <p className="break-words font-mono text-[9.5px] text-fg-dim [overflow-wrap:anywhere]">

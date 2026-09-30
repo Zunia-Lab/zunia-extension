@@ -13,6 +13,7 @@ import {
 import {
   CHAIN_CATALOG,
   catalogIconFor,
+  chainTicker,
   findCatalogEntry,
   matchesChainQuery,
   sortCatalog,
@@ -253,7 +254,7 @@ export function AddChainScreen({
                   <NetworkOptionCard
                     name={chain.chainName}
                     chainId={chain.chainId}
-                    symbol={chain.coinDenom}
+                    symbol={chainTicker(chain)}
                     iconUrl={catalogIconFor(chain)}
                     testnet={chain.network === "testnet"}
                     verified={chain.inCosmosRegistry}

@@ -20,7 +20,11 @@ import {
   waitForInclusion,
   type BroadcastResult,
 } from "./broadcast";
-import { findCatalogEntry } from "./chain-catalog";
+import {
+  chainUsesEthKeySign,
+  ethPubKeyTypeUrlFor,
+  findCatalogEntry,
+} from "./chain-catalog";
 import { chainJsonFor } from "./chains";
 import {
   bytesToHex,
@@ -99,9 +103,8 @@ export async function signAndBroadcast(
     );
   }
 
-  const ethKeyType =
-    derived.algo === "eth_secp256k1" ||
-    findCatalogEntry(input.chainId)?.coinType === 60;
+  const ethKeyType = chainUsesEthKeySign(input.chainId);
+  const ethPubKeyTypeUrl = ethPubKeyTypeUrlFor(input.chainId);
 
   let lastError: unknown;
   let forcedSequence: string | null = null;
@@ -132,6 +135,7 @@ export async function signAndBroadcast(
       pubKey: derived.pubKey,
       signature: hexToBytes(signatureHex),
       ethKeyType,
+      ethPubKeyTypeUrl,
     });
 
     for (const msg of input.msgs) {
@@ -161,6 +165,7 @@ export function encodeSignedAmino(params: {
   signed: StdSignDoc;
   signature: { pub_key: { value: string }; signature: string };
   ethKeyType?: boolean;
+  ethPubKeyTypeUrl?: string;
 }): string {
   const keyBytes = fromBase64(params.signature.pub_key.value);
   if (keyBytes.length !== 33) {
@@ -172,6 +177,7 @@ export function encodeSignedAmino(params: {
     pubKey: keyBytes,
     signature: sig,
     ethKeyType: params.ethKeyType,
+    ethPubKeyTypeUrl: params.ethPubKeyTypeUrl,
   });
   return toBase64(txRaw);
 }

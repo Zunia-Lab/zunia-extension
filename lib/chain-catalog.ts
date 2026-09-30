@@ -2,6 +2,14 @@ import { CHAIN_CATALOG } from "./chain-catalog.generated";
 
 export type ChainNetwork = "mainnet" | "testnet";
 
+/** One bank denom from a chain's `currencies` list. */
+export interface CatalogCurrency {
+  coinDenom: string;
+  coinMinimalDenom: string;
+  coinDecimals: number;
+  coinGeckoId?: string;
+}
+
 /** Flat registry row emitted by scripts/generate-chain-catalog.mjs. */
 export interface CatalogEntry {
   chainId: string;
@@ -26,6 +34,20 @@ export interface CatalogEntry {
    * two it is rather than showing an empty collection list.
    */
   features?: readonly string[];
+  /**
+   * Every registry currency, not only the native row above.
+   *
+   * Injective keeps `inj` as the native denom and lists `erc20:0x…` bank
+   * denoms here. Absent on a catalog built before that field existed; callers
+   * then use the native row alone.
+   */
+  currencies?: readonly CatalogCurrency[];
+  /**
+   * Protobuf type URL for an `ethsecp256k1` public key when it is not the
+   * Ethermint default. Injective sets
+   * `/injective.crypto.v1beta1.ethsecp256k1.PubKey`.
+   */
+  ethPubKeyTypeUrl?: string;
   /** Price-feed id; absent for most of the registry, which stays unpriced. */
   coinGeckoId?: string;
   rpc?: string;
@@ -56,9 +78,17 @@ export { CHAIN_CATALOG };
  * `custom-chains.ts` on every context boot, so lookups stay synchronous.
  */
 let customEntries: readonly CatalogEntry[] = [];
+/** Symbols that appear under more than one bech32 prefix. Rebuilt when custom chains change. */
+let collidingSymbols: Set<string> | undefined;
+/** Minimal denom to every currency that uses it. Rebuilt with the collision set. */
+let currencyIndex:
+  | Map<string, { entry: CatalogEntry; currency: CatalogCurrency }[]>
+  | undefined;
 
 export function setCustomCatalogEntries(entries: readonly CatalogEntry[]): void {
   customEntries = entries;
+  collidingSymbols = undefined;
+  currencyIndex = undefined;
 }
 
 export function getCustomCatalogEntries(): readonly CatalogEntry[] {
@@ -134,6 +164,117 @@ export function findCatalogByMinimalDenom(
   return (
     matches.find((entry) => entry.network === "mainnet") ?? matches[0]
   );
+}
+
+/** `erc20:0xA00C…` and `peggy0xA00C…` match the registry's lowercase spelling. */
+const CASE_FOLD_DENOM = /^(?:erc20:|peggy)/i;
+
+export function denomsMatch(left: string, right: string): boolean {
+  if (left === right) return true;
+  if (CASE_FOLD_DENOM.test(left) && CASE_FOLD_DENOM.test(right)) {
+    return left.toLowerCase() === right.toLowerCase();
+  }
+  return false;
+}
+
+/** Native row plus every extra currency. A catalog without `currencies` has just the native row. */
+export function currenciesOf(entry: CatalogEntry): readonly CatalogCurrency[] {
+  if (entry.currencies && entry.currencies.length > 0) return entry.currencies;
+  return [
+    {
+      coinDenom: entry.coinDenom,
+      coinMinimalDenom: entry.coinMinimalDenom,
+      coinDecimals: entry.coinDecimals,
+      ...(entry.coinGeckoId ? { coinGeckoId: entry.coinGeckoId } : {}),
+    },
+  ];
+}
+
+function collidingCoinDenoms(): Set<string> {
+  if (collidingSymbols) return collidingSymbols;
+  const prefixes = new Map<string, Set<string>>();
+  for (const entry of allCatalogEntries()) {
+    const seen = new Set<string>();
+    for (const currency of currenciesOf(entry)) {
+      if (seen.has(currency.coinDenom)) continue;
+      seen.add(currency.coinDenom);
+      const set = prefixes.get(currency.coinDenom) ?? new Set<string>();
+      set.add(entry.bech32Prefix);
+      prefixes.set(currency.coinDenom, set);
+    }
+  }
+  collidingSymbols = new Set(
+    [...prefixes.entries()].filter(([, set]) => set.size > 1).map(([symbol]) => symbol),
+  );
+  return collidingSymbols;
+}
+
+/**
+ * `USDC.inj` when that ticker is issued on more than one prefix.
+ * `wINJ` stays `wINJ` because only the `inj` prefix uses it.
+ */
+export function displayCoinSymbol(symbol: string, bech32Prefix: string): string {
+  if (!symbol || !collidingCoinDenoms().has(symbol)) return symbol;
+  return `${symbol}.${bech32Prefix}`;
+}
+
+/** The chain's staking ticker, with a prefix suffix when that ticker is shared. */
+export function chainTicker(entry: {
+  coinDenom: string;
+  bech32Prefix: string;
+}): string {
+  return displayCoinSymbol(entry.coinDenom, entry.bech32Prefix);
+}
+
+/** The fee ticker, with the same suffix rule as {@link chainTicker}. */
+export function feeTicker(entry: {
+  feeDenom: string;
+  coinDenom: string;
+  bech32Prefix: string;
+}): string {
+  return displayCoinSymbol(entry.feeDenom || entry.coinDenom, entry.bech32Prefix);
+}
+
+export function chainUsesEthKeySign(chainId: string): boolean {
+  return findCatalogEntry(chainId)?.features?.includes("eth-key-sign") === true;
+}
+
+export function ethPubKeyTypeUrlFor(chainId: string): string | undefined {
+  const url = findCatalogEntry(chainId)?.ethPubKeyTypeUrl?.trim();
+  return url ? url : undefined;
+}
+
+function denomIndexKey(denom: string): string {
+  return CASE_FOLD_DENOM.test(denom) ? denom.toLowerCase() : denom;
+}
+
+function indexedCurrencies(): Map<
+  string,
+  { entry: CatalogEntry; currency: CatalogCurrency }[]
+> {
+  if (currencyIndex) return currencyIndex;
+  const index = new Map<string, { entry: CatalogEntry; currency: CatalogCurrency }[]>();
+  for (const entry of allCatalogEntries()) {
+    for (const currency of currenciesOf(entry)) {
+      const key = denomIndexKey(currency.coinMinimalDenom);
+      const list = index.get(key);
+      if (list) list.push({ entry, currency });
+      else index.set(key, [{ entry, currency }]);
+    }
+  }
+  currencyIndex = index;
+  return index;
+}
+
+/** A currency row whose minimal denom is `denom`, preferring a mainnet issuer. */
+export function findCurrency(
+  denom: string,
+): { entry: CatalogEntry; currency: CatalogCurrency } | undefined {
+  const needle = denom.trim();
+  if (!needle) return undefined;
+  const matches = indexedCurrencies().get(denomIndexKey(needle));
+  if (!matches || matches.length === 0) return undefined;
+  return matches.find((match) => match.entry.network === "mainnet") ?? matches[0];
 }
 
 /** Case-insensitive match on name, chain id, prefix, or denom. */

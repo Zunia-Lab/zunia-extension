@@ -21,7 +21,7 @@ describe("feeChoiceFor", () => {
     );
     expect(choice).toEqual({
       denom: "uatom",
-      symbol: "ATOM",
+      symbol: "ATOM.cosmos",
       decimals: 6,
       gas: "123457",
       site: "4000",

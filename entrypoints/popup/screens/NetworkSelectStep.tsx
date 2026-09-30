@@ -9,6 +9,7 @@ import {
 import {
   allCatalogEntries,
   catalogIconFor,
+  chainTicker,
   matchesChainQuery,
   sortCatalog,
   type CatalogEntry,
@@ -150,7 +151,7 @@ export function NetworkSelectStep({
             <NetworkOptionCard
               name={chain.chainName}
               chainId={chain.chainId}
-              symbol={chain.coinDenom}
+              symbol={chainTicker(chain)}
               iconUrl={catalogIconFor(chain)}
               testnet={chain.network === "testnet"}
               verified={chain.inCosmosRegistry}

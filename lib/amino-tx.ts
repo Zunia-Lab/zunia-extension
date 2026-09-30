@@ -288,12 +288,23 @@ function encodeFee(fee: StdFee): Uint8Array {
     .intoBytes();
 }
 
-function encodePubkeyAny(pubKey: Uint8Array, ethKeyType: boolean): Uint8Array {
+const COSMOS_PUBKEY_TYPE_URL = "/cosmos.crypto.secp256k1.PubKey";
+const ETHERMINT_PUBKEY_TYPE_URL = "/ethermint.crypto.v1.ethsecp256k1.PubKey";
+
+/** Type URL inside the pubkey `Any`. A blank override keeps the Ethermint default. */
+export function pubkeyTypeUrl(ethKeyType: boolean, ethPubKeyTypeUrl?: string): string {
+  if (!ethKeyType) return COSMOS_PUBKEY_TYPE_URL;
+  const custom = ethPubKeyTypeUrl?.trim();
+  return custom ? custom : ETHERMINT_PUBKEY_TYPE_URL;
+}
+
+function encodePubkeyAny(
+  pubKey: Uint8Array,
+  ethKeyType: boolean,
+  ethPubKeyTypeUrl?: string,
+): Uint8Array {
   const inner = new ProtoWriter().bytes(1, pubKey).intoBytes();
-  const typeUrl = ethKeyType
-    ? "/ethermint.crypto.v1.ethsecp256k1.PubKey"
-    : "/cosmos.crypto.secp256k1.PubKey";
-  return encodeAny(typeUrl, inner);
+  return encodeAny(pubkeyTypeUrl(ethKeyType, ethPubKeyTypeUrl), inner);
 }
 
 function encodeAuthInfo(params: {
@@ -301,13 +312,17 @@ function encodeAuthInfo(params: {
   sequence: string;
   fee: StdFee;
   ethKeyType?: boolean;
+  ethPubKeyTypeUrl?: string;
 }): Uint8Array {
   const single = new ProtoWriter()
     .int32(1, SIGN_MODE_LEGACY_AMINO_JSON)
     .intoBytes();
   const modeInfo = new ProtoWriter().messageAlways(1, single).intoBytes();
   const signerInfo = new ProtoWriter()
-    .message(1, encodePubkeyAny(params.pubKey, Boolean(params.ethKeyType)))
+    .message(
+      1,
+      encodePubkeyAny(params.pubKey, Boolean(params.ethKeyType), params.ethPubKeyTypeUrl),
+    )
     .message(2, modeInfo)
     .uint64(3, BigInt(params.sequence))
     .intoBytes();
@@ -323,6 +338,7 @@ export function assembleAminoTxRaw(params: {
   pubKey: Uint8Array;
   signature: Uint8Array;
   ethKeyType?: boolean;
+  ethPubKeyTypeUrl?: string;
 }): Uint8Array {
   if (params.signature.length !== 64) {
     throw new Error("Signature must be 64-byte compact secp256k1 r||s");
@@ -333,6 +349,7 @@ export function assembleAminoTxRaw(params: {
     sequence: params.signDoc.sequence,
     fee: params.signDoc.fee,
     ethKeyType: params.ethKeyType,
+    ethPubKeyTypeUrl: params.ethPubKeyTypeUrl,
   });
   return new ProtoWriter()
     .bytes(1, body)

@@ -28,6 +28,7 @@ import {
   requestLiveBalancePermission,
   type ChainBalance,
 } from "../../../lib/balances";
+import { chainTicker } from "../../../lib/chain-catalog";
 import type { PriceMap, SpotPrice } from "../../../lib/prices";
 import type { ActivityItem } from "../../../lib/chain-queries";
 import {
@@ -398,7 +399,7 @@ function StakedRow({
   hidden: boolean;
   onOpen: () => void;
 }) {
-  const symbol = balance.symbol || chain.entry.coinDenom;
+  const symbol = balance.symbol || chainTicker(chain.entry);
   const staked = formatUnits(balance.staked, balance.decimals, 4);
   const rewards =
     balance.rewards && balance.rewards !== "0"
@@ -524,7 +525,7 @@ export function HomeScreen({
           chainId: chain.chainId,
           chainName: chain.entry.chainName,
           network: chain.entry.network,
-          coinDenom: chain.entry.coinDenom,
+          coinDenom: chainTicker(chain.entry),
           coinMinimalDenom: chain.entry.coinMinimalDenom,
           coinDecimals: chain.entry.coinDecimals,
           ...(chain.iconUrl ? { iconUrl: chain.iconUrl } : {}),

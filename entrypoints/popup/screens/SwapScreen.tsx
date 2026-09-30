@@ -58,7 +58,7 @@ import {
   type RoutePlanView,
   type SwapPlanResult,
 } from "../../../lib/route-plan";
-import { findCatalogEntry } from "../../../lib/chain-catalog";
+import { feeTicker, findCatalogEntry } from "../../../lib/chain-catalog";
 import {
   maxSendable,
   prefFeeFor,
@@ -979,7 +979,7 @@ export function SwapScreen({
             <GasFeePrefs
               feeAmount={feeCoin?.amount}
               feeDecimals={feeChain?.entry.feeDecimals ?? 6}
-              feeSymbol={feeChain?.entry.feeDenom ?? feeCoin?.denom ?? ""}
+              feeSymbol={feeChain ? feeTicker(feeChain.entry) : (feeCoin?.denom ?? "")}
               onChanged={() => {
                 if (!pending) return;
                 void openConfirm(pending);

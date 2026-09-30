@@ -185,6 +185,7 @@ export interface ZuniaKernel {
     publicKeyHex: string,
     ethKeyType: boolean,
     mode: SignMode,
+    ethPubKeyTypeUrl?: string,
   ): string;
 
   /**
@@ -206,6 +207,7 @@ export interface ZuniaKernel {
     ethKeyType: boolean,
     mode: SignMode,
     signatureHex: string,
+    ethPubKeyTypeUrl?: string,
   ): string;
 
   /**
@@ -221,6 +223,7 @@ export interface ZuniaKernel {
     sequence: U64Like,
     publicKeyHex: string,
     ethKeyType: boolean,
+    ethPubKeyTypeUrl?: string,
   ): string;
 
   /**
@@ -257,6 +260,7 @@ export interface ZuniaKernel {
     publicKeyHex: string,
     ethKeyType: boolean,
     mode: SignMode,
+    ethPubKeyTypeUrl?: string,
   ): SigningPreview;
 }
 
@@ -282,6 +286,34 @@ function hexToBytes(hex: string): Uint8Array {
 
 function utf8Bytes(value: string): Uint8Array {
   return new TextEncoder().encode(value);
+}
+
+/**
+ * EIP-55 hex of the 20-byte account id inside a bech32 address.
+ *
+ * For an `eth-address-gen` chain this is the same account as the bech32 form,
+ * not a second key.
+ */
+export function ethereumHexAddress(bech32Address: string): string {
+  const decoded = bech32.decode(bech32Address as `${string}1${string}`);
+  const bytes = Uint8Array.from(bech32.fromWords(decoded.words));
+  if (bytes.length !== 20) {
+    throw new Error("An Ethereum address is 20 bytes");
+  }
+  const lower = bytesToHex(bytes);
+  const hash = keccak_256(utf8Bytes(lower));
+  let out = "0x";
+  for (let i = 0; i < lower.length; i++) {
+    const ch = lower.charAt(i);
+    if (ch >= "0" && ch <= "9") {
+      out += ch;
+      continue;
+    }
+    const byte = hash[i >> 1] ?? 0;
+    const nibble = i % 2 === 0 ? byte >> 4 : byte & 0x0f;
+    out += nibble >= 8 ? ch.toUpperCase() : ch;
+  }
+  return out;
 }
 
 function toBase64(bytes: Uint8Array): string {
@@ -397,8 +429,10 @@ async function sha256Hex(input: string): Promise<string> {
 interface ChainSpec {
   bech32Prefix: string;
   coinType: number;
-  /** Ethermint chains take the keccak tail of the uncompressed key. */
+  /** `eth-address-gen`: keccak of the uncompressed key, then bech32. */
   ethermint: boolean;
+  /** `eth-key-sign`: keccak256 of the sign bytes, not SHA-256. */
+  ethKeySign: boolean;
 }
 
 function parseChain(chainJson: string): ChainSpec {
@@ -421,10 +455,16 @@ function parseChain(chainJson: string): ChainSpec {
     (typeof bech32Config?.bech32PrefixAccAddr === "string"
       ? bech32Config.bech32PrefixAccAddr
       : undefined);
+  const features = Array.isArray(raw.features)
+    ? raw.features.filter((feature): feature is string => typeof feature === "string")
+    : [];
   return {
     bech32Prefix: prefix ?? "cosmos",
     coinType,
-    ethermint: raw.addressScheme === "ethermint" || coinType === 60,
+    // Coin type 60 alone is not an Ethereum account. Rewriting a coin-type-118
+    // address into the `inj` prefix spends a different key.
+    ethermint: features.includes("eth-address-gen") || raw.addressScheme === "ethermint",
+    ethKeySign: features.includes("eth-key-sign"),
   };
 }
 
@@ -450,8 +490,9 @@ function derivePrivateKey(
 /**
  * Address payload for bech32. Cosmos uses tendermint(sha256→ripemd160) of the
  * compressed pubkey. Ethermint (coin type 60) uses the keccak of the
- * uncompressed pubkey's XY, which must be derived from the *private* key,
+ * uncompressed pubkey's XY, which must be derived from the *private* key:
  * `getPublicKey` rejects a 33-byte compressed pubkey as if it were a scalar.
+ * Coin type 60 does not select this path. The chain feature `eth-address-gen` does.
  */
 function addressBytes(
   privateKey: Uint8Array,
@@ -583,9 +624,7 @@ export function createLocalKernel(degradedReason?: string): ZuniaKernel {
         accountIndex,
       );
       const payload = hexToBytes(signBytesHex);
-      const digest = chain.ethermint
-        ? keccak_256(payload)
-        : sha256(payload);
+      const digest = chain.ethKeySign ? keccak_256(payload) : sha256(payload);
       const signature = secp256k1.sign(digest, privateKey, {
         prehash: false,
         format: "compact",

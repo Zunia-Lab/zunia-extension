@@ -35,7 +35,7 @@ import type { BuiltMsg, IbcChannelOption } from "@zunialab/interchain";
 
 import { explorerTxUrl } from "../../../config/interchain";
 import type { AddressBookEntry } from "../../../lib/address-book";
-import { findCatalogEntry } from "../../../lib/chain-catalog";
+import { feeTicker, findCatalogEntry } from "../../../lib/chain-catalog";
 import { isBech32, prefixOf } from "../../../lib/format";
 import { describeInterchainError } from "../../../lib/interchain";
 import {
@@ -542,7 +542,7 @@ export function NftDetailScreen({
             <GasFeePrefs
               feeAmount={feeCoin?.amount}
               feeDecimals={entry?.feeDecimals ?? 6}
-              feeSymbol={entry?.feeDenom ?? feeCoin?.denom ?? ""}
+              feeSymbol={entry ? feeTicker(entry) : (feeCoin?.denom ?? "")}
               onChanged={() => {
                 void review();
               }}

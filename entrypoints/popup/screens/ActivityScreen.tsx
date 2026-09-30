@@ -12,7 +12,7 @@ import {
   focusRing,
 } from "@zunialab/ui";
 import type { ChainBalance } from "../../../lib/balances";
-import { findCatalogEntry } from "../../../lib/chain-catalog";
+import { chainTicker, findCatalogEntry } from "../../../lib/chain-catalog";
 import { ACTIVITY_PAGE_SIZE, MAX_ACTIVITY_LIMIT, type ActivityItem } from "../../../lib/chain-queries";
 import { formatUnits } from "../../../lib/format";
 import { routeOutcome, type RouteOutcome, type TrackedRoute } from "../../../lib/packet-tracking";
@@ -340,8 +340,8 @@ function NetworkFilter({
       ...chains.map((chain) => ({
         id: chain.chainId,
         label: chain.entry.chainName,
-        sublabel: `${chain.entry.coinDenom} · ${chain.chainId}`,
-        keywords: [chain.entry.coinDenom, chain.chainId],
+        sublabel: `${chainTicker(chain.entry)} · ${chain.chainId}`,
+        keywords: [chain.entry.coinDenom, chainTicker(chain.entry), chain.chainId],
         icon: (
           <TokenLogo
             src={chain.iconUrl}

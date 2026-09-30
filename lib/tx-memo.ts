@@ -6,7 +6,7 @@
  * live on the message.
  */
 
-import { findCatalogByMinimalDenom } from "./chain-catalog";
+import { displayCoinSymbol, findCurrency } from "./chain-catalog";
 import { baseDenomOf } from "./coin-display";
 import { shortDenom } from "./format";
 
@@ -230,8 +230,8 @@ function isCoin(value: unknown): value is { denom: string; amount?: string } {
 function tokenSymbol(denom: string | undefined): string | null {
   if (!denom) return null;
   const base = baseDenomOf(denom);
-  const known = findCatalogByMinimalDenom(base);
-  if (known?.coinDenom) return known.coinDenom;
+  const known = findCurrency(base);
+  if (known) return displayCoinSymbol(known.currency.coinDenom, known.entry.bech32Prefix);
   if (base.startsWith("factory/")) {
     const name = base.split("/").pop();
     return name && name.length <= 20 ? name : "factory token";

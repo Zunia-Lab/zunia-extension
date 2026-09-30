@@ -22,6 +22,7 @@ import {
   Spinner,
 } from "@zunialab/ui";
 import type { ChainBalance } from "../../../lib/balances";
+import { chainTicker, feeTicker } from "../../../lib/chain-catalog";
 import {
   validatorBondState,
   validatorWebsite,
@@ -395,7 +396,7 @@ export function EarnScreen({
 
   const chain = chains.find((c) => c.chainId === chainId) ?? chains[0];
   const decimals = chain?.entry.coinDecimals ?? 6;
-  const symbol = chain?.entry.coinDenom ?? "";
+  const symbol = chain ? chainTicker(chain.entry) : "";
   const balance = chain ? balances[chain.chainId] : undefined;
   const available = balance ? BigInt(balance.available) : null;
 
@@ -850,7 +851,7 @@ export function EarnScreen({
             <GasFeePrefs
               feeAmount={fee.amount[0]?.amount}
               feeDecimals={chain?.entry.feeDecimals ?? 6}
-              feeSymbol={chain?.entry.feeDenom ?? "ATOM"}
+              feeSymbol={chain ? feeTicker(chain.entry) : "ATOM"}
             />
           </section>
           {error ? (
@@ -1119,7 +1120,7 @@ export function EarnScreen({
             <GasFeePrefs
               feeAmount={fee.amount[0]?.amount}
               feeDecimals={chain?.entry.feeDecimals ?? 6}
-              feeSymbol={chain?.entry.feeDenom ?? "ATOM"}
+              feeSymbol={chain ? feeTicker(chain.entry) : "ATOM"}
             />
           </section>
           {error ? (
@@ -1185,7 +1186,7 @@ export function EarnScreen({
             <GasFeePrefs
               feeAmount={fee.amount[0]?.amount}
               feeDecimals={chain?.entry.feeDecimals ?? 6}
-              feeSymbol={chain?.entry.feeDenom ?? "ATOM"}
+              feeSymbol={chain ? feeTicker(chain.entry) : "ATOM"}
             />
           </section>
           {error ? (

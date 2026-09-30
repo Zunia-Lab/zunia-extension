@@ -7,7 +7,7 @@
  * of gap. Reservations here are the amount that must stay behind.
  */
 
-import { findCatalogEntry } from "./chain-catalog";
+import { feeTicker, findCatalogEntry } from "./chain-catalog";
 import type { FeeSpeedPref } from "./settings";
 
 export const FEE_SPEEDS: readonly { id: FeeSpeedPref; label: string }[] = [
@@ -53,7 +53,7 @@ export function prefFeeFor(
     amount,
     denom,
     decimals: entry.feeDecimals ?? entry.coinDecimals,
-    symbol: entry.feeDenom || entry.coinDenom,
+    symbol: feeTicker(entry),
   };
 }
 

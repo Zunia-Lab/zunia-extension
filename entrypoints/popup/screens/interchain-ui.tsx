@@ -43,6 +43,7 @@ import type { ChainBalance } from "../../../lib/balances";
 import {
   allCatalogEntries,
   catalogIconFor,
+  chainTicker,
   findCatalogEntry,
 } from "../../../lib/chain-catalog";
 /** Direct from→to only. Multi-hop via Hub is never auto-checked. */
@@ -175,8 +176,8 @@ export function receivableAssets(
       chainName: chain.entry.chainName,
       ...(chain.iconUrl ? { chainIconUrl: chain.iconUrl } : {}),
       denom: chain.entry.coinMinimalDenom,
-      symbol: chain.entry.coinDenom,
-      label: chain.entry.coinDenom,
+      symbol: chainTicker(chain.entry),
+      label: chainTicker(chain.entry),
       decimals: chain.entry.coinDecimals,
       amount: balances[chain.chainId]?.available ?? "0",
       ...(chain.iconUrl ? { iconUrl: chain.iconUrl } : {}),
@@ -214,8 +215,8 @@ export function catalogNativeAssets(): AssetOption[] {
       chainName: entry.chainName,
       ...(icon ? { chainIconUrl: icon, iconUrl: icon } : {}),
       denom: entry.coinMinimalDenom,
-      symbol: entry.coinDenom,
-      label: entry.coinDenom,
+      symbol: chainTicker(entry),
+      label: chainTicker(entry),
       decimals: entry.coinDecimals,
       amount: "0",
       note: entry.chainName,

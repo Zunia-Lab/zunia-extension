@@ -37,6 +37,7 @@ import {
 import type { BuiltMsg } from "@zunialab/interchain";
 
 import type { ChainBalance, TokenBalance } from "../../../lib/balances";
+import { chainTicker, feeTicker } from "../../../lib/chain-catalog";
 import type { AddressBookEntry } from "../../../lib/address-book";
 import { explorerTxUrl } from "../../../config/interchain";
 import { estimateFee, msgSend } from "../../../lib/amino-tx";
@@ -111,8 +112,8 @@ function nativeToken(chain: ChainAccountView, balance?: ChainBalance): TokenBala
     denom: chain.entry.coinMinimalDenom,
     amount: balance?.available ?? "0",
     kind: "native",
-    symbol: chain.entry.coinDenom,
-    displayName: chain.entry.coinDenom,
+    symbol: chainTicker(chain.entry),
+    displayName: chainTicker(chain.entry),
     decimals: chain.entry.coinDecimals,
     ...(chain.iconUrl ? { iconUrl: chain.iconUrl } : {}),
   };
@@ -169,7 +170,7 @@ function ChainOverlayPicker({
             verifiedLabel="Listed in the Cosmos chain registry"
           />
         }
-        title={chain?.entry.coinDenom ?? "-"}
+        title={chain ? chainTicker(chain.entry) : "-"}
         subtitle={chain?.entry.chainName ?? "Pick a network"}
         detail={
           balance
@@ -992,7 +993,7 @@ export function SendScreen({
       liveReads && !confirmed && (inclusion.retrying || inclusion.loading || inclusion.missing);
     const failed = Boolean(confirmed && !confirmed.success);
     const included = Boolean(confirmed?.success);
-    const symbol = token?.symbol ?? chain.entry.coinDenom;
+    const symbol = token?.symbol ?? chainTicker(chain.entry);
     const explorer = sentUrl ? (
       <Button className="w-full" asChild>
         <a href={sentUrl} target="_blank" rel="noreferrer">
@@ -1138,7 +1139,7 @@ export function SendScreen({
         );
     const toAddress = effectiveRecipient;
     const toContact = contacts.find((contact) => contact.address === toAddress);
-    const symbol = token?.symbol ?? chain.entry.coinDenom;
+    const symbol = token?.symbol ?? chainTicker(chain.entry);
     return (
       <ScreenScaffold
         title={confirmTitle}
@@ -1325,7 +1326,7 @@ export function SendScreen({
             <GasFeePrefs
               feeAmount={feeCoin?.amount}
               feeDecimals={chain.entry.feeDecimals}
-              feeSymbol={chain.entry.feeDenom}
+              feeSymbol={feeTicker(chain.entry)}
               onChanged={() => {
                 if (cross) void review();
               }}
@@ -1349,7 +1350,7 @@ export function SendScreen({
             </Callout>
           ) : cross ? (
             <Callout tone="warning" title="Gas is paid on this chain">
-              You pay gas only on {chain.entry.chainName}, in {chain.entry.feeDenom}.
+              You pay gas only on {chain.entry.chainName}, in {feeTicker(chain.entry)}.
               Relayers carry the packet the rest of the way.
             </Callout>
           ) : (

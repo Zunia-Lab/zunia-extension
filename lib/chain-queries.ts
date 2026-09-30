@@ -15,7 +15,7 @@ import {
   type Ics20PacketData,
 } from "@zunialab/interchain";
 
-import { findCatalogEntry } from "./chain-catalog";
+import { chainTicker, findCatalogEntry } from "./chain-catalog";
 import { hasLiveBalancePermission } from "./balances";
 import { coinDisplay, formatCoin, type CoinDisplay } from "./coin-display";
 import { shortAddress } from "./format";
@@ -191,7 +191,7 @@ function denomMeta(chainId: string) {
   return {
     denom: entry?.coinMinimalDenom ?? "",
     decimals: entry?.coinDecimals ?? 6,
-    symbol: entry?.coinDenom ?? chainId,
+    symbol: entry ? chainTicker(entry) : chainId,
   };
 }
 

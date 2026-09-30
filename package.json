@@ -1,6 +1,6 @@
 {
   "name": "zunia-extension",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "packageManager": "pnpm@9.15.0",
   "description": "Zunia browser extension for Cosmos multi-chain wallet (Chrome, Firefox, Edge, Safari)",

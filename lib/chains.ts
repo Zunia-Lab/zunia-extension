@@ -112,6 +112,7 @@ export function chainJsonFor(chainId: string): string {
     currencies: [currency],
     feeCurrencies: [feeCurrency],
     features: found?.features ?? [],
+    ...(found?.ethPubKeyTypeUrl ? { ethPubKeyTypeUrl: found.ethPubKeyTypeUrl } : {}),
     bech32Prefix: prefix,
     coinType,
   });
