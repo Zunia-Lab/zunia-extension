@@ -113,15 +113,21 @@ export function SettingsLink({
 
 export function SettingsValue({
   title,
+  description,
   children,
 }: {
   title: string;
+  /** What the current choice does, under the control. */
+  description?: string;
   children: ReactNode;
 }) {
   return (
     <div className="flex flex-col gap-2 px-3 py-2.5">
       <span className="text-[12.5px] text-fg">{title}</span>
       {children}
+      {description ? (
+        <span className="block text-[10.5px] leading-[1.45] text-fg-dim">{description}</span>
+      ) : null}
     </div>
   );
 }

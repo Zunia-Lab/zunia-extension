@@ -49,10 +49,8 @@ import { AddChainScreen } from "./screens/AddChainScreen";
 import { NftScreen } from "./screens/NftScreen";
 import { NftDetailScreen } from "./screens/NftDetailScreen";
 import { GovernanceScreen } from "./screens/GovernanceScreen";
-import {
-  NotificationAlertsHost,
-  NotificationsScreen,
-} from "./screens/NotificationsScreen";
+import { NotificationsScreen } from "./screens/NotificationsScreen";
+import { useRealtime } from "./hooks/useWalletEvents";
 import { AddressBookScreen } from "./screens/AddressBookScreen";
 import { SettingsScreen } from "./screens/SettingsScreen";
 import { SecurityScreen } from "./screens/SecurityScreen";
@@ -140,6 +138,11 @@ const NO_CONTACTS: AddressBookEntry[] = [];
 function AppBody({ state }: { state: ExtensionState }) {
   const { status, settings, approvals, grants, error, loading, refresh } =
     state;
+  // The worker's unread count, the same number as the toolbar badge, so the
+  // bell inside the wallet says where that badge points. Pending approvals
+  // count as notices; before the worker's first feed arrives they still show.
+  const realtime = useRealtime();
+  const noticeCount = Math.max(realtime.unread, approvals.length);
   // Where the user has been, newest last. Back pops; the bottom bar and the
   // end of a flow start over. Empty means the default screen for the state.
   const [history, setHistory] = useState<PopupLocation[]>(() => {
@@ -350,14 +353,6 @@ function AppBody({ state }: { state: ExtensionState }) {
         </div>
       ) : null}
 
-      {unlocked && route !== "notifications" ? (
-        <NotificationAlertsHost
-          approvals={approvals}
-          chains={chains}
-          balances={balances}
-        />
-      ) : null}
-
       {route === "boot" ? (
         <div className="flex flex-1 items-center justify-center gap-2 text-fg-dim">
           <Spinner />
@@ -421,7 +416,7 @@ function AppBody({ state }: { state: ExtensionState }) {
         ? shell(
             <HomeScreen
               status={status}
-              pendingCount={approvals.length}
+              pendingCount={noticeCount}
               grants={grants}
               chains={chains}
               balances={balances}
@@ -762,7 +757,7 @@ function AppBody({ state }: { state: ExtensionState }) {
         account={activeAccount}
         networkCount={chainIds.length}
         sessionCount={grants.length}
-        pendingCount={approvals.length}
+        pendingCount={noticeCount}
         onNavigate={(next) => go(next)}
         onLock={() => {
           void sendToBackground("LOCK").then(refresh);

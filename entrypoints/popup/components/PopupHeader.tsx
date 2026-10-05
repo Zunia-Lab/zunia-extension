@@ -10,19 +10,21 @@ import {
 
 function HeaderIconButton({
   label,
-  badge,
+  count,
   onClick,
   children,
 }: {
   label: string;
-  badge?: boolean;
+  /** Unread items behind this button; shown as a small count, nothing at zero. */
+  count?: number;
   onClick: () => void;
   children: React.ReactNode;
 }) {
+  const shown = count && count > 0 ? (count > 9 ? "9+" : String(count)) : null;
   return (
     <button
       type="button"
-      aria-label={label}
+      aria-label={shown ? `${label}, ${count} unread` : label}
       onClick={onClick}
       className={cn(
         "relative flex size-[28px] items-center justify-center rounded-full border border-[var(--z-line)] text-fg-muted",
@@ -31,8 +33,13 @@ function HeaderIconButton({
       )}
     >
       {children}
-      {badge ? (
-        <span className="absolute -right-px -top-px size-[7px] rounded-full bg-accent ring-2 ring-[var(--z-bg)]" />
+      {shown ? (
+        <span
+          aria-hidden
+          className="absolute -right-[5px] -top-[5px] flex h-[15px] min-w-[15px] items-center justify-center rounded-full bg-accent px-[3px] font-mono text-[8.5px] font-semibold leading-none text-[var(--z-accent-fg)] ring-2 ring-[var(--z-bg)]"
+        >
+          {shown}
+        </span>
       ) : null}
     </button>
   );
@@ -117,7 +124,7 @@ export function PopupHeader({
 
         <HeaderIconButton
           label="Notifications"
-          badge={pendingCount > 0}
+          count={pendingCount}
           onClick={onNotifications}
         >
           <IconBell width={14} height={14} />

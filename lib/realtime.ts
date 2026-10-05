@@ -51,6 +51,7 @@ import {
 import { getPendingApprovals } from "./approvals";
 import { interchainReadsAllowed } from "./interchain";
 import {
+  advanceRewardsNotice,
   announceNotices,
   arrivalFrom,
   deriveNotices,
@@ -59,6 +60,7 @@ import {
 } from "./notices";
 import { subscriptionsFor, type TxNotice } from "./realtime-protocol";
 import { getChainAccounts, getSessionMnemonic } from "./session";
+import { getSettings } from "./settings";
 import { STORAGE_KEYS } from "./storage-keys";
 import {
   broadcastWalletEvent,
@@ -153,6 +155,8 @@ export async function clearArrivals(): Promise<void> {
   await browser.storage.local.remove([
     STORAGE_KEYS.recentArrivals,
     STORAGE_KEYS.noticeContext,
+    // Another account's rewards start their own cycle.
+    STORAGE_KEYS.rewardsNotice,
   ]);
 }
 
@@ -235,10 +239,13 @@ export async function refreshNotices(
   // `getPendingApprovals` reads the worker's own in-memory queue and is
   // synchronous; only the two storage reads are awaited.
   const approvals = getPendingApprovals();
-  const [arrivals, read, context] = await Promise.all([
+  const { notify } = await getSettings();
+  const [arrivals, read, context, rewards] = await Promise.all([
     readArrivals(),
     readNoticeIds(),
     readNoticeContext(),
+    // The worker alone advances the rewards cycle; the popup only reads it.
+    advanceRewardsNotice(balances, Date.now(), notify.rewards),
   ]);
   const chainNames = new Map<string, string>();
   const name = (chainId: string): string =>
@@ -266,6 +273,8 @@ export async function refreshNotices(
     arrivals,
     read,
     now: Date.now(),
+    rewards,
+    prefs: notify,
   });
   broadcastWalletEvent({
     type: "notices",

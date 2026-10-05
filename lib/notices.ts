@@ -21,6 +21,7 @@ import { chainTicker, findCatalogEntry } from "./chain-catalog";
 import type { ActivityItem, ProposalInfo, UnbondingInfo } from "./chain-queries";
 import { formatUnits } from "./format";
 import type { MovedCoin, TxNotice } from "./realtime-protocol";
+import type { NotifyPrefs, RewardReminder } from "./settings";
 import { STORAGE_KEYS } from "./storage-keys";
 
 export type NoticeKind =
@@ -56,6 +57,18 @@ export interface NoticeInput {
   readonly arrivals: readonly ArrivalNotice[];
   readonly read: readonly string[];
   readonly now: number;
+  /**
+   * The claimable-rewards cycle ({@link nextRewardsNotice}). Only the worker
+   * advances it; every surface renders the row it describes. Absent means no
+   * rewards row.
+   */
+  readonly rewards?: RewardsNoticeState;
+  /**
+   * Which kinds the user wants. Rows of other kinds are not derived at all, so
+   * they reach neither the feed, nor a badge, nor a browser alert. Approvals
+   * always show. Absent means everything.
+   */
+  readonly prefs?: NotifyPrefs;
 }
 
 /**
@@ -125,6 +138,7 @@ export function describeCoin(
  */
 export function deriveNotices(input: NoticeInput): Notice[] {
   const { now } = input;
+  const prefs = input.prefs;
   const rows: Array<Omit<Notice, "read">> = [];
   const chainName = (chainId: string): string =>
     input.chainNames.get(chainId) ?? findCatalogEntry(chainId)?.chainName ?? chainId;
@@ -140,15 +154,22 @@ export function deriveNotices(input: NoticeInput): Notice[] {
     });
   }
 
-  for (const [chainId, balance] of Object.entries(input.balances)) {
-    if (!balance.rewards || balance.rewards === "0") continue;
+  // One generic row per rewards cycle, with no amount in it: the amount grows
+  // every block, and a row keyed or worded on it was a new alert every block.
+  // Nothing balance-derived shows while the wallet is locked (no balances).
+  const rewards = input.rewards;
+  if (
+    rewards?.phase === "raised" &&
+    prefs?.rewards !== "off" &&
+    Object.keys(input.balances).length > 0
+  ) {
     rows.push({
-      id: `rewards:${chainId}:${balance.rewards}`,
+      id: `rewards:${rewards.cycle}`,
       kind: "rewards",
-      title: "Rewards ready to claim",
-      meta: `${formatUnits(balance.rewards, balance.decimals, 3)} ${balance.symbol} on ${chainName(chainId)}`,
+      title: "Staking rewards ready to claim",
+      meta: "Open Earn to claim them.",
       target: { route: "earn" },
-      timestamp: now,
+      timestamp: rewards.raisedAt || now,
     });
   }
 
@@ -210,8 +231,16 @@ export function deriveNotices(input: NoticeInput): Notice[] {
     });
   }
 
+  const wanted = (kind: NoticeKind): boolean => {
+    if (!prefs) return true;
+    if (kind === "transfer") return prefs.transfers;
+    if (kind === "unbonding") return prefs.unbonding;
+    if (kind === "governance") return prefs.governance;
+    if (kind === "rewards") return prefs.rewards !== "off";
+    return true;
+  };
   const unique = new Map<string, Omit<Notice, "read">>();
-  for (const row of rows) if (!unique.has(row.id)) unique.set(row.id, row);
+  for (const row of rows) if (wanted(row.kind) && !unique.has(row.id)) unique.set(row.id, row);
 
   const readIds = new Set(input.read);
   return [...unique.values()]
@@ -220,6 +249,148 @@ export function deriveNotices(input: NoticeInput): Notice[] {
       if (a.read !== b.read) return a.read ? 1 : -1;
       return b.timestamp - a.timestamp;
     });
+}
+
+/* -------------------------------------------------------------------------- *
+ * Claimable rewards
+ * -------------------------------------------------------------------------- */
+
+/**
+ * The "rewards ready" notice is a cycle, not a reading of the amount.
+ *
+ * Staking rewards grow every block a validator pays out, every few seconds on
+ * some chains. A notice keyed on the amount was therefore a new alert every
+ * block. Now:
+ *
+ * - `waiting` (a fresh install or account): the notice is raised as soon as
+ *   anything at all is claimable, on any chain;
+ * - `raised`: one generic notice ("Staking rewards ready to claim", no token
+ *   and no amount) stays in the feed for as long as the rewards wait. Reading
+ *   it is final for this cycle: the id does not change, so it never re-alerts;
+ * - once the rewards are claimed (nothing claimable, or a claim seen as a drop
+ *   with every chain back under one whole token), the cycle is `rearmed`, and
+ *   the next notice waits until some chain has at least one whole token to
+ *   claim. A claim is not followed, a block later, by an alert for a few
+ *   micro-units that started accruing again.
+ *
+ * With a daily or weekly reminder ({@link RewardReminder}), rewards still
+ * waiting a day or a week after the notice raise it again, as a new cycle:
+ * one more alert, then quiet until the next reminder or the claim.
+ */
+export type RewardsPhase = "waiting" | "raised" | "rearmed";
+
+export interface RewardsNoticeState {
+  readonly phase: RewardsPhase;
+  /** Raised notices so far; the notice id, so each cycle is read on its own. */
+  readonly cycle: number;
+  /** When the current notice was raised: its place in the feed. */
+  readonly raisedAt: number;
+  /** Claimable per chain at the last look, in base units, to see a claim. */
+  readonly last: Readonly<Record<string, string>>;
+}
+
+export const INITIAL_REWARDS_NOTICE: RewardsNoticeState = {
+  phase: "waiting",
+  cycle: 0,
+  raisedAt: 0,
+  last: {},
+};
+
+function baseUnits(value: string | undefined): bigint {
+  return value && /^\d{1,80}$/.test(value) ? BigInt(value) : 0n;
+}
+
+/** How long a waiting reward notice stays quiet before it is raised again. */
+export function reminderInterval(reminder: RewardReminder): number | null {
+  if (reminder === "daily") return 86_400_000;
+  if (reminder === "weekly") return 7 * 86_400_000;
+  return null;
+}
+
+/**
+ * The next state of the rewards cycle, from the balances just seen.
+ *
+ * Pure. Chains whose read failed teach nothing (a failed read reports zero,
+ * which must not pass for a claim), and an empty list (locked, or nothing
+ * loaded yet) leaves the state as it was. `repeatMs` re-raises a notice whose
+ * rewards are still waiting that long after it was raised (daily or weekly
+ * reminders); null raises once per cycle.
+ */
+export function nextRewardsNotice(
+  prev: RewardsNoticeState,
+  balances: readonly ChainBalance[],
+  now: number,
+  repeatMs: number | null = null,
+): RewardsNoticeState {
+  const seen = balances.filter((row) => !row.error);
+  if (seen.length === 0) return prev;
+
+  const last: Record<string, string> = { ...prev.last };
+  let anyClaimable = false;
+  let anyWhole = false;
+  let claimed = false;
+  for (const row of seen) {
+    const amount = baseUnits(row.rewards);
+    const decimals = Number.isInteger(row.decimals) ? Math.min(Math.max(row.decimals, 0), 30) : 6;
+    if (amount > 0n) anyClaimable = true;
+    if (amount >= 10n ** BigInt(decimals)) anyWhole = true;
+    const before = prev.last[row.chainId];
+    if (before !== undefined && amount < baseUnits(before)) claimed = true;
+    last[row.chainId] = amount.toString();
+  }
+
+  const raise = (): RewardsNoticeState => ({ phase: "raised", cycle: prev.cycle + 1, raisedAt: now, last });
+  switch (prev.phase) {
+    case "waiting":
+      return anyClaimable ? raise() : { ...prev, last };
+    case "raised":
+      if (!anyClaimable || (claimed && !anyWhole)) return { ...prev, phase: "rearmed", last };
+      if (repeatMs !== null && now - prev.raisedAt >= repeatMs) return raise();
+      return { ...prev, last };
+    case "rearmed":
+      return anyWhole ? raise() : { ...prev, last };
+  }
+}
+
+/** A stored rewards state, validated; anything unreadable starts a fresh cycle. */
+export function parseRewardsNotice(value: unknown): RewardsNoticeState {
+  if (!value || typeof value !== "object") return INITIAL_REWARDS_NOTICE;
+  const row = value as Partial<Record<keyof RewardsNoticeState, unknown>>;
+  const phase = row.phase === "raised" || row.phase === "rearmed" || row.phase === "waiting" ? row.phase : null;
+  if (!phase || typeof row.cycle !== "number" || !Number.isSafeInteger(row.cycle) || row.cycle < 0) {
+    return INITIAL_REWARDS_NOTICE;
+  }
+  const last: Record<string, string> = {};
+  if (row.last && typeof row.last === "object") {
+    for (const [chainId, amount] of Object.entries(row.last as Record<string, unknown>)) {
+      if (typeof amount === "string" && /^\d{1,80}$/.test(amount)) last[chainId] = amount;
+    }
+  }
+  return {
+    phase,
+    cycle: row.cycle,
+    raisedAt: typeof row.raisedAt === "number" && Number.isFinite(row.raisedAt) ? row.raisedAt : 0,
+    last,
+  };
+}
+
+export async function readRewardsNotice(): Promise<RewardsNoticeState> {
+  const stored = (await browser.storage.local.get(STORAGE_KEYS.rewardsNotice))[STORAGE_KEYS.rewardsNotice];
+  return parseRewardsNotice(stored);
+}
+
+/** Advance the stored cycle with these balances; written only when it changed. */
+export async function advanceRewardsNotice(
+  balances: readonly ChainBalance[],
+  now: number,
+  reminder: RewardReminder = "once",
+): Promise<RewardsNoticeState> {
+  const prev = await readRewardsNotice();
+  const next = nextRewardsNotice(prev, balances, now, reminderInterval(reminder));
+  if (JSON.stringify(next) !== JSON.stringify(prev)) {
+    await browser.storage.local.set({ [STORAGE_KEYS.rewardsNotice]: next });
+  }
+  return next;
 }
 
 /* -------------------------------------------------------------------------- *
@@ -243,10 +414,9 @@ interface AnnounceState {
 /**
  * How many announced ids are remembered.
  *
- * Bounded because `rewards:` ids embed the reward amount, which changes every
- * block a validator pays out: an unbounded list grows without limit for as
- * long as the wallet is staking anything. 200 covers far more than a single
- * session's feed, which is all this has to do.
+ * Bounded so the list cannot grow without limit over months of transfers and
+ * proposals. 200 covers far more than a single session's feed, which is all
+ * this has to do. (Reward notices are one id per cycle, `rewards:<n>`.)
  */
 const MAX_ANNOUNCED = 200;
 

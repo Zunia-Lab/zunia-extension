@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import {
   EmptyState,
   ScreenScaffold,
+  Segmented,
   cn,
   focusRing,
 } from "@zunialab/ui";
@@ -11,7 +12,8 @@ import type { ApprovalRequest } from "../../../lib/approvals";
 import type { ChainBalance } from "../../../lib/balances";
 import type { ActivityKind } from "../../../lib/chain-queries";
 import { relativeTime } from "../../../lib/format";
-import { SettingsGroup, SettingsToggle } from "../components/SettingsList";
+import type { NotifyPrefs, RewardReminder } from "../../../lib/settings";
+import { SettingsGroup, SettingsToggle, SettingsValue } from "../components/SettingsList";
 import type { ChainAccountView } from "../hooks/useChainAccounts";
 import {
   useActivity,
@@ -36,6 +38,36 @@ const NOTICE_FILTERS: ReadonlyArray<{ id: "all" | NoticeKind; label: string }> =
   { id: "unbonding", label: "Unbonding" },
   { id: "governance", label: "Gov" },
 ];
+
+/** Whether the user still wants notices of this kind (approvals always). */
+function kindEnabled(kind: "all" | NoticeKind, prefs: NotifyPrefs): boolean {
+  switch (kind) {
+    case "transfer":
+      return prefs.transfers;
+    case "unbonding":
+      return prefs.unbonding;
+    case "governance":
+      return prefs.governance;
+    case "rewards":
+      return prefs.rewards !== "off";
+    default:
+      return true;
+  }
+}
+
+const REWARD_REMINDERS: ReadonlyArray<{ value: RewardReminder; label: string }> = [
+  { value: "once", label: "Once" },
+  { value: "daily", label: "Daily" },
+  { value: "weekly", label: "Weekly" },
+  { value: "off", label: "Off" },
+];
+
+const REWARD_REMINDER_HINT: Record<RewardReminder, string> = {
+  once: "One notification when rewards can be claimed. After you claim, the next one waits until a whole token is ready.",
+  daily: "Reminds you once a day while rewards are waiting to be claimed.",
+  weekly: "Reminds you once a week while rewards are waiting to be claimed.",
+  off: "No notifications for staking rewards. Earn still shows what you can claim.",
+};
 
 function noticeActivityKind(kind: NoticeKind): ActivityKind {
   switch (kind) {
@@ -113,9 +145,11 @@ export function NotificationsScreen({
   onBack: () => void;
   onNavigate: (route: PopupRoute, chainId?: string) => void;
 }) {
-  const { settings } = usePrefs();
+  const { settings, update } = usePrefs();
   const alerts = useBrowserAlerts();
   const live = settings.liveBalances;
+  const prefs = settings.notify;
+  const setPrefs = (patch: Partial<NotifyPrefs>) => void update({ notify: { ...prefs, ...patch } });
   const chainIds = useMemo(() => chains.map((c) => c.chainId), [chains]);
   const chainNames = useMemo(
     () => new Map(chains.map((c) => [c.chainId, c.entry.chainName])),
@@ -126,18 +160,22 @@ export function NotificationsScreen({
   const proposals = useProposals(chainIds, live);
   const unbonding = useUnbonding(chainIds, live);
 
-  const { notices, unreadCount, markAllRead } = useNotifications({
+  const { notices, unreadCount, markRead, markAllRead } = useNotifications({
     approvals,
     balances,
     chainNames,
     activity: activity.rows,
     proposals: proposals.rows,
     unbonding: unbonding.rows,
+    prefs,
   });
   const [filter, setFilter] = useState<"all" | NoticeKind>("all");
+  // A filter for a kind the user turned off would always be empty.
+  const active = kindEnabled(filter, prefs) ? filter : "all";
+  const filters = NOTICE_FILTERS.filter((item) => kindEnabled(item.id, prefs));
   const visible = useMemo(
-    () => (filter === "all" ? notices : notices.filter((notice) => notice.kind === filter)),
-    [filter, notices],
+    () => (active === "all" ? notices : notices.filter((notice) => notice.kind === active)),
+    [active, notices],
   );
   const feedLoading =
     live &&
@@ -173,17 +211,17 @@ export function NotificationsScreen({
             role="listbox"
             aria-label="Notification type"
           >
-            {NOTICE_FILTERS.map((item) => (
+            {filters.map((item) => (
               <li key={item.id}>
                 <button
                   type="button"
                   role="option"
-                  aria-selected={filter === item.id}
+                  aria-selected={active === item.id}
                   onClick={() => setFilter(item.id)}
                   className={cn(
                     "shrink-0 rounded-full border px-2.5 py-1 font-mono text-[10px]",
                     "transition-colors duration-[var(--z-duration-base)]",
-                    filter === item.id
+                    active === item.id
                       ? "border-[color-mix(in_srgb,var(--z-accent)_55%,transparent)] bg-[var(--z-state-selected)] text-fg"
                       : "border-[var(--z-line)] text-fg-dim hover:text-fg",
                     focusRing,
@@ -219,6 +257,7 @@ export function NotificationsScreen({
                 <NoticeRow
                   notice={notice}
                   onOpen={(row) => {
+                    if (!row.read) markRead([row.id]);
                     if (!row.target) return;
                     onNavigate(row.target.route, row.target.chainId);
                   }}
@@ -227,6 +266,38 @@ export function NotificationsScreen({
             ))}
           </ul>
         )}
+
+        <SettingsGroup label="Show">
+          <SettingsToggle
+            title="Transfers"
+            description="Tokens arriving in this wallet."
+            checked={prefs.transfers}
+            onCheckedChange={(transfers) => setPrefs({ transfers })}
+          />
+          <SettingsToggle
+            title="Unbonding"
+            description="Stake that is unbonding, and when it is liquid again."
+            checked={prefs.unbonding}
+            onCheckedChange={(unbonding) => setPrefs({ unbonding })}
+          />
+          <SettingsToggle
+            title="Governance"
+            description="Proposals still open for your vote."
+            checked={prefs.governance}
+            onCheckedChange={(governance) => setPrefs({ governance })}
+          />
+          <SettingsValue title="Staking rewards" description={REWARD_REMINDER_HINT[prefs.rewards]}>
+            <Segmented
+              size="sm"
+              value={prefs.rewards}
+              onChange={(rewards) => setPrefs({ rewards: rewards as RewardReminder })}
+              options={REWARD_REMINDERS.map((option) => ({ ...option }))}
+            />
+          </SettingsValue>
+          <p className="px-3 pb-2.5 text-[10.5px] leading-[1.45] text-fg-dim">
+            Approvals always show: a site is waiting on each one.
+          </p>
+        </SettingsGroup>
 
         <SettingsGroup label="Alerts">
           <SettingsToggle
@@ -240,35 +311,4 @@ export function NotificationsScreen({
       </div>
     </ScreenScaffold>
   );
-}
-
-/** Derives the feed and fires browser alerts even when this screen is closed. */
-export function NotificationAlertsHost({
-  approvals,
-  chains,
-  balances,
-}: {
-  approvals: ApprovalRequest[];
-  chains: ChainAccountView[];
-  balances: Record<string, ChainBalance>;
-}) {
-  const { settings } = usePrefs();
-  const live = settings.liveBalances;
-  const chainIds = useMemo(() => chains.map((c) => c.chainId), [chains]);
-  const chainNames = useMemo(
-    () => new Map(chains.map((c) => [c.chainId, c.entry.chainName])),
-    [chains],
-  );
-  const activity = useActivity(chainIds, live);
-  const proposals = useProposals(chainIds, live);
-  const unbonding = useUnbonding(chainIds, live);
-  useNotifications({
-    approvals,
-    balances,
-    chainNames,
-    activity: activity.rows,
-    proposals: proposals.rows,
-    unbonding: unbonding.rows,
-  });
-  return null;
 }

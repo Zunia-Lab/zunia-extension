@@ -997,6 +997,17 @@ export default defineBackground(() => {
   });
   void sweepExpiredGrants().catch(() => undefined);
 
+  // Notification preferences decide which rows exist, so the toolbar badge and
+  // every open surface follow a change at once, not at the next chain event.
+  browser.storage.onChanged.addListener((changes, area) => {
+    if (area !== "local") return;
+    const change = changes[STORAGE_KEYS.settings];
+    if (!change) return;
+    const before = JSON.stringify((change.oldValue as { notify?: unknown } | undefined)?.notify ?? null);
+    const after = JSON.stringify((change.newValue as { notify?: unknown } | undefined)?.notify ?? null);
+    if (before !== after) void refreshNotices().catch(() => undefined);
+  });
+
   browser.tabs.onRemoved.addListener((tabId) => {
     rejectApprovalsWhere((item) => item.tabId === tabId, "The requesting tab was closed");
     void forgetProviderTab(tabId);

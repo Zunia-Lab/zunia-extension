@@ -21,6 +21,47 @@ export type AssetListMode = "grouped" | "separate";
 /** Gas price tier used for every wallet transaction. */
 export type FeeSpeedPref = "low" | "average" | "high";
 
+/**
+ * How often the "staking rewards ready to claim" reminder comes back while the
+ * rewards wait: once until they are claimed, every day, every week, or never.
+ */
+export type RewardReminder = "once" | "daily" | "weekly" | "off";
+
+/**
+ * Which notifications appear: in the feed, on the badges and as browser
+ * alerts. Approvals are not a choice: a site is waiting on each one.
+ */
+export interface NotifyPrefs {
+  transfers: boolean;
+  unbonding: boolean;
+  governance: boolean;
+  rewards: RewardReminder;
+}
+
+export const DEFAULT_NOTIFY_PREFS: NotifyPrefs = {
+  transfers: true,
+  unbonding: true,
+  governance: true,
+  rewards: "once",
+};
+
+/** A stored `notify` value, field by field; anything unreadable keeps its default. */
+export function parseNotifyPrefs(value: unknown): NotifyPrefs {
+  const row = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  const flag = (key: "transfers" | "unbonding" | "governance"): boolean =>
+    typeof row[key] === "boolean" ? (row[key] as boolean) : DEFAULT_NOTIFY_PREFS[key];
+  const rewards = row.rewards;
+  return {
+    transfers: flag("transfers"),
+    unbonding: flag("unbonding"),
+    governance: flag("governance"),
+    rewards:
+      rewards === "once" || rewards === "daily" || rewards === "weekly" || rewards === "off"
+        ? rewards
+        : DEFAULT_NOTIFY_PREFS.rewards,
+  };
+}
+
 /** Fiat display currencies offered in Preferences. */
 export const CURRENCIES = ["USD", "EUR", "GBP", "JPY", "CHF"] as const;
 export type CurrencyCode = (typeof CURRENCIES)[number];
@@ -98,6 +139,8 @@ export interface ExtensionSettings {
    * swaprouter reads. Default 1. Range (0, 50].
    */
   swapSlippage: number;
+  /** Which notifications appear, and how often reward reminders come back. */
+  notify: NotifyPrefs;
 }
 
 /**
@@ -133,6 +176,7 @@ export const DEFAULT_SETTINGS: ExtensionSettings = {
   feeSpeed: "average",
   gasAdjustment: 1.4,
   swapSlippage: 1,
+  notify: DEFAULT_NOTIFY_PREFS,
 };
 
 export async function getSettings(): Promise<ExtensionSettings> {
@@ -163,6 +207,7 @@ export async function getSettings(): Promise<ExtensionSettings> {
   ) {
     next.swapSlippage = DEFAULT_SETTINGS.swapSlippage;
   }
+  next.notify = parseNotifyPrefs(next.notify);
   return next;
 }
 

@@ -7,6 +7,13 @@ import { usePrefs } from "../state/Prefs";
 import type { PopupRoute } from "../routes";
 import { IconLock, IconShield } from "./icons";
 
+const NOTIFY_LABELS: Record<string, string> = {
+  once: "rewards once",
+  daily: "rewards daily",
+  weekly: "rewards weekly",
+  off: "rewards off",
+};
+
 const LOCK_LABELS: Record<number, string> = {
   60_000: "1 min",
   300_000: "5 min",
@@ -15,7 +22,7 @@ const LOCK_LABELS: Record<number, string> = {
   3_600_000: "60 min",
 };
 
-/** The version Chrome installed, so the label cannot drift from a release. */
+/** The version the browser installed, so the label cannot drift from a release. */
 function manifestVersion(): string | null {
   try {
     return browser.runtime.getManifest().version;
@@ -23,6 +30,16 @@ function manifestVersion(): string | null {
     return null;
   }
 }
+
+const BROWSER_NAMES: Record<string, string> = {
+  chrome: "Chrome",
+  firefox: "Firefox",
+  safari: "Safari",
+  edge: "Edge",
+};
+
+/** Which build this is: worth saying when someone reports a problem. */
+const BUILD_NAME = BROWSER_NAMES[import.meta.env.BROWSER] ?? "browser";
 
 /** Settings hub. Each group links to a focused screen instead of one long list. */
 export function SettingsScreen({
@@ -50,24 +67,27 @@ export function SettingsScreen({
     <ScreenScaffold
       title="Settings"
       onBack={onBack}
-      right={
-        version ? (
-          <span className="font-mono text-[9px] uppercase tracking-[0.12em] text-fg-dim">
-            v{version}
-          </span>
-        ) : undefined
-      }
       footer={
-        <Button
-          variant="secondary"
-          className="w-full"
-          onClick={() => {
-            void sendToBackground("LOCK").then(onRefresh);
-          }}
-        >
-          <IconLock width={16} height={16} />
-          Lock wallet
-        </Button>
+        <div className="flex flex-col gap-2">
+          <Button
+            variant="secondary"
+            className="w-full"
+            onClick={() => {
+              void sendToBackground("LOCK").then(onRefresh);
+            }}
+          >
+            <IconLock width={16} height={16} />
+            Lock wallet
+          </Button>
+          {version ? (
+            <p
+              className="text-center font-mono text-[10px] tracking-[0.06em] text-fg-dim"
+              aria-label={`Zunia version ${version} for ${BUILD_NAME}`}
+            >
+              Zunia <span className="text-fg-muted">v{version}</span> · {BUILD_NAME}
+            </p>
+          ) : null}
+        </div>
       }
     >
       <div className="flex flex-col gap-4 pt-1">
@@ -115,6 +135,12 @@ export function SettingsScreen({
             description="Theme, currency, privacy, live balances"
             meta={settings.theme}
             onClick={() => onNavigate("preferences")}
+          />
+          <SettingsLink
+            title="Notifications"
+            description="Which notifications show, and reward reminders"
+            meta={NOTIFY_LABELS[settings.notify.rewards]}
+            onClick={() => onNavigate("notifications")}
           />
         </SettingsGroup>
 

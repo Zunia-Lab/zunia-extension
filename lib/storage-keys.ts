@@ -38,6 +38,17 @@ export const STORAGE_KEYS = {
   announcedNotices: "zunia.announcedNotices",
   /** Arrivals a live socket reported, kept until history catches up. */
   recentArrivals: "zunia.recentArrivals",
+  /**
+   * Unbonding and governance rows the worker's slow pass last read, with the
+   * time it read them (`lib/realtime.ts`), so the feed keeps them between passes.
+   */
+  noticeContext: "zunia.noticeContext",
+  /**
+   * The claimable-rewards notice: its cycle, phase and the claimable amounts
+   * the last look saw per chain (`lib/notices.ts`). One notice per cycle, never
+   * one per block.
+   */
+  rewardsNotice: "zunia.rewardsNotice",
   /** Networks the user added by hand. */
   customChains: "zunia.customChains",
   /** Cache of IBC transfer channels the engine discovered or the user entered. */

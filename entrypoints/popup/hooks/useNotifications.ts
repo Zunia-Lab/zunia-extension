@@ -6,47 +6,29 @@ import type {
   ProposalInfo,
   UnbondingInfo,
 } from "../../../lib/chain-queries";
-import { showBrowserAlert } from "../../../lib/browser-alerts";
-import { formatUnits } from "../../../lib/format";
+import {
+  INITIAL_REWARDS_NOTICE,
+  deriveNotices,
+  parseRewardsNotice,
+  type Notice,
+  type NoticeKind,
+  type RewardsNoticeState,
+} from "../../../lib/notices";
+import { sendToBackground } from "../../../lib/popup-client";
+import type { NotifyPrefs } from "../../../lib/settings";
 import { STORAGE_KEYS } from "../../../lib/storage-keys";
 
-export type NoticeKind =
-  | "approval"
-  | "transfer"
-  | "rewards"
-  | "unbonding"
-  | "governance";
-
-export interface Notice {
-  id: string;
-  kind: NoticeKind;
-  title: string;
-  meta: string;
-  /** Route the row opens, when there is somewhere useful to go. */
-  target?: { route: "approve" | "earn" | "governance" | "chain"; chainId?: string };
-  timestamp: number;
-  read: boolean;
-}
-
-function hostOf(origin: string): string {
-  try {
-    return new URL(origin).host;
-  } catch {
-    return origin;
-  }
-}
-
-function daysLeft(iso: string | undefined, now: number): number | null {
-  if (!iso) return null;
-  const ms = Date.parse(iso) - now;
-  if (!Number.isFinite(ms) || ms <= 0) return null;
-  return Math.ceil(ms / 86_400_000);
-}
+export type { Notice, NoticeKind };
 
 /**
- * Derives the notification feed from what the wallet already knows: pending
- * approvals, claimable rewards, finished unbondings, incoming transfers and
- * governance deadlines. Nothing is pushed from a server.
+ * The notification feed as the popup shows it.
+ *
+ * The derivation is the worker's own (`lib/notices.ts`), fed with what the
+ * open screens have loaded on top of it (history, proposals, unbondings), so
+ * a row has the same id here as on the toolbar badge. Browser alerts and the
+ * badge are the worker's job alone: this hook never raises an alert, so an
+ * open popup cannot double one, and it never advances the rewards cycle, it
+ * only reads it.
  */
 export function useNotifications({
   approvals,
@@ -55,6 +37,7 @@ export function useNotifications({
   activity,
   proposals,
   unbonding,
+  prefs,
 }: {
   approvals: ApprovalRequest[];
   balances: Record<string, ChainBalance>;
@@ -62,8 +45,10 @@ export function useNotifications({
   activity: ActivityItem[];
   proposals: ProposalInfo[];
   unbonding: UnbondingInfo[];
+  prefs: NotifyPrefs;
 }) {
   const [read, setRead] = useState<string[]>([]);
+  const [rewards, setRewards] = useState<RewardsNoticeState>(INITIAL_REWARDS_NOTICE);
   // The feed's timestamps and "Nd left" labels need a clock, but reading it
   // inside the memo below makes the derivation impure: React can re-render the
   // same inputs twice (StrictMode, a concurrent retry) and produce two
@@ -77,138 +62,69 @@ export function useNotifications({
     return () => window.clearInterval(handle);
   }, []);
 
+  // Read ids and the rewards cycle live in storage, written by the worker:
+  // follow them, so a row read in another surface turns read here too.
   useEffect(() => {
+    let cancelled = false;
     void browser.storage.local
-      .get(STORAGE_KEYS.readNotifications)
+      .get([STORAGE_KEYS.readNotifications, STORAGE_KEYS.rewardsNotice])
       .then((store) => {
-        const value = store[STORAGE_KEYS.readNotifications];
-        if (Array.isArray(value)) setRead(value as string[]);
+        if (cancelled) return;
+        const ids = store[STORAGE_KEYS.readNotifications];
+        if (Array.isArray(ids)) setRead(ids.filter((id): id is string => typeof id === "string"));
+        setRewards(parseRewardsNotice(store[STORAGE_KEYS.rewardsNotice]));
       });
+    const onChanged = (
+      changes: Record<string, { newValue?: unknown }>,
+      area: string,
+    ) => {
+      if (area !== "local") return;
+      const ids = changes[STORAGE_KEYS.readNotifications];
+      if (ids && Array.isArray(ids.newValue)) {
+        setRead(ids.newValue.filter((id): id is string => typeof id === "string"));
+      }
+      const cycle = changes[STORAGE_KEYS.rewardsNotice];
+      if (cycle) setRewards(parseRewardsNotice(cycle.newValue));
+    };
+    browser.storage.onChanged.addListener(onChanged);
+    return () => {
+      cancelled = true;
+      browser.storage.onChanged.removeListener(onChanged);
+    };
   }, []);
 
-  const notices = useMemo(() => {
-    const rows: Omit<Notice, "read">[] = [];
+  const notices = useMemo(
+    () =>
+      deriveNotices({
+        approvals,
+        balances,
+        chainNames,
+        activity,
+        proposals,
+        unbonding,
+        // The worker's socket arrivals reach this list through its own feed;
+        // here, history covers transfers.
+        arrivals: [],
+        read,
+        now,
+        rewards,
+        prefs,
+      }),
+    [approvals, balances, chainNames, activity, proposals, unbonding, read, now, rewards, prefs],
+  );
 
-    for (const approval of approvals) {
-      rows.push({
-        id: `approval:${approval.id}`,
-        kind: "approval",
-        title: approval.title,
-        meta: `${hostOf(approval.origin)} · waiting for you`,
-        target: { route: "approve" },
-        timestamp: approval.createdAt,
-      });
-    }
-
-    for (const [chainId, balance] of Object.entries(balances)) {
-      if (!balance.rewards || balance.rewards === "0") continue;
-      rows.push({
-        id: `rewards:${chainId}:${balance.rewards}`,
-        kind: "rewards",
-        title: "Rewards ready to claim",
-        meta: `${formatUnits(balance.rewards, balance.decimals, 3)} ${balance.symbol} on ${chainNames.get(chainId) ?? chainId}`,
-        target: { route: "earn" },
-        timestamp: now,
-      });
-    }
-
-    for (const row of unbonding) {
-      const remaining = daysLeft(row.completionTime, now);
-      rows.push({
-        id: `unbonding:${row.chainId}:${row.validatorAddress}:${row.completionTime}`,
-        kind: "unbonding",
-        title: remaining === null ? "Unbonding complete" : "Unbonding in progress",
-        meta:
-          remaining === null
-            ? `${formatUnits(row.amount, row.decimals, 3)} ${row.symbol} is liquid again`
-            : `${formatUnits(row.amount, row.decimals, 3)} ${row.symbol} · ${remaining}d left`,
-        target: { route: "earn" },
-        timestamp: Date.parse(row.completionTime) || now,
-      });
-    }
-
-    for (const item of activity.slice(0, 8)) {
-      if (item.kind !== "received") continue;
-      rows.push({
-        id: `transfer:${item.hash}`,
-        kind: "transfer",
-        title: `Transfer arrived on ${item.chainId}`,
-        meta: item.amount
-          ? `${formatUnits(item.amount.replace("-", ""), item.decimals, 3)} ${item.symbol}`
-          : item.subtitle,
-        target: { route: "chain", chainId: item.chainId },
-        timestamp: item.timestamp,
-      });
-    }
-
-    for (const proposal of proposals) {
-      const remaining = daysLeft(proposal.votingEndTime, now);
-      if (proposal.status !== "voting" || remaining === null) continue;
-      rows.push({
-        id: `gov:${proposal.chainId}:${proposal.id}`,
-        kind: "governance",
-        title: `Proposal ${proposal.id} ends in ${remaining}d`,
-        meta: `${chainNames.get(proposal.chainId) ?? proposal.chainId} · ${proposal.title}`,
-        target: { route: "governance" },
-        timestamp: Date.parse(proposal.votingEndTime ?? "") || now,
-      });
-    }
-
-    return rows
-      .map((row) => ({ ...row, read: read.includes(row.id) }))
-      .sort((a, b) => {
-        if (a.read !== b.read) return a.read ? 1 : -1;
-        return b.timestamp - a.timestamp;
-      });
-  }, [
-    approvals,
-    balances,
-    chainNames,
-    activity,
-    proposals,
-    unbonding,
-    read,
-    now,
-  ]);
+  /** Mark rows read through the worker, which also lowers the toolbar badge. */
+  const markRead = useCallback((ids: readonly string[]) => {
+    if (ids.length === 0) return;
+    setRead((prev) => [...new Set([...prev, ...ids])]);
+    void sendToBackground("MARK_NOTICES_READ", { ids }).catch(() => undefined);
+  }, []);
 
   const markAllRead = useCallback(() => {
-    const ids = Array.from(new Set([...read, ...notices.map((n) => n.id)]));
-    setRead(ids);
-    void browser.storage.local.set({ [STORAGE_KEYS.readNotifications]: ids });
-  }, [read, notices]);
+    markRead(notices.filter((notice) => !notice.read).map((notice) => notice.id));
+  }, [markRead, notices]);
 
   const unreadCount = notices.filter((n) => !n.read).length;
 
-  useEffect(() => {
-    const unread = notices.filter((notice) => !notice.read);
-    if (unread.length === 0) return;
-    let cancelled = false;
-    void browser.storage.local
-      .get(STORAGE_KEYS.alertedNotifications)
-      .then((store) => {
-        if (cancelled) return;
-        const seen = new Set(
-          Array.isArray(store[STORAGE_KEYS.alertedNotifications])
-            ? (store[STORAGE_KEYS.alertedNotifications] as string[])
-            : [],
-        );
-        const fresh = unread.filter((notice) => !seen.has(notice.id));
-        if (fresh.length === 0) return;
-        // First snapshot after a clean install: remember the current feed so
-        // opening the popup does not fire a burst of alerts for old rewards.
-        const announce = seen.size > 0;
-        for (const notice of fresh) {
-          seen.add(notice.id);
-          if (announce) void showBrowserAlert(notice.id, notice.title, notice.meta);
-        }
-        void browser.storage.local.set({
-          [STORAGE_KEYS.alertedNotifications]: [...seen],
-        });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [notices]);
-
-  return { notices, unreadCount, markAllRead };
+  return { notices, unreadCount, markRead, markAllRead };
 }
