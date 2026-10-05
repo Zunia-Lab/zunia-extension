@@ -1,24 +1,29 @@
 /**
- * Flat spendable-asset rows for Home.
+ * Home's asset rows, and the words, prices and totals they show.
  *
- * One row per denom on an enabled chain: native coins always, plus any IBC,
- * factory, or other bank balance the address actually holds. Pricing uses the
- * holding chain for natives and the origin chain for IBC when that chain is
- * already in the price map.
+ * One row per denom on an enabled chain: the chain's staking coin always (a
+ * zero one too, so a network with no balance is still findable), plus every
+ * other non-zero bank balance. Each row carries the TokenIdentity it is shown
+ * with, from `heldTokenIdentity` (lib/balances.ts): what the token is and
+ * where it sits (`USDC.n` · `Noble USDC · on Osmosis`), and the decimals its
+ * amount is shown with, the same ones Send converts a typed amount with.
+ *
+ * A row is priced through that identity only. The price map is keyed by chain
+ * and quotes each chain's own coin, so a token takes a chain's price only when
+ * it is exactly that coin (see {@link priceChainOf}). Nothing is priced by its
+ * base denom: `uusdc` is Noble's coin and Axelar's bridged USDC alike, and
+ * `wei` is Ethereum's unit as well as Stratos's coin. A token whose decimals
+ * are unknown is never valued: its amount cannot be scaled.
  */
 
-import { findCatalogByMinimalDenom } from "./chain-catalog";
-import type { ChainBalance, TokenBalance, TokenKind } from "./balances";
+import { heldTokenIdentity, type ChainBalance, type TokenBalance, type TokenKind } from "./balances";
+import { currenciesOf, findCatalogEntry, type CatalogEntry } from "./chain-catalog";
+import { activityAmount as historyAmount, type ActivityItem, type HeldBalances } from "./chain-queries";
 import { shortDenom } from "./format";
-import { toWholeCoins } from "./portfolio";
+import { toWholeCoins, type AssetValue } from "./portfolio";
 import type { PriceMap, SpotPrice } from "./prices";
-
-export function tokenKindLabel(kind: TokenKind): string {
-  if (kind === "ibc") return "IBC";
-  if (kind === "factory") return "Factory";
-  if (kind === "other") return "Asset";
-  return "Native";
-}
+import { formatTokenAmount } from "./token-amount";
+import { familyOf, tokenKindLabel, tokenText, type TokenIdentity } from "./token-identity";
 
 export interface HomeAsset {
   readonly key: string;
@@ -27,11 +32,33 @@ export interface HomeAsset {
   readonly chainIconUrl?: string;
   readonly testnet: boolean;
   readonly token: TokenBalance;
+  /**
+   * What the row shows: `heldTokenIdentity(chainId, token)` (through the
+   * screen's {@link HeldIdentify}), so the ticker, badge, seal and subtitle
+   * come from the identity and the amount uses the decimals Send converts
+   * with. Pass it to TokenAvatar, TokenLabel and formatTokenAmount; never
+   * format `token.amount` with anything else.
+   */
+  readonly identity: TokenIdentity;
+  /** `IBC`, `Factory`, `ERC-20`: the identity's kind, a search word. */
   readonly kindLabel: string;
+  /** {@link assetSubtitle}: `Noble USDC · on Osmosis`, `Native on Injective`. */
   readonly subtitle: string;
+  /** Fiat value, or null when no trusted price applies ({@link priceChainOf}). */
   readonly fiatValue: number | null;
+  /** The priced coin's 24h change, null when the row is not priced. */
   readonly change24h: number | null;
 }
+
+/**
+ * Names a held row: `heldTokenIdentity` (lib/balances.ts) by default. A
+ * screen passes its own copy, replaced whenever newly proven token facts
+ * land, so the rows it memoizes are named again with them.
+ */
+export type HeldIdentify = (
+  chainId: string,
+  token: Pick<TokenBalance, "denom" | "decimals" | "decimalsKnown">,
+) => TokenIdentity;
 
 export interface HomeAssetChain {
   readonly chainId: string;
@@ -44,33 +71,96 @@ export interface HomeAssetChain {
   readonly inCosmosRegistry?: boolean;
 }
 
-export function assetSubtitle(token: TokenBalance, chainName: string): string {
-  if (token.kind === "ibc") {
-    if (token.originChainName && token.originChainName !== chainName) {
-      return `${chainName} · ${token.originChainName}`;
-    }
-    return `${chainName} · IBC`;
-  }
-  if (token.kind === "factory") {
-    return `${chainName} · ${shortDenom(token.denom)}`;
-  }
-  if (token.kind === "other") {
-    return `${chainName} · ${shortDenom(token.baseDenom ?? token.denom)}`;
-  }
-  return chainName;
+/* -------------------------------------------------------------------------- *
+ * Words
+ * -------------------------------------------------------------------------- */
+
+/**
+ * A row's subtitle when it stands alone: what the token is and where it sits,
+ * in the identity's words. `Native on Injective`, `Noble USDC · on Osmosis`,
+ * `Alloyed USDC · Osmosis only`, `Unknown origin · on Osmosis · ibc/498A…6BA6E4`.
+ */
+export function assetSubtitle(identity: TokenIdentity): string {
+  return tokenText(identity, "row");
 }
 
+/** The staking coin of `chainId`, as the catalog lists it. */
+function stakingDenomOf(chainId: string): string | undefined {
+  return findCatalogEntry(chainId)?.coinMinimalDenom;
+}
+
+/**
+ * A row's subtitle under a header that already names the chain (Home's
+ * grouped list, a chain's own page): {@link assetSubtitle} without the
+ * location. The chain's own staking coin needs none. Any other token reads by
+ * its name (`Noble USDC`, `Injective USDC`, `Alloyed USDC`, `Unlisted Osmosis
+ * token`); a token nothing identifies keeps its short denom, the one thing
+ * that tells it apart.
+ */
+export function groupedSubtitle(identity: TokenIdentity): string | null {
+  if (identity.provenance === "unknown") {
+    return `Unknown origin · ${shortDenom(identity.denom)}`;
+  }
+  const home = identity.originChainId === identity.heldOnChainId;
+  if (home && identity.denom === stakingDenomOf(identity.heldOnChainId)) return null;
+  return identity.name;
+}
+
+/* -------------------------------------------------------------------------- *
+ * Prices
+ * -------------------------------------------------------------------------- */
+
+/**
+ * Whether `denom` is the coin `entry`'s price quotes. The catalog's price id
+ * describes the chain's staking coin; its fee coin counts only when the
+ * catalog gives that coin the same price id. AtomOne pays fees in PHOTON,
+ * another asset than ATONE, so PHOTON never takes ATONE's price.
+ */
+function quotes(entry: CatalogEntry, denom: string): boolean {
+  if (denom === entry.coinMinimalDenom) return true;
+  if (denom !== entry.feeMinimalDenom) return false;
+  const fee = currenciesOf(entry).find((currency) => currency.coinMinimalDenom === denom);
+  return fee?.coinGeckoId !== undefined && fee.coinGeckoId === entry.coinGeckoId;
+}
+
+/**
+ * The chain whose spot price is `identity`'s, or null when no trusted price
+ * applies. The price map quotes each chain's own coin, so:
+ * - the holding chain's staking coin takes the holding chain's price, as the
+ *   chain's other figures do (staked, rewards, the chain's page);
+ * - any other token takes its origin chain's price only when the identity is
+ *   proven and its exact origin denom is the coin that price quotes: ATOM on
+ *   Osmosis takes the Hub's price, USDC.n anywhere takes Noble's;
+ * - nothing else is priced. USDC.axl is Axelar's bridged USDC, neither
+ *   Noble's coin nor AXL; ETH.pica unwinds to `wei` but is not Stratos's coin;
+ *   an unproven walk could be a look-alike chain claiming a real chain's id.
+ * Never when the decimals are unknown: the amount could not be scaled.
+ */
+export function priceChainOf(identity: TokenIdentity): string | null {
+  if (!identity.decimalsKnown) return null;
+  if (identity.denom === stakingDenomOf(identity.heldOnChainId)) return identity.heldOnChainId;
+  const { originChainId, originDenom } = identity;
+  if (!identity.proven || !originChainId || !originDenom) return null;
+  const origin = findCatalogEntry(originChainId);
+  if (!origin?.coinGeckoId) return null;
+  // The quote is for the origin's price id: an identity naming another id is another asset.
+  if (identity.coinGeckoId && identity.coinGeckoId !== origin.coinGeckoId) return null;
+  return quotes(origin, originDenom) ? originChainId : null;
+}
+
+/** The spot price of a held row, through its identity ({@link priceChainOf}). */
 export function tokenSpotPrice(
-  token: TokenBalance,
+  token: Pick<TokenBalance, "denom" | "decimals" | "decimalsKnown">,
   holdingChainId: string,
   prices: PriceMap,
 ): SpotPrice | undefined {
-  if (token.kind === "native") return prices[holdingChainId];
-  const base = token.baseDenom;
-  if (!base) return undefined;
-  const origin = findCatalogByMinimalDenom(base);
-  return origin ? prices[origin.chainId] : undefined;
+  const chainId = priceChainOf(heldTokenIdentity(holdingChainId, token));
+  return chainId ? prices[chainId] : undefined;
 }
+
+/* -------------------------------------------------------------------------- *
+ * Rows
+ * -------------------------------------------------------------------------- */
 
 function nativePlaceholder(chain: HomeAssetChain): TokenBalance {
   return {
@@ -89,9 +179,11 @@ function toAsset(
   chain: HomeAssetChain,
   token: TokenBalance,
   prices: PriceMap,
+  identify: HeldIdentify,
 ): HomeAsset {
-  const spot = tokenSpotPrice(token, chain.chainId, prices);
-  const coins = toWholeCoins(token.amount, token.decimals);
+  const identity = identify(chain.chainId, token);
+  const priceChain = priceChainOf(identity);
+  const spot = priceChain ? prices[priceChain] : undefined;
   return {
     key: `${chain.chainId}:${token.denom}`,
     chainId: chain.chainId,
@@ -99,10 +191,11 @@ function toAsset(
     ...(chain.iconUrl ? { chainIconUrl: chain.iconUrl } : {}),
     testnet: chain.network === "testnet",
     token,
-    kindLabel: tokenKindLabel(token.kind),
-    subtitle: assetSubtitle(token, chain.chainName),
-    fiatValue: spot ? coins * spot.price : null,
-    change24h: token.kind === "native" ? (spot?.change24h ?? null) : null,
+    identity,
+    kindLabel: tokenKindLabel(identity.kind),
+    subtitle: assetSubtitle(identity),
+    fiatValue: spot ? toWholeCoins(token.amount, identity.decimals) * spot.price : null,
+    change24h: spot ? spot.change24h : null,
   };
 }
 
@@ -124,7 +217,7 @@ function compareAssets(a: HomeAsset, b: HomeAsset): number {
   if (aFiat === null && bFiat !== null) return 1;
   const kind = KIND_RANK[a.token.kind] - KIND_RANK[b.token.kind];
   if (kind !== 0) return kind;
-  return a.token.symbol.localeCompare(b.token.symbol);
+  return a.identity.ticker.localeCompare(b.identity.ticker);
 }
 
 /**
@@ -135,6 +228,7 @@ export function homeAssets(
   chains: readonly HomeAssetChain[],
   balances: Readonly<Record<string, ChainBalance>>,
   prices: PriceMap,
+  identify: HeldIdentify = heldTokenIdentity,
 ): HomeAsset[] {
   const out: HomeAsset[] = [];
   for (const chain of chains) {
@@ -156,21 +250,28 @@ export function homeAssets(
             baseDenom: balance.denom,
           }
         : nativePlaceholder(chain));
-    out.push(toAsset(chain, native, prices));
+    out.push(toAsset(chain, native, prices, identify));
     for (const token of tokens) {
       if (token.kind === "native" || token.amount === "0") continue;
-      out.push(toAsset(chain, token, prices));
+      out.push(toAsset(chain, token, prices, identify));
     }
   }
   return out.sort(compareAssets);
 }
 
-/** Subtitle when the chain name is already on the group header. */
-export function groupedSubtitle(token: TokenBalance): string {
-  if (token.kind === "ibc") return token.originChainName ?? "IBC";
-  if (token.kind === "factory") return shortDenom(token.denom);
-  if (token.kind === "other") return shortDenom(token.baseDenom ?? token.denom);
-  return "Native";
+/**
+ * The rows as the headline counts them (`computePortfolio`): each row's value
+ * exactly as the row shows it, so the total is the sum of what Home lists.
+ */
+export function assetValues(assets: readonly HomeAsset[]): AssetValue[] {
+  return assets.map((asset) => ({
+    chainId: asset.chainId,
+    staking: asset.token.kind === "native",
+    // Base units: a positive integer is a balance, "0" (or anything else) is not.
+    held: /^\d*[1-9]\d*$/.test(asset.token.amount),
+    value: asset.fiatValue,
+    change24h: asset.change24h,
+  }));
 }
 
 export interface HomeAssetGroup {
@@ -221,4 +322,84 @@ export function groupHomeAssets(
       },
     ];
   });
+}
+
+/**
+ * A balance row's amount under the shared `list` policy, as the figure and
+ * the words after it: `12.34` alone, or `12340000` and `base units` for a token
+ * whose decimals are unknown. A row stacks the two, in the line a price would
+ * use (such a token is never priced), instead of letting a long raw amount
+ * squeeze the row's subtitle.
+ */
+export function listAmount(
+  amount: string,
+  identity: Pick<TokenIdentity, "decimals" | "decimalsKnown" | "ticker" | "denom" | "provenance">,
+  hidden: boolean,
+): { readonly figure: string; readonly words: string | null } {
+  return splitBaseUnits(formatTokenAmount(amount, identity, "list", { hidden }));
+}
+
+/** The words the shared policy (lib/token-amount.ts) puts after a raw amount. */
+const BASE_UNIT_WORDS = / (base units?)$/;
+
+/**
+ * `12340000 base units` as its figure and words. The shared policy writes an
+ * amount whose decimals are unknown as an integer, a space, then `base unit`
+ * or `base units`; a scaled amount (or a masked one) has no words.
+ */
+function splitBaseUnits(text: string): { readonly figure: string; readonly words: string | null } {
+  const words = BASE_UNIT_WORDS.exec(text);
+  return words ? { figure: text.slice(0, words.index), words: words[1] ?? null } : { figure: text, words: null };
+}
+
+/* -------------------------------------------------------------------------- *
+ * Activity
+ * -------------------------------------------------------------------------- */
+
+/** A history row's amount on Home and a chain's page, in the parts the row lays out. */
+export interface ActivityAmountParts {
+  /**
+   * The signed number: `-12.34`, `+20.345k`, `+12340000`; unsigned for
+   * staking, which moves value between the account's own balances (`1.5`).
+   */
+  readonly figure: string;
+  /** `base units` (or `base unit`) when the decimals are unknown and the figure is raw, else null. */
+  readonly words: string | null;
+  /**
+   * The unit: the ticker the row's title names (`USDC.n`), or the short denom
+   * of a coin nothing names. Shaped for TokenTicker, which never cuts the
+   * suffix. Null when the row names no unit.
+   */
+  readonly unit: { readonly ticker: string; readonly family: string } | null;
+  /** All of it on one line, as the Activity screen writes it: `-12.34 USDC.n`. */
+  readonly text: string;
+}
+
+/**
+ * How a history row's amount reads on Home and a chain's page, or null when
+ * the row moved nothing. The words come from the Activity screen's own
+ * helper (`activityAmount` in lib/chain-queries.ts), so a row reads the same
+ * on every screen: the same sign (none for staking), the same `history`
+ * precision, and, for a held coin nothing names, the decimals its balance row
+ * uses (`heldTokenIdentity`), so Home's activity never shows `12340000 base
+ * units` of a token Home's asset list shows as `12.34`. This only splits that
+ * text for layout: the figure, the `base units` words, the unit.
+ */
+export function activityAmountParts(
+  item: Pick<
+    ActivityItem,
+    "chainId" | "kind" | "amount" | "denom" | "symbol" | "decimals" | "decimalsKnown" | "provenance"
+  >,
+  balances?: HeldBalances,
+): ActivityAmountParts | null {
+  if (!item.amount || !/[1-9]/.test(item.amount)) return null;
+  const amount = historyAmount(item, "history", balances ? { balances } : {});
+  if (!amount) return null;
+  const { figure, words } = splitBaseUnits(amount.value);
+  return {
+    figure: `${amount.sign}${figure}`,
+    words,
+    unit: amount.unit ? { ticker: amount.unit, family: familyOf(amount.unit) } : null,
+    text: amount.text,
+  };
 }

@@ -21,7 +21,6 @@ import {
   KeyValueRow,
   PacketTracker,
   Pill,
-  TokenLogo,
   RoutePreview,
   ScreenScaffold,
   SectionLabel,
@@ -42,7 +41,7 @@ import {
   QUOTE_TTL_MS,
   SLIPPAGE_PRESETS,
 } from "../../../config/interchain";
-import { NO_VALUE, formatUnits, formatUnitsExact } from "../../../lib/format";
+import { NO_VALUE, formatUnits } from "../../../lib/format";
 import { buildRecoverMsg, routeOutcome } from "../../../lib/packet-tracking";
 import {
   removePendingTransfer,
@@ -56,7 +55,9 @@ import {
   requoteSwap,
   type ManualChannel,
   type RoutePlanView,
+  type SwapPlanInput,
   type SwapPlanResult,
+  type SwapQuoteBlockedCode,
 } from "../../../lib/route-plan";
 import { feeTicker, findCatalogEntry } from "../../../lib/chain-catalog";
 import {
@@ -66,10 +67,26 @@ import {
   RESERVE_GAS_LIMIT,
 } from "../../../lib/fee-prefs";
 import { sendToBackground } from "../../../lib/popup-client";
+import {
+  buyOptions,
+  expectedVenueDenoms,
+  sellOptions,
+  type AssetOption,
+} from "../../../lib/swap-assets";
+import { amountFieldText, canTypeAmount, formatTokenAmount } from "../../../lib/token-amount";
+import { identityOf, shortDenom } from "../../../lib/token-identity";
 import type { TxPreview } from "../../../lib/tx-kernel";
+import { TESTNET_REASON, noRouteReason, osmosisDenomFor } from "../../../lib/xcs-routes";
 import { GasFeePrefs } from "../components/GasFeePrefs";
-import { SwapPair } from "../components/SwapPair";
+import { SwapPair, shownIdentity } from "../components/SwapPair";
 import { SwapSettingsDialog } from "../components/SwapSettingsDialog";
+import {
+  TokenAvatar,
+  TokenTicker,
+  provenanceLabel,
+  tokenLocationText,
+  tokenSubtitle,
+} from "../components/TokenLabel";
 import { usePrices } from "../hooks/usePrices";
 import type { ChainAccountView } from "../hooks/useChainAccounts";
 import { usePrefs } from "../state/Prefs";
@@ -78,24 +95,19 @@ import {
   HopChannelList,
   ResumeTrackingBanner,
   SwapContractOverride,
-  formatAsset,
-  receivableAssets,
-  spendableAssets,
+  swapRouteLabel,
+  tickerAmount,
   toBaseUnits,
   useKernelSigning,
   useResolveAddresses,
   useRouteTracking,
-  shortDenom,
-  TruncatedValue,
   useClock,
   useOsmosisAssets,
   usePendingTransfers,
   useSwapVenue,
-  catalogNativeAssets,
-  withCatalogAssets,
-  withOsmosisAssets,
+  useXcsRoutes,
 } from "./interchain-ui";
-import { IconSettings } from "./icons";
+import { IconCopy, IconSettings } from "./icons";
 import { signingError, useSignedSend } from "../state/SigningPassword";
 import { notifyBroadcastAccepted, useToast } from "../state/Toasts";
 
@@ -131,6 +143,292 @@ function rateLine(
   const rate = output / input;
   const digits = rate >= 100 ? 2 : rate >= 1 ? 4 : 6;
   return `1 ${inputSymbol} ≈ ${rate.toFixed(digits)} ${outputSymbol}`;
+}
+
+/**
+ * The To on screen. A row the user picked stays picked, even once the From
+ * or the route table turns it off: its reason is then shown and nothing is
+ * planned for it, rather than the destination changing under them. With no
+ * pick, the first row that can be used, picked again whenever that changes
+ * (the route table loading, another From).
+ */
+export function pickTo(
+  destinations: readonly AssetOption[],
+  toKey: string | null,
+): AssetOption | undefined {
+  return (
+    (toKey ? destinations.find((asset) => asset.key === toKey) : undefined) ??
+    destinations.find((asset) => asset.disabledReason === null)
+  );
+}
+
+/**
+ * The base units the From field's text stands for, converted with the From
+ * row's own exponent (`AssetOption.decimals`, which carries the SQS veto and
+ * the balance reader's figure for an unnamed token). When nobody knows the
+ * decimals that exponent is 0 and the field takes only Max, whose text is the
+ * raw balance (lib/token-amount.ts `amountFieldText`). `null` when the text
+ * is empty or does not convert.
+ */
+export function amountUnitsOf(from: AssetOption | undefined, text: string): bigint | null {
+  return from && text ? toBaseUnits(text, from.decimals) : null;
+}
+
+/**
+ * What a typed amount is read against: the token, and the exponent it was
+ * typed with. Text typed for one scale is never read with another.
+ */
+export function scaleOf(option: AssetOption): string {
+  return `${option.key}|${option.decimalsKnown ? option.decimals : "?"}`;
+}
+
+/**
+ * The side whose venue denom the route got wrong, when the plan can tell:
+ * the input when the route enters Osmosis as another denom than the From's,
+ * else the output. `null` when the plan does not say what it sells there.
+ */
+function mismatchedSide(
+  from: AssetOption,
+  to: AssetOption,
+  plan: RoutePlanView | null,
+): AssetOption | null {
+  const expected = expectedVenueDenoms(from, to);
+  if (!expected.expectedVenueInputDenom) return to;
+  const routeIn = plan?.candidate.venueInputDenom ?? null;
+  if (routeIn) return routeIn === expected.expectedVenueInputDenom ? to : from;
+  return expected.expectedVenueOutputDenom ? null : from;
+}
+
+/**
+ * Why a swap has no price, with the tickers on screen when the planner says
+ * which known reason it is (lib/route-plan.ts `SwapQuoteBlockedCode`), in the
+ * picker's words for the same pair. Any other reason (a channel that failed
+ * its check, a token the venue cannot name) is the planner's own sentence.
+ */
+export function quoteBlockText(
+  code: SwapQuoteBlockedCode | null,
+  reason: string | null,
+  from: AssetOption | undefined,
+  to: AssetOption | undefined,
+  plan: RoutePlanView | null,
+): string | null {
+  if (!code || !from || !to) return reason;
+  const sold = from.identity.ticker;
+  const bought = to.identity.ticker;
+  switch (code) {
+    case "no-contract-route":
+      return `${noRouteReason(sold, bought)} The swap stays unsigned.`;
+    case "route-unreadable":
+      return `Zunia could not confirm that the Osmosis swap contract takes ${sold} to ${bought}, so the swap stays unsigned.`;
+    case "route-unpriced":
+      return `The pools on the Osmosis swap contract's route from ${sold} to ${bought} could not be priced, so the swap stays unsigned.`;
+    case "same-token":
+      return `Both sides are ${bought} on Osmosis, so there is nothing to swap. Use Send to move it.`;
+    case "venue-denom-mismatch": {
+      const side = mismatchedSide(from, to, plan);
+      return side
+        ? `Zunia would trade a different ${side.identity.family} variant than the ${side.identity.ticker} you picked, so the swap stays unsigned.`
+        : `Zunia would trade a different variant than the ${sold} and ${bought} you picked, so the swap stays unsigned.`;
+    }
+  }
+}
+
+/**
+ * The quote as the screen shows it: amounts in the shared policy
+ * (lib/token-amount.ts), exact up to six decimals and never rounded up, with
+ * each side's identity ticker. A token whose decimals are unknown reads in
+ * base units and gets no rate. Every amount is the number alone: the panel
+ * prints `outputSymbol` after `minReceived` itself, so a ticker here would
+ * read twice (`35.56 USDC.axl USDC.axl`).
+ */
+export function swapQuoteView(
+  quote: OsmosisSwapQuote,
+  from: AssetOption,
+  to: AssetOption,
+): SwapQuoteView {
+  return {
+    inputAmount: formatTokenAmount(quote.inputAmount, from.identity, "confirm"),
+    inputSymbol: from.identity.ticker,
+    outputAmount: formatTokenAmount(quote.outputAmount, to.identity, "confirm"),
+    outputSymbol: to.identity.ticker,
+    rate:
+      from.decimalsKnown && to.decimalsKnown
+        ? rateLine(
+            quote.inputAmount,
+            from.decimals,
+            from.identity.ticker,
+            quote.outputAmount,
+            to.decimals,
+            to.identity.ticker,
+          )
+        : null,
+    minReceived: quote.minReceived
+      ? formatTokenAmount(quote.minReceived, to.identity, "confirm")
+      : null,
+    // `null`, not 0: the router reports no spot price for some pairs and
+    // the panel renders "not reported" rather than a confident zero.
+    priceImpact: quote.spotPrice === null ? null : quote.priceImpact,
+    poolFee: quote.effectiveFeeFraction === null ? null : quote.poolFee,
+    route: quote.route.map((hop) => ({
+      poolId: hop.poolId,
+      tokenOutSymbol: hop.tokenOutDenom
+        ? identityOf(VENUE_CHAIN_ID, hop.tokenOutDenom).ticker
+        : undefined,
+    })),
+  };
+}
+
+/**
+ * The confirm screen's line under what is bought: where it is delivered and,
+ * once priced, the floor with its ticker (`Delivered on Axelar · at least
+ * 35.56 USDC.axl`).
+ */
+export function deliveryLine(to: AssetOption, view: SwapQuoteView | null): string {
+  const floor = view?.minReceived ? ` · at least ${view.minReceived} ${view.outputSymbol}` : "";
+  return `${tokenLocationText(to.identity, "delivered")}${floor}`;
+}
+
+/**
+ * What the screen asks the planner for. Every field that ends up signed is
+ * copied as is: the chain the From is held on and its exact bank denom, the
+ * chain the To is delivered on and its exact denom, the base units, the
+ * addresses, the slippage, the venue and the channels the user pinned. The
+ * identities only add `expectedVenue*Denom`, a check that refuses a route
+ * trading another variant on Osmosis; they never name what is signed.
+ */
+export function swapPlanRequest(args: {
+  readonly from: AssetOption;
+  readonly to: AssetOption;
+  readonly amountUnits: bigint;
+  readonly sender: string;
+  readonly recipient: string;
+  readonly recoveryAddress: string;
+  readonly slippagePercent: number;
+  readonly venue: SwapPlanInput["venue"];
+  readonly manualChannels: readonly ManualChannel[];
+  readonly resolveAddresses: SwapPlanInput["resolveAddresses"];
+  readonly signal?: AbortSignal;
+}): SwapPlanInput {
+  return {
+    sourceChainId: args.from.chainId,
+    destChainId: args.to.chainId,
+    inputDenom: args.from.denom,
+    destDenom: args.to.denom,
+    amountBaseUnits: args.amountUnits.toString(),
+    sender: args.sender,
+    recipient: args.recipient,
+    recoveryAddress: args.recoveryAddress,
+    slippagePercent: args.slippagePercent,
+    venue: args.venue,
+    manualChannels: args.manualChannels,
+    resolveAddresses: args.resolveAddresses,
+    ...(args.signal ? { signal: args.signal } : {}),
+    ...expectedVenueDenoms(args.from, args.to),
+  };
+}
+
+/**
+ * The confirm screen's plain line above the exact message: what leaves, what
+ * is bought, and where it arrives. The name joins the ticker when the token
+ * arrives away from its origin (`USDC.axl (Axelar USDC)` on Osmosis).
+ */
+export function swapSentence(amount: string, from: AssetOption, to: AssetOption): string {
+  const bought = to.identity;
+  const named =
+    bought.provenance !== "unknown" && bought.originChainId !== to.chainId
+      ? `${bought.ticker} (${bought.name})`
+      : bought.ticker;
+  return `Sends ${amount} from ${from.chainName} to the Osmosis swap contract, which buys ${named} and delivers it to your address on ${to.chainName}.`;
+}
+
+/**
+ * One side of the confirm screen's summary: the token's logo with the chain
+ * it is on, the amount, and where it is held or delivered. The proven seal is
+ * drawn on the logo and said in words to assistive tech.
+ */
+function HeroSide({ option, amount, line }: { option: AssetOption; amount: string; line: string }) {
+  const identity = shownIdentity(option);
+  const seal = provenanceLabel(identity);
+  return (
+    <div className="mt-1.5 flex items-center gap-2">
+      <TokenAvatar identity={identity} size={28} locationBadge="always" />
+      <div className="min-w-0 flex-1">
+        <p className="text-[15px] font-semibold leading-tight tracking-[-0.02em] tabular-nums text-fg [overflow-wrap:anywhere]">
+          {amount}
+        </p>
+        <p className="mt-0.5 text-[10.5px] leading-snug text-fg-dim [overflow-wrap:anywhere]">
+          {line}
+        </p>
+        {seal ? <span className="sr-only">{seal}</span> : null}
+      </div>
+    </div>
+  );
+}
+
+/** An exact denom, short on screen and whole in the clipboard. */
+function CopyDenom({
+  denom,
+  where,
+  onCopy,
+}: {
+  denom: string;
+  /** The chain that names the denom, said after it. */
+  where: string;
+  onCopy: (denom: string) => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() => onCopy(denom)}
+      title={denom}
+      aria-label={`Copy the exact denom on ${where}: ${denom}`}
+      className={cn(
+        "inline-flex max-w-full items-center gap-1 rounded-[6px] font-mono text-[10px] text-fg-muted",
+        "transition-colors duration-[var(--z-duration-base)] hover:text-fg",
+        focusRing,
+      )}
+    >
+      <span className="min-w-0 [overflow-wrap:anywhere]">
+        {shortDenom(denom)} on {where}
+      </span>
+      <IconCopy width={11} height={11} className="shrink-0" aria-hidden />
+    </button>
+  );
+}
+
+/**
+ * The confirm screen's "Buys" value: the token the memo's `output_denom`
+ * names, where it is delivered, and the exact denom to copy. That denom is
+ * the To token's on Osmosis, which the planner checked; should the two ever
+ * differ, the row names what the memo really buys.
+ */
+function BuysValue({
+  outputDenom,
+  to,
+  onCopy,
+}: {
+  outputDenom: string;
+  to: AssetOption;
+  onCopy: (denom: string) => void;
+}) {
+  const same = osmosisDenomFor(to) === outputDenom;
+  const identity = same ? shownIdentity(to) : identityOf(VENUE_CHAIN_ID, outputDenom);
+  const venueName = findCatalogEntry(VENUE_CHAIN_ID)?.chainName ?? VENUE_CHAIN_ID;
+  // `break-normal`: the row's value cell breaks anywhere, which suits a
+  // denom and splits words.
+  return (
+    <span className="flex min-w-0 flex-col items-end gap-0.5 break-normal text-right font-sans">
+      <TokenTicker
+        identity={identity}
+        className="max-w-full text-[12px] font-semibold tracking-[-0.02em] text-fg"
+      />
+      {/* Wrapped, never cut: where the token arrives is the point of the line. */}
+      <span className="text-[10.5px] leading-snug text-fg-muted [overflow-wrap:anywhere]">
+        {tokenSubtitle(identity, same ? "delivered" : "on")}
+      </span>
+      <CopyDenom denom={outputDenom} where={venueName} onCopy={onCopy} />
+    </span>
+  );
 }
 
 /** How long the shown price stays current, and a way to fetch a new one now. */
@@ -198,18 +496,15 @@ export function SwapScreen({
   const { hidden, settings, fiat } = usePrefs();
   const liveReads = settings.liveBalances;
 
-  const sources = useMemo(() => spendableAssets(chains, balances), [chains, balances]);
   // An empty balance map is "not read yet", not "holds nothing": the reader
   // writes a row per chain even when every denom is zero.
   const balancesLoaded = Object.keys(balances).length > 0;
   const osmosis = useOsmosisAssets(liveReads);
-  const destinations = useMemo(
-    () =>
-      withOsmosisAssets(
-        withCatalogAssets(receivableAssets(chains, balances), catalogNativeAssets()),
-        osmosis.assets,
-        VENUE_CHAIN_ID,
-      ),
+  const venue = useSwapVenue(liveReads);
+  // What the wallet holds, one row per chain and exact denom (lib/swap-assets.ts).
+  // The SQS list only checks decimals here: a disagreement makes the field Max-only.
+  const sources = useMemo(
+    () => sellOptions(chains, balances, osmosis.assets),
     [chains, balances, osmosis.assets],
   );
 
@@ -218,7 +513,33 @@ export function SwapScreen({
   // writes state on the first render.
   const [fromKey, setFromKey] = useState<string | null>(null);
   const [toKey, setToKey] = useState<string | null>(null);
-  const [amount, setAmount] = useState("");
+
+  // The From is always a held balance, on the chain that holds it. It
+  // defaults to whatever chain the user came from.
+  const from =
+    sources.find((asset) => asset.key === fromKey) ??
+    sources.find((asset) => asset.chainId === initialChainId) ??
+    sources[0];
+
+  // What can be bought with it and where it arrives, each row gated by the
+  // swap contract's route table: a row it cannot execute carries its reason
+  // and is listed only by a search. Until the table loads (or when it cannot
+  // be read) no row is refused for want of a route; the planner's live route
+  // check still decides what may be signed.
+  const routes = useXcsRoutes(venue.check?.venue?.contractAddress ?? null);
+  const destinations = useMemo(
+    () => buyOptions(chains, balances, { from: from ?? null, osmosis: osmosis.assets, routes }),
+    [chains, balances, from, osmosis.assets, routes],
+  );
+  const to = pickTo(destinations, toKey);
+
+  // The typed text belongs to the token and the exponent it was typed for. A
+  // new From, or decimals that turn out unknown once the Osmosis list loads,
+  // read it as nothing rather than as a different amount.
+  const scale = from ? scaleOf(from) : "";
+  const [draft, setDraft] = useState<{ text: string; scale: string }>({ text: "", scale: "" });
+  const amount = draft.scale === scale ? draft.text : "";
+  const setAmount = (text: string) => setDraft({ text, scale });
   const slippage = settings.swapSlippage;
   const [manual, setManual] = useState<ManualChannel[]>([]);
   // Bumped by the retry controls. Part of the plan key, because re-running the
@@ -239,33 +560,13 @@ export function SwapScreen({
   const expert = advanced;
 
   const kernel = useKernelSigning();
-  const venue = useSwapVenue(liveReads);
   const pendingRoutes = usePendingTransfers();
   const resolveAddresses = useResolveAddresses();
 
-  // The source defaults to whatever chain the user came from, the destination
-  // to anything on a different chain, so the screen opens with a plausible pair
-  // already in it.
-  // Held balances first. A flipped side can be a token this wallet does not
-  // hold yet, and that pick has to stay put so the route is replanned instead
-  // of snapping back to the first balance.
-  const fromChoices = useMemo(() => {
-    const held = new Set(sources.map((asset) => asset.key));
-    return [...sources, ...destinations.filter((asset) => !held.has(asset.key))];
-  }, [sources, destinations]);
-  const from =
-    fromChoices.find((asset) => asset.key === fromKey) ??
-    sources.find((asset) => asset.chainId === initialChainId) ??
-    sources[0];
-  const to =
-    destinations.find((asset) => asset.key === toKey) ??
-    destinations.find((asset) => asset.chainId !== from?.chainId) ??
-    destinations[0];
   const sourceAccount = chains.find((chain) => chain.chainId === from?.chainId);
   const destAccount = chains.find((chain) => chain.chainId === to?.chainId);
-  const [catalogDestAddress, setCatalogDestAddress] = useState<string | null>(null);
 
-  const amountUnits = from ? toBaseUnits(amount, from.decimals) : null;
+  const amountUnits = amountUnitsOf(from, amount);
   const available = from ? BigInt(from.amount) : null;
   const feeReserve = from
     ? reservedFeeUnits(from.chainId, from.denom, settings)
@@ -295,43 +596,60 @@ export function SwapScreen({
   }, [resolveAddresses]);
   const recoveryAddress = recovery?.address ?? null;
   const recoveryFailed = recovery !== null && recovery.address === null;
-  // A token listed on Osmosis is delivered there, to this wallet's own Osmosis
-  // address, whether or not Osmosis is one of the enabled chains.
+  // A token delivered on a chain the wallet has not enabled (Osmosis, or a
+  // token's home chain) goes to this wallet's own address there, derived on
+  // demand. The answer is kept with its chain, so one for another chain is
+  // never used.
+  const resolveChainId = to && !destAccount?.address ? to.chainId : null;
+  const [resolvedDest, setResolvedDest] = useState<{
+    chainId: string;
+    address: string | null;
+  } | null>(null);
   useEffect(() => {
-    if (!to?.chainId || destAccount?.address) {
-      setCatalogDestAddress(destAccount?.address ?? null);
-      return;
-    }
+    if (!resolveChainId) return;
     let cancelled = false;
-    void resolveAddresses([to.chainId]).then((map) => {
-      if (!cancelled) setCatalogDestAddress(map[to.chainId] ?? null);
+    void resolveAddresses([resolveChainId]).then((map) => {
+      if (!cancelled) {
+        setResolvedDest({ chainId: resolveChainId, address: map[resolveChainId] ?? null });
+      }
     });
     return () => {
       cancelled = true;
     };
-  }, [to?.chainId, destAccount?.address, resolveAddresses]);
+  }, [resolveChainId, resolveAddresses]);
+  const resolvingDest = resolveChainId !== null && resolvedDest?.chainId !== resolveChainId;
+  const catalogDestAddress =
+    resolveChainId !== null && resolvedDest?.chainId === resolveChainId ? resolvedDest.address : null;
 
   const destAddress =
     destAccount?.address ??
     catalogDestAddress ??
     (to?.chainId === VENUE_CHAIN_ID ? recoveryAddress : null);
 
-  const priceChainIds = useMemo(() => {
-    const ids = [from?.chainId, to?.chainId].filter(
-      (id): id is string => Boolean(id),
-    );
-    return [...new Set(ids)];
-  }, [from?.chainId, to?.chainId]);
+  // A token's price lives with its issuer: USDC.n on Osmosis is priced as
+  // Noble's USDC, ATOM on Osmosis as the Hub's ATOM.
+  // usePrices keys its read by the ids' text, so a new array per render is fine.
+  const priceChainIds = [
+    ...new Set(
+      [from?.identity.originChainId, to?.identity.originChainId].filter(
+        (id): id is string => Boolean(id),
+      ),
+    ),
+  ];
   const { prices } = usePrices(priceChainIds, liveReads);
 
-  function pricedFiat(
-    asset: typeof from,
-    displayAmount: string,
-  ): string | null {
+  /**
+   * The fiat value of `displayAmount` of a side's token, priced through its
+   * origin chain when the token is that chain's own coin there. Nothing for a
+   * token whose identity or decimals are not known: no price beats a wrong one.
+   */
+  function pricedFiat(asset: AssetOption | undefined, displayAmount: string): string | null {
     if (!asset) return null;
-    const entry = findCatalogEntry(asset.chainId);
-    if (!entry || entry.coinMinimalDenom !== asset.denom) return null;
-    const spot = prices[asset.chainId];
+    const { identity } = asset;
+    if (!identity.proven || !identity.decimalsKnown || !identity.originChainId) return null;
+    const origin = findCatalogEntry(identity.originChainId);
+    if (!origin || origin.coinMinimalDenom !== identity.originDenom) return null;
+    const spot = prices[identity.originChainId];
     if (!spot) return null;
     const n = Number(displayAmount);
     if (!displayAmount.trim() || !Number.isFinite(n)) return fiat(0);
@@ -352,6 +670,7 @@ export function SwapScreen({
     key: string;
     quote: OsmosisSwapQuote | null;
     error: string | null;
+    code: SwapQuoteBlockedCode | null;
     at: number;
   } | null>(null);
   const [requotingKey, setRequotingKey] = useState<string | null>(null);
@@ -362,9 +681,12 @@ export function SwapScreen({
   const slippageOk =
     Number.isFinite(slippage) && slippage > 0 && slippage <= MAX_SLIPPAGE_PERCENT;
 
+  // A To row the gate refused is never planned: the picker already says why,
+  // and the planner's live route check would only refuse it again.
   const canPlan =
     liveReads &&
     Boolean(from && to && sourceAccount?.address && destAddress) &&
+    to?.disabledReason === null &&
     amountUnits !== null &&
     amountUnits > 0n &&
     !overBalance &&
@@ -372,6 +694,13 @@ export function SwapScreen({
     Boolean(recoveryAddress) &&
     slippageOk &&
     !(from?.chainId === to?.chainId && from?.denom === to?.denom);
+
+  // What both tokens on screen are called on Osmosis, from their identities
+  // (lib/swap-assets.ts). The planner refuses a route that would trade
+  // another variant, one that only shares the ticker, as
+  // `venue-denom-mismatch`. Part of the key: a plan is always checked against
+  // the identities on screen.
+  const expected = from && to ? expectedVenueDenoms(from, to) : {};
 
   const planKey = canPlan
     ? [
@@ -383,6 +712,8 @@ export function SwapScreen({
         slippage,
         manual.map((m) => `${m.fromChainId}>${m.toChainId}:${m.channelId}`).join("|"),
         venue.check?.contractAddress,
+        expected.expectedVenueInputDenom ?? "",
+        expected.expectedVenueOutputDenom ?? "",
         retryToken,
       ].join("~")
     : "";
@@ -393,21 +724,21 @@ export function SwapScreen({
     // Debounced: the amount field fires per keystroke and a plan is several
     // LCD round trips.
     const timer = window.setTimeout(() => {
-      void planSwap({
-        sourceChainId: from!.chainId,
-        destChainId: to!.chainId,
-        inputDenom: from!.denom,
-        destDenom: to!.denom,
-        amountBaseUnits: amountUnits!.toString(),
-        sender: sourceAccount!.address,
-        recipient: destAddress!,
-        recoveryAddress: recoveryAddress!,
-        slippagePercent: slippage,
-        venue: venue.check!.venue!,
-        manualChannels: manual,
-        resolveAddresses,
-        signal: controller.signal,
-      }).then((next) => {
+      void planSwap(
+        swapPlanRequest({
+          from: from!,
+          to: to!,
+          amountUnits: amountUnits!,
+          sender: sourceAccount!.address,
+          recipient: destAddress!,
+          recoveryAddress: recoveryAddress!,
+          slippagePercent: slippage,
+          venue: venue.check!.venue!,
+          manualChannels: manual,
+          resolveAddresses,
+          signal: controller.signal,
+        }),
+      ).then((next) => {
         if (!controller.signal.aborted) {
           setSettledPlan({ key: planKey, result: next, quotedAt: Date.now() });
         }
@@ -440,7 +771,14 @@ export function SwapScreen({
       ? requoted
       : null;
   const quote = fresh ? fresh.quote : (result?.quote ?? null);
-  const quoteError = fresh ? fresh.error : (result?.quoteBlockedReason ?? null);
+  const quoteCode = fresh ? fresh.code : (result?.quoteBlockedCode ?? null);
+  const quoteError = quoteBlockText(
+    quoteCode,
+    fresh ? fresh.error : (result?.quoteBlockedReason ?? null),
+    from,
+    to,
+    plan,
+  );
   const quotedAt = fresh ? fresh.at : result ? (settledPlan?.quotedAt ?? null) : null;
   const refreshing = Boolean(planKey) && requotingKey === planKey;
 
@@ -469,7 +807,7 @@ export function SwapScreen({
       !venueOutputDenom ||
       !amountBase
     ) {
-      return { quote: null, error: "There is no route to price yet." };
+      return { quote: null, error: "There is no route to price yet.", code: null };
     }
     const key = planKey;
     setRequotingKey(key);
@@ -483,8 +821,9 @@ export function SwapScreen({
     }).catch((caught: unknown) => ({
       quote: null,
       error: caught instanceof Error ? caught.message : String(caught),
+      code: null,
     }));
-    setRequoted({ key, quote: next.quote, error: next.error, at: Date.now() });
+    setRequoted({ key, quote: next.quote, error: next.error, code: next.code, at: Date.now() });
     setRequotingKey((current) => (current === key ? null : current));
     return next;
   }, [
@@ -520,7 +859,9 @@ export function SwapScreen({
    * Why the button is off
    * ---------------------------------------------------------------- */
 
-  const blockedReason = useMemo((): string | null => {
+  // Cheap to work out, so it is not memoized: a manual memo here only kept
+  // the compiler from optimizing the screen.
+  const blockedReason = ((): string | null => {
     if (!liveReads) {
       return "Swapping reads channels, denom traces and pool prices from public endpoints. Turn on live balances in Settings → Preferences.";
     }
@@ -535,12 +876,20 @@ export function SwapScreen({
         ? "This wallet holds no non-zero balance to swap."
         : "Balances have not loaded yet.";
     }
-    if (!from || !to) return "Pick what you are swapping and what you want back.";
+    if (!from) return "Pick what you are swapping and what you want back.";
+    if (!to) {
+      if (from.testnet) return TESTNET_REASON;
+      return destinations.length > 0
+        ? `Nothing can be bought with ${from.identity.ticker} here. Search the To list to see each token and why.`
+        : "Pick what you want back.";
+    }
+    // The gate's reason for a To the user picked before the From changed.
+    if (to.disabledReason) return to.disabledReason;
     if (!sourceAccount?.address) {
       return `Zunia has no address on ${from.chainName}, so it cannot sign there.`;
     }
     if (!destAddress) {
-      if (to.chainId === VENUE_CHAIN_ID && recovery === null) return null;
+      if (resolvingDest || (to.chainId === VENUE_CHAIN_ID && recovery === null)) return null;
       return `Zunia has no address on ${to.chainName}, so it has nowhere to deliver.`;
     }
     if (from.chainId === to.chainId && from.denom === to.denom) {
@@ -549,7 +898,11 @@ export function SwapScreen({
     if (from.chainId === VENUE_CHAIN_ID && to.chainId === VENUE_CHAIN_ID) {
       return "Both tokens are already on Osmosis, and this screen swaps by sending to another chain after the pool.";
     }
-    if (!amount) return "Enter an amount to swap.";
+    if (!amount) {
+      return canTypeAmount(from.identity)
+        ? "Enter an amount to swap."
+        : "Use Max to set the amount: this token's decimals are unknown.";
+    }
     if (amountUnits === null) return "That amount is not a number this chain can hold.";
     if (amountUnits <= 0n) return "Enter an amount above zero.";
     if (overBalance) {
@@ -567,37 +920,31 @@ export function SwapScreen({
     if (!plan) {
       return result?.warnings[0] ?? "No route exists from here to there for this asset.";
     }
-    if (plan.blockedReason) return plan.blockedReason;
+    // A route that would trade another variant is blocked in the plan too;
+    // the tickers say it better than the planner's denoms.
+    if (plan.blockedReason) {
+      return quoteCode === "venue-denom-mismatch" && quoteError ? quoteError : plan.blockedReason;
+    }
     if (quoteError) return quoteError;
     if (!quote) return "Waiting for a price from the Osmosis router.";
     return null;
-  }, [
-    liveReads,
-    kernel.loading,
-    kernel.reason,
-    venue.loading,
-    venue.check,
-    sources.length,
-    balancesLoaded,
-    from,
-    to,
-    sourceAccount,
-    destAddress,
-    recovery,
-    amount,
-    amountUnits,
-    overBalance,
-    slippageOk,
-    recoveryAddress,
-    recoveryFailed,
-    planning,
-    result,
-    plan,
-    quoteError,
-    quote,
-  ]);
+  })();
 
   const ready = blockedReason === null && Boolean(plan && quote && from && sourceAccount);
+
+  // A channel check that failed on the plan's path (lib/route-plan.ts
+  // `failedCheck`). One that could not finish can be asked again; one on a
+  // channel the user pinned stays theirs, with a way back to the automatic
+  // pick. A refused channel the planner chose is already routed around.
+  const failedCheck = plan?.failedCheck ?? null;
+  const pinnedFailure =
+    failedCheck && failedCheck.verdict !== "inconclusive"
+      ? (manual.find(
+          (pin) =>
+            pin.fromChainId === failedCheck.sourceChainId &&
+            pin.toChainId === failedCheck.destChainId,
+        ) ?? null)
+      : null;
 
   /* ---------------------------------------------------------------- *
    * Actions
@@ -671,7 +1018,12 @@ export function SwapScreen({
             ? { swapContract: venue.check.contractAddress }
             : {}),
           ...(recoveryAddress ? { recoveryAddress } : {}),
-          label: `${amount} ${from?.symbol ?? ""} → ${to?.symbol ?? ""}`.trim(),
+          // Activity and the OS notification say this: both tokens and both
+          // chains, `10 OSMO (Osmosis) → USDC.axl (Axelar)`.
+          label:
+            from && to
+              ? swapRouteLabel(pending.amountBaseUnits, from.identity, to.identity)
+              : `${amount} → ?`,
           startedAt: Date.now(),
         };
         // Persisted before the screen changes: if the popup closes on the next
@@ -699,7 +1051,10 @@ export function SwapScreen({
     const priced = await refreshQuote();
     if (!priced.quote) {
       setBusy(false);
-      setError(priced.error ?? "The price could not be refreshed, so the swap was not prepared.");
+      setError(
+        quoteBlockText(priced.code, priced.error, from, to, plan) ??
+          "The price could not be refreshed, so the swap was not prepared.",
+      );
       return;
     }
     await openConfirm({
@@ -719,18 +1074,38 @@ export function SwapScreen({
     });
   }
 
-  const canFlip = Boolean(from && to && from.key !== to.key);
+  /** Copy an exact denom: what the memo names, whole, for checking on an explorer. */
+  async function copyDenom(denom: string) {
+    try {
+      await navigator.clipboard.writeText(denom);
+      toast("Denom copied");
+    } catch {
+      toast("Could not copy the denom", { tone: "danger" });
+    }
+  }
+
+  // Only a held To can become the From: the From list is what the wallet holds.
+  const canFlip = Boolean(from && to && to.held && from.key !== to.key);
+  const flipLabel =
+    to && !to.held
+      ? `Swap the two sides: you hold no ${to.identity.ticker} on ${to.chainName} to sell`
+      : "Swap the two sides";
   function flipSides() {
-    if (!from || !to || from.key === to.key) return;
+    if (!from || !to || !to.held || from.key === to.key) return;
     setFromKey(to.key);
     setToKey(from.key);
     setManual([]);
+    // The typed number carries over only when it can mean the same thing:
+    // the new From must take typed amounts.
+    setDraft({ text: canTypeAmount(to.identity) ? amount : "", scale: scaleOf(to) });
   }
 
   function applyMax() {
     if (available === null || !from) return;
     const units = maxSendable(available, feeReserve);
-    setAmount(formatUnitsExact(units.toString(), from.decimals));
+    // Exact digits for any size: the field converts back with the same
+    // exponent (0 when unknown), so Max signs the balance and not a rounding.
+    setAmount(amountFieldText(units, from.identity));
   }
 
   /* ---------------------------------------------------------------- *
@@ -783,28 +1158,10 @@ export function SwapScreen({
   }, [tracking.route, openConfirm]);
 
   const quoteView: SwapQuoteView | null =
-    quote && from && to
-      ? {
-          inputAmount: formatUnits(quote.inputAmount, from.decimals),
-          inputSymbol: from.symbol,
-          outputAmount: formatUnits(quote.outputAmount, to.decimals),
-          outputSymbol: to.symbol,
-          rate: rateLine(
-            quote.inputAmount,
-            from.decimals,
-            from.symbol,
-            quote.outputAmount,
-            to.decimals,
-            to.symbol,
-          ),
-          minReceived: formatAsset(quote.minReceived, to.decimals, to.symbol),
-          // `null`, not 0: the router reports no spot price for some pairs and
-          // the panel renders "not reported" rather than a confident zero.
-          priceImpact: quote.spotPrice === null ? null : quote.priceImpact,
-          poolFee: quote.effectiveFeeFraction === null ? null : quote.poolFee,
-          route: quote.route.map((hop) => ({ poolId: hop.poolId })),
-        }
-      : null;
+    quote && from && to ? swapQuoteView(quote, from, to) : null;
+  // The To field holds digits only; a token in base units says so under it.
+  const receiveAmount =
+    quote && to ? (to.decimalsKnown ? (quoteView?.outputAmount ?? "") : quote.outputAmount) : "";
 
   /* ---------------------------------------------------------------- *
    * Confirm
@@ -864,32 +1221,22 @@ export function SwapScreen({
           {pending.kind === "swap" && from && to ? (
             <section className="rounded-[14px] border border-[var(--z-line)] bg-[var(--z-glass)] px-3 py-2.5">
               <p className="font-mono text-[9px] uppercase tracking-[0.12em] text-fg-dim">
+                You swap
+              </p>
+              <HeroSide
+                option={from}
+                amount={tickerAmount(pending.amountBaseUnits, from.identity, "confirm")}
+                line={tokenLocationText(from.identity, "held")}
+              />
+              <div className="my-1.5 h-px bg-[var(--z-line)]" />
+              <p className="font-mono text-[9px] uppercase tracking-[0.12em] text-fg-dim">
                 For about
               </p>
-              <div className="mt-1.5 flex items-center gap-2">
-                <TokenLogo src={from.iconUrl ?? from.chainIconUrl} symbol={from.symbol} size={28} />
-                <div className="min-w-0 flex-1">
-                  <p className="text-[15px] font-semibold leading-none tracking-[-0.02em] tabular-nums text-fg">
-                    {formatAsset(pending.amountBaseUnits, from.decimals, from.symbol) ?? NO_VALUE}
-                  </p>
-                  <p className="mt-0.5 truncate font-mono text-[9.5px] text-fg-dim">
-                    {from.chainName}
-                  </p>
-                </div>
-              </div>
-              <div className="my-1.5 h-px bg-[var(--z-line)]" />
-              <div className="flex items-center gap-2">
-                <TokenLogo src={to.iconUrl ?? to.chainIconUrl} symbol={to.symbol} size={28} />
-                <div className="min-w-0 flex-1">
-                  <p className="text-[15px] font-semibold leading-none tracking-[-0.02em] tabular-nums text-fg">
-                    {quoteView ? `${quoteView.outputAmount} ${quoteView.outputSymbol}` : NO_VALUE}
-                  </p>
-                  <p className="mt-0.5 truncate font-mono text-[9.5px] text-fg-dim">
-                    {to.chainName}
-                    {quoteView?.minReceived ? ` · at least ${quoteView.minReceived}` : ""}
-                  </p>
-                </div>
-              </div>
+              <HeroSide
+                option={to}
+                amount={quoteView ? `${quoteView.outputAmount} ${quoteView.outputSymbol}` : NO_VALUE}
+                line={deliveryLine(to, quoteView)}
+              />
               {quoteSecondsLeft !== null ? (
                 <div className="mt-2">
                   <QuoteClock
@@ -922,8 +1269,24 @@ export function SwapScreen({
           ) : null}
 
           <section className="min-w-0 rounded-[12px] border border-[var(--z-line)] px-2.5 py-2">
+            {/* Plain words first; the kernel's own text, unchanged, is what gets signed. */}
+            <p className="min-w-0 text-[11.5px] leading-snug text-fg [overflow-wrap:anywhere]">
+              {pending.kind === "swap" && from && to
+                ? swapSentence(
+                    tickerAmount(pending.amountBaseUnits, from.identity, "confirm"),
+                    from,
+                    to,
+                  )
+                : "Asks the Osmosis swap contract to pay the output it kept to your recovery address."}
+            </p>
+            <p className="mt-1.5 font-mono text-[9px] uppercase tracking-[0.12em] text-fg-dim">
+              Exact message
+            </p>
             {preview.preview.summaries.map((line, index) => (
-              <p key={index} className="min-w-0 break-words text-[11px] leading-snug text-fg [overflow-wrap:anywhere]">
+              <p
+                key={index}
+                className="mt-0.5 min-w-0 break-words font-mono text-[10.5px] leading-snug text-fg [overflow-wrap:anywhere]"
+              >
                 {line}
               </p>
             ))}
@@ -943,7 +1306,21 @@ export function SwapScreen({
                   />
                   <KeyValueRow
                     label="Buys"
-                    value={<TruncatedValue>{shortDenom(memo.xcs.outputDenom)}</TruncatedValue>}
+                    value={
+                      to ? (
+                        <BuysValue
+                          outputDenom={memo.xcs.outputDenom}
+                          to={to}
+                          onCopy={(denom) => void copyDenom(denom)}
+                        />
+                      ) : (
+                        <CopyDenom
+                          denom={memo.xcs.outputDenom}
+                          where={findCatalogEntry(VENUE_CHAIN_ID)?.chainName ?? VENUE_CHAIN_ID}
+                          onCopy={(denom) => void copyDenom(denom)}
+                        />
+                      )
+                    }
                   />
                   <KeyValueRow
                     label="Pays out to"
@@ -1144,9 +1521,13 @@ export function SwapScreen({
       ? `${quoteView.poolFee.toFixed(quoteView.poolFee >= 1 ? 2 : 3)}%`
       : null;
   const feesLine = [feeText, poolFeeText].filter(Boolean).join(" + ") || "—";
+  // Exact up to six decimals and cut, never rounded up: Max never reads more
+  // than it signs. Without decimals the balance reads in base units.
   const maxLabel =
     from && spendable !== null
-      ? `${formatUnitsExact(spendable.toString(), from.decimals, 6)} ${from.symbol}`
+      ? `${formatTokenAmount(spendable, from.identity, "picker")}${
+          from.decimalsKnown ? ` ${from.identity.ticker}` : ""
+        }`
       : null;
 
   const quoteFooter =
@@ -1191,6 +1572,39 @@ export function SwapScreen({
                 : "Swap"}
           </Button>
           <DisabledReason reason={ready ? null : blockedReason} />
+          {!ready && failedCheck && !planning ? (
+            failedCheck.verdict === "inconclusive" ? (
+              <button
+                type="button"
+                onClick={() => setRetryToken((n) => n + 1)}
+                className={cn(
+                  "mt-1 text-[10.5px] text-accent underline underline-offset-2",
+                  focusRing,
+                )}
+              >
+                Check the channel again
+              </button>
+            ) : pinnedFailure ? (
+              <button
+                type="button"
+                onClick={() =>
+                  setManual((rows) =>
+                    rows.filter(
+                      (row) =>
+                        row.fromChainId !== pinnedFailure.fromChainId ||
+                        row.toChainId !== pinnedFailure.toChainId,
+                    ),
+                  )
+                }
+                className={cn(
+                  "mt-1 text-[10.5px] text-accent underline underline-offset-2",
+                  focusRing,
+                )}
+              >
+                Let Zunia pick the channel instead of {pinnedFailure.channelId}
+              </button>
+            ) : null
+          ) : null}
         </div>
       }
     >
@@ -1209,18 +1623,14 @@ export function SwapScreen({
         <SwapPair
           from={from}
           to={to}
-          fromOptions={
-            from && !sources.some((asset) => asset.key === from.key)
-              ? [from, ...sources]
-              : sources
-          }
+          fromOptions={sources}
           toOptions={destinations}
           amount={amount}
-          receiveAmount={quoteView ? quoteView.outputAmount : ""}
+          receiveAmount={receiveAmount}
           onAmountChange={setAmount}
           onSelectFrom={(key) => {
             setFromKey(key);
-            setAmount("");
+            setDraft({ text: "", scale: "" });
             setManual([]);
           }}
           onSelectTo={(key) => {
@@ -1228,7 +1638,7 @@ export function SwapScreen({
             setManual([]);
           }}
           onFlip={flipSides}
-          flipLabel="Swap the two sides"
+          flipLabel={flipLabel}
           canFlip={canFlip}
           quoting={planning || refreshing}
           hidden={hidden}
@@ -1278,8 +1688,8 @@ export function SwapScreen({
 
         {osmosis.error ? (
           <p className="text-[10.5px] leading-snug text-fg-muted">
-            The Osmosis token list did not load ({osmosis.error}), so only your own tokens are
-            offered to receive.
+            The Osmosis token list did not load ({osmosis.error}), so only chain coins and your
+            own tokens are offered to receive.
           </p>
         ) : null}
 
@@ -1293,7 +1703,9 @@ export function SwapScreen({
             slippagePresets={SLIPPAGE_PRESETS}
             loading={(planning || refreshing) && !quote}
             error={quoteError ?? result?.error ?? null}
-            onRetry={() => setRetryToken((n) => n + 1)}
+            // A channel refusal stands for a while, so asking again helps only
+            // a check that did not finish, which the footer offers itself.
+            {...(failedCheck ? {} : { onRetry: () => setRetryToken((n) => n + 1) })}
             footer={expert ? quoteFooter : null}
           />
         ) : null}
@@ -1317,9 +1729,9 @@ export function SwapScreen({
                       ? `Via ${venue.check?.venue?.label ?? "Osmosis"}`
                       : "Route and channels"}
                 </span>
-                <span className="mt-0.5 block font-mono text-[9.5px] text-fg-dim">
-                  {plan
-                    ? `${plan.hops.length} hop${plan.hops.length === 1 ? "" : "s"} · best Osmosis route`
+                <span className="mt-0.5 block font-mono text-[9.5px] leading-snug text-fg-dim [overflow-wrap:anywhere]">
+                  {plan && from && to
+                    ? `${from.identity.ticker} on ${from.chainName} → ${to.identity.ticker} on ${to.chainName} · ${plan.hops.length} hop${plan.hops.length === 1 ? "" : "s"}`
                     : liveReads
                       ? "Override hops if discovery misses a channel"
                       : "Turn on live balances to plan hops"}

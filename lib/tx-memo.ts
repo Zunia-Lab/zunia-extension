@@ -1,14 +1,18 @@
 /**
  * Transaction-body memos Zunia writes when the user leaves the field empty.
  *
- * This is the Cosmos `tx.body.memo`, visible on explorers. It is never written
- * onto an ICS20 / PFM / ibc-hooks packet memo: those are protocol JSON and
- * live on the message.
+ * This is the Cosmos `tx.body.memo`, visible on explorers and permanent, so a
+ * token is named in it only when its identity is proven on the chain that
+ * signs (`Send USDC.n` for Noble's own USDC, never the `USDC.axl` a base-denom
+ * lookup used to pick). A token nothing proves gets the generic phrase
+ * (`IBC transfer`). It is never written onto an ICS20 / PFM / ibc-hooks packet
+ * memo: those are protocol JSON and live on the message, and nothing here
+ * writes to a message.
  */
 
-import { displayCoinSymbol, findCurrency } from "./chain-catalog";
+import { CHAIN_CATALOG, currenciesOf, denomsMatch } from "./chain-catalog";
 import { baseDenomOf } from "./coin-display";
-import { shortDenom } from "./format";
+import { identityOf, type TokenIdentity } from "./token-identity";
 
 export const ZUNIA_WALLET_TAG = "by Zunia-wallet";
 
@@ -24,19 +28,30 @@ const MAX_MEMO_CHARS = 256;
 /**
  * Keep a user-written memo. When they left it blank, write a type-specific
  * Zunia default that always ends with {@link ZUNIA_WALLET_TAG}.
+ *
+ * `chainId` is the chain that signs `msgs`: their coin denoms are its bank
+ * denoms, so it is what names them (`ibc/498A…` on Osmosis is `USDC.n`,
+ * `uusdc` on Noble is `USDC.n`). Without it, a plain denom is named only when
+ * every bundled chain that could be signing it agrees on its ticker: for a
+ * stake, the chains whose staking coin it is (Earn and Governance pass no
+ * chain, and staking `uusdc` is Noble's); otherwise every chain that lists
+ * it. A voucher, or a denom two issuers name differently (`uusdc` in a send,
+ * `uluna`), gets the generic phrase. Pass the same `chainId` wherever the same
+ * memo is previewed and signed, so the two cannot differ.
  */
 export function resolveTxMemo(
   userMemo: string | null | undefined,
   msgs: readonly MemoSourceMsg[],
+  chainId?: string,
 ): string {
   const custom = (userMemo ?? "").trim();
   if (custom) return custom;
-  return defaultTxMemo(msgs);
+  return defaultTxMemo(msgs, chainId);
 }
 
-/** Default memo for a wallet-originated transaction, from its messages. */
-export function defaultTxMemo(msgs: readonly MemoSourceMsg[]): string {
-  return withTag(phraseFor(msgs));
+/** Default memo for a wallet-originated transaction, from its messages; see {@link resolveTxMemo}. */
+export function defaultTxMemo(msgs: readonly MemoSourceMsg[], chainId?: string): string {
+  return withTag(phraseFor(msgs, chainId));
 }
 
 function withTag(phrase: string): string {
@@ -46,19 +61,19 @@ function withTag(phrase: string): string {
   return `${phrase.slice(0, Math.max(keep, 1))}…${tag}`;
 }
 
-function phraseFor(msgs: readonly MemoSourceMsg[]): string {
+function phraseFor(msgs: readonly MemoSourceMsg[], chainId: string | undefined): string {
   if (msgs.length === 0) return "Signed";
-  const phrases = msgs.map(phraseForOne);
+  const phrases = msgs.map((msg) => phraseForOne(msg, chainId));
   if (phrases.length > 1 && phrases.every((line) => line.startsWith("Claim rewards"))) {
     return "Claim rewards";
   }
   return phrases[0] ?? "Signed";
 }
 
-function phraseForOne(msg: MemoSourceMsg): string {
+function phraseForOne(msg: MemoSourceMsg, chainId: string | undefined): string {
   const kind = messageKind(msg);
   const value = msg.value ?? {};
-  const symbol = tokenSymbol(firstCoinDenom(value));
+  const symbol = tokenSymbol(firstCoinDenom(value), chainId, kind);
 
   switch (kind) {
     case "send":
@@ -227,17 +242,58 @@ function isCoin(value: unknown): value is { denom: string; amount?: string } {
   );
 }
 
-function tokenSymbol(denom: string | undefined): string | null {
+/** Messages that bond, unbond or move a stake: their coin is the signing chain's staking coin. */
+const STAKING_KINDS: ReadonlySet<MemoKind> = new Set(["stake", "unstake", "redelegate"]);
+
+/**
+ * The identity a message's coin has for the memo.
+ *
+ * With the signing chain, the denom is that chain's bank denom and
+ * {@link identityOf} answers. Without it (Earn and Governance pass none), a
+ * voucher or a packet path names nothing: `ibc/…` is a path, and only the
+ * chain holding it knows which. A plain denom is named when every bundled
+ * chain that could be signing it, mainnets before testnets, gives it the same
+ * proven ticker: `uatom` is ATOM, a testnet's own staking coin keeps its
+ * symbol, and `uluna` (LUNA on Terra, LUNC on Terra Classic) or `uusdc`
+ * (Noble's and Axelar's) stays unnamed instead of taking whichever issuer
+ * comes first.
+ *
+ * A staking message can only bond the signing chain's own staking coin, so
+ * for one the candidates are the chains whose staking coin the denom is:
+ * staking `uusdc` is Noble's (`USDC.n`, never Axelar's), staking `xfi` is
+ * CrossFi's. Chains that share a staking denom (`uluna`) still disagree and
+ * get the generic phrase.
+ */
+function memoIdentity(denom: string, chainId: string | undefined, kind: MemoKind): TokenIdentity | undefined {
+  if (chainId) return identityOf(chainId, denom);
+  if (denom.startsWith("ibc/") || baseDenomOf(denom) !== denom) return undefined;
+  const listing = CHAIN_CATALOG.filter(
+    (entry) =>
+      entry.coinMinimalDenom === denom ||
+      entry.feeMinimalDenom === denom ||
+      currenciesOf(entry).some((row) => denomsMatch(row.coinMinimalDenom, denom)),
+  );
+  const staking = STAKING_KINDS.has(kind) ? listing.filter((entry) => entry.coinMinimalDenom === denom) : [];
+  const candidates = staking.length > 0 ? staking : listing;
+  const mainnets = candidates.filter((entry) => entry.network === "mainnet");
+  const named = (mainnets.length > 0 ? mainnets : candidates).map((entry) => identityOf(entry.chainId, denom));
+  const first = named[0];
+  return first && named.every((identity) => identity.proven && identity.ticker === first.ticker)
+    ? first
+    : undefined;
+}
+
+/**
+ * The ticker the memo names a coin by, or `null` for the generic phrase. Only
+ * a proven identity names it: the memo is written on chain for good, so an
+ * unknown voucher, an unlisted token's free-text subdenom, a token on a chain
+ * the user added, and an impostor all read `Send` rather than a name someone
+ * could have chosen.
+ */
+function tokenSymbol(denom: string | undefined, chainId: string | undefined, kind: MemoKind): string | null {
   if (!denom) return null;
-  const base = baseDenomOf(denom);
-  const known = findCurrency(base);
-  if (known) return displayCoinSymbol(known.currency.coinDenom, known.entry.bech32Prefix);
-  if (base.startsWith("factory/")) {
-    const name = base.split("/").pop();
-    return name && name.length <= 20 ? name : "factory token";
-  }
-  if (base.startsWith("ibc/")) return shortDenom(base);
-  return base.length <= 16 ? base : shortDenom(base);
+  const identity = memoIdentity(denom, chainId, kind);
+  return identity?.proven ? identity.ticker : null;
 }
 
 function text(value: unknown): string {

@@ -14,9 +14,18 @@
  * own. The user can still override any hop with a port and channel of their
  * own, which is checked on both chains; a definite "no" blocks it, and a chain
  * that could not be asked is stated on the review screen, not hidden.
+ *
+ * Every token is drawn from its identity (lib/token-identity.ts): the picker,
+ * the pill and the review name it by its ticker, say where it is held and who
+ * issued it, and never use a chain's logo as a token's. Amounts are typed and
+ * converted with the exponent the balance row gives the token
+ * (lib/send-arrival.ts `sendTokenIdentity`), so a typed amount signs what it
+ * always did, and a token whose decimals nobody knows takes only Max. The
+ * review of a transfer to another chain also says what the recipient ends up
+ * holding, and warns when that is a re-wrapped voucher no registry names.
  */
 
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Button,
   TokenLogo,
@@ -34,39 +43,63 @@ import {
   focusRing,
   truncateAddress,
 } from "@zunialab/ui";
-import type { BuiltMsg } from "@zunialab/interchain";
+import { normalizeChannelId, type BuiltMsg } from "@zunialab/interchain";
 
 import type { ChainBalance, TokenBalance } from "../../../lib/balances";
-import { chainTicker, feeTicker } from "../../../lib/chain-catalog";
+import {
+  chainTicker,
+  feeTicker,
+  findCatalogEntry,
+  type CatalogEntry,
+} from "../../../lib/chain-catalog";
 import type { AddressBookEntry } from "../../../lib/address-book";
-import { explorerTxUrl } from "../../../config/interchain";
+import { PACKET_TIMEOUT_MINUTES, explorerTxUrl } from "../../../config/interchain";
 import { estimateFee, msgSend } from "../../../lib/amino-tx";
 import { resolveTxMemo } from "../../../lib/tx-memo";
-import {
-  NO_VALUE,
-  decimalText,
-  formatUnits,
-  formatUnitsExact,
-  isBech32,
-  prefixOf,
-} from "../../../lib/format";
+import { decimalText, isBech32, prefixOf } from "../../../lib/format";
 import { maxSendable, reservedFeeUnits } from "../../../lib/fee-prefs";
 import { sendToBackground } from "../../../lib/popup-client";
 import {
   buildTransferMsgFromPlan,
   planTransfer,
+  type ChannelHopCheck,
   type ManualChannel,
   type RouteHopView,
   type RoutePlanView,
   type TransferPlanResult,
 } from "../../../lib/route-plan";
-import { PACKET_TIMEOUT_MINUTES } from "../../../config/interchain";
 import {
   removePendingTransfer,
   savePendingTransfer,
   type PendingTransfer,
 } from "../../../lib/pending-transfers";
 import { routeOutcome } from "../../../lib/packet-tracking";
+import {
+  exactAmountText,
+  issuerText,
+  migrateStoredTokenMemory,
+  migrateTokenIds,
+  routeNotes,
+  sendArrival,
+  sendTokenIdentity,
+  transferLabel,
+  withRegistryEnds,
+  type SendArrival,
+} from "../../../lib/send-arrival";
+import {
+  MAX_ONLY_NOTE,
+  amountFieldText,
+  canTypeAmount,
+  formatTokenAmount,
+  type AmountIdentity,
+} from "../../../lib/token-amount";
+import {
+  identityOf,
+  shortDenom,
+  tokenKindLabel,
+  tokenText,
+  type TokenIdentity,
+} from "../../../lib/token-identity";
 import type { TxPreview } from "../../../lib/tx-kernel";
 import type { ChainAccountView } from "../hooks/useChainAccounts";
 import { useTxDetail } from "../hooks/useChainQuery";
@@ -75,6 +108,15 @@ import { usePrefs } from "../state/Prefs";
 import { useToast } from "../state/Toasts";
 import { ChainSheet, PickerTrigger } from "../components/ChainSheet";
 import { PickerSheet, type PickerItem } from "../components/PickerSheet";
+import {
+  TokenAvatar,
+  TokenPill,
+  TokenTicker,
+  networkTag,
+  provenanceLabel,
+  tokenA11yName,
+  tokenPickerItem,
+} from "../components/TokenLabel";
 import { usePickerMemory } from "../hooks/usePickerMemory";
 import {
   AddressBookPicker,
@@ -87,7 +129,6 @@ import {
   HopChannelList,
   ResumeTrackingBanner,
   RouteChoiceList,
-  TruncatedValue,
   toBaseUnits,
   useAutoDiscovery,
   useChannelReach,
@@ -103,8 +144,30 @@ import { IconCheck, IconCopy, IconSend } from "./icons";
 import { signingError, useSignedSend } from "../state/SigningPassword";
 
 const PERCENTS = [25, 50, 75, 100] as const;
+/** A planner note that names a channel: why the chains refused that channel. */
+const NAMES_A_CHANNEL = /\bchannel-\d+\b/;
 export type SendMode = "send" | "cross";
 type SendPhase = "form" | "confirm" | "sent";
+
+/** A held row, and the identity Send names, scales and converts it with. */
+export interface SendToken {
+  readonly token: TokenBalance;
+  readonly identity: TokenIdentity;
+}
+
+/**
+ * What the review showed and what gets signed, captured when the review
+ * opens, so neither moves if the balances refresh underneath it.
+ */
+export interface ReviewedSend {
+  readonly chainId: string;
+  /** The exact bank denom the message carries. */
+  readonly denom: string;
+  /** The token as the review names it, with the exponent the amount was typed with. */
+  readonly identity: TokenIdentity;
+  /** Base units signed. */
+  readonly units: bigint;
+}
 
 /** The chain's own token, so cross-send has something to select before balances load. */
 function nativeToken(chain: ChainAccountView, balance?: ChainBalance): TokenBalance {
@@ -128,6 +191,24 @@ function tokensOn(chain: ChainAccountView, balance?: ChainBalance): TokenBalance
   return [native, ...rest];
 }
 
+/**
+ * A chain's own coin, as its chain-level balance is shown: the catalog's
+ * ticker and exponent, the ones Home's chain rows and Earn use.
+ */
+function chainCoin(entry: CatalogEntry): AmountIdentity {
+  return {
+    decimals: entry.coinDecimals,
+    decimalsKnown: true,
+    ticker: chainTicker(entry),
+    denom: entry.coinMinimalDenom,
+    provenance: "native",
+  };
+}
+
+function chainNameOf(chainId: string): string {
+  return findCatalogEntry(chainId)?.chainName ?? chainId;
+}
+
 function ChainOverlayPicker({
   label,
   chain,
@@ -149,7 +230,6 @@ function ChainOverlayPicker({
   onSelect: (chainId: string) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const decimals = chain?.entry.coinDecimals ?? 6;
 
   return (
     <section>
@@ -173,10 +253,10 @@ function ChainOverlayPicker({
         title={chain ? chainTicker(chain.entry) : "-"}
         subtitle={chain?.entry.chainName ?? "Pick a network"}
         detail={
-          balance
+          balance && chain
             ? hidden
               ? "••••"
-              : `${formatUnits(balance.available, decimals)} free`
+              : `${formatTokenAmount(balance.available, chainCoin(chain.entry), "list")} free`
             : undefined
         }
       />
@@ -193,24 +273,13 @@ function ChainOverlayPicker({
           if (!held) return null;
           return (
             <span className="font-mono text-[9.5px] tabular-nums text-fg-dim">
-              {hidden ? "••••" : formatUnits(held.available, option.entry.coinDecimals)}
+              {formatTokenAmount(held.available, chainCoin(option.entry), "list", { hidden })}
             </span>
           );
         }}
       />
     </section>
   );
-}
-
-function tokenKindLabel(token: TokenBalance): string {
-  if (token.kind === "ibc") return "IBC";
-  if (token.kind === "factory") return "Factory";
-  if (token.kind === "other") return "Asset";
-  return "Native";
-}
-
-function tokenLogoSrc(token: TokenBalance | undefined, fallback?: string): string | undefined {
-  return token?.iconUrl || fallback;
 }
 
 function PartyRow({
@@ -251,89 +320,195 @@ function PartyRow({
   );
 }
 
-/** Which token on the source chain is being moved. Native, IBC, factory, other. */
-function TokenPicker({
-  tokens,
+/**
+ * An exact denom, short on screen and whole in the tooltip and on the
+ * clipboard: `ibc/498A…6BA6E4`, copied as all 68 characters. The button's
+ * name says the short form it shows (`Copy denom ibc/498A…6BA6E4`), so a
+ * voice user can say what they see and a screen reader is not read 64 hex
+ * digits.
+ */
+export function CopyDenom({
   denom,
+  what,
+  onCopy,
+}: {
+  denom: string;
+  /** What the denom is, for the button's name and the toast: `Denom`. */
+  what: string;
+  onCopy: (value: string, title: string) => void;
+}) {
+  return (
+    <button
+      type="button"
+      title={denom}
+      aria-label={`Copy ${what.toLowerCase()} ${shortDenom(denom)}`}
+      onClick={() => onCopy(denom, `${what} copied`)}
+      className={cn(
+        "inline-flex max-w-full items-center gap-1 rounded-full px-1 font-mono text-fg-muted [word-break:normal]",
+        "transition-colors duration-[var(--z-duration-base)] hover:bg-[var(--z-state-hover)] hover:text-fg",
+        focusRing,
+      )}
+    >
+      <span className="min-w-0 truncate">{shortDenom(denom)}</span>
+      <IconCopy width={11} height={11} className="shrink-0 text-accent" />
+    </button>
+  );
+}
+
+/**
+ * An exact amount split for display: the figure, then its unit. `1.5` and
+ * `USDC.n`; `12340000` and `base units IBC·0123` when the decimals are
+ * unknown, so the large figure stays one number.
+ */
+function amountParts(units: string | bigint, identity: TokenIdentity): { figure: string; unit: string } {
+  const [figure = "", ...words] = exactAmountText(units, identity).split(" ");
+  return { figure, unit: [...words, identity.ticker].join(" ") };
+}
+
+/**
+ * A review value shown whole: it wraps between words, and inside a word only
+ * when one word is wider than the row. The memo is written on chain and the
+ * timeout says when a refund comes, so neither is clipped.
+ */
+function WholeValue({ children }: { children: string }) {
+  return <span className="[word-break:normal]">{children}</span>;
+}
+
+/**
+ * The "Arrives as" value: the token the recipient holds and where, then its
+ * exact denom to copy. When the plan could not compute the denom, only that
+ * is said.
+ */
+function ArrivalValue({
+  arrival,
+  onCopy,
+}: {
+  arrival: SendArrival;
+  onCopy: (value: string, title: string) => void;
+}) {
+  return (
+    <span className="inline-flex max-w-full flex-col items-end gap-0.5">
+      <span
+        className={cn(
+          "[word-break:normal]",
+          arrival.warning ? "text-[var(--z-warning-fg)]" : "text-fg",
+        )}
+      >
+        {arrival.text}
+      </span>
+      {arrival.denom ? (
+        <CopyDenom denom={arrival.denom} what="Arrival denom" onCopy={onCopy} />
+      ) : null}
+    </span>
+  );
+}
+
+/**
+ * One picker row from TokenLabel's builder: the ticker (drawn whole, so its
+ * suffix and any `·hash` stay in view), `Noble USDC · on Osmosis`, the token's
+ * logo with its chain's badge, the balance, and the seal said aloud, as Swap's
+ * rows are. `labelNode` and `srNote` are the picker's own optional fields.
+ *
+ * Two adjustments to the shared row, both for what a 360px sheet can hold:
+ * - The ticker is drawn by TokenTicker in two boxes (family, then suffix),
+ *   which a screen reader would name `USDC .n`; it is hidden from assistive
+ *   tech and the ticker is said whole instead, so the name holds the label
+ *   as written.
+ * - A balance in base units (`5000000000000000000 base units` for allSHIB)
+ *   wraps within a third of the row instead of squeezing the ticker to `I…`
+ *   and the location line to one word per line.
+ */
+export function sendPickerItem(
+  row: SendToken,
+  hidden: boolean,
+): PickerItem & { labelNode?: ReactNode; srNote?: string } {
+  const seal = provenanceLabel(row.identity);
+  const item = tokenPickerItem(row.identity, {
+    amount: row.token.amount,
+    hidden,
+    locationChain: true,
+  });
+  return {
+    ...item,
+    labelNode: (
+      <>
+        <span aria-hidden="true" className="block min-w-0">
+          <TokenTicker identity={row.identity} />
+        </span>
+        <span className="sr-only">{row.identity.ticker}</span>
+      </>
+    ),
+    ...(item.trailing
+      ? {
+          trailing: (
+            <span className="block max-w-[112px] font-mono text-[9.5px] leading-snug tabular-nums text-fg-dim [overflow-wrap:anywhere]">
+              {formatTokenAmount(row.token.amount, row.identity, "picker", { hidden })}
+            </span>
+          ),
+        }
+      : {}),
+    ...(seal ? { srNote: seal } : {}),
+  };
+}
+
+/**
+ * Which token on the source chain is being moved, by ticker and origin. Picks
+ * are remembered as `${chainId}:${denom}`, the key Swap's pickers keep; picks
+ * the old Send picker kept by bare denom count as this chain's when it offers
+ * that denom, and are rewritten in storage once.
+ */
+function TokenPicker({
+  chainId,
+  rows,
+  selected,
   hidden,
-  fallbackIconUrl,
   onSelect,
 }: {
-  tokens: readonly TokenBalance[];
-  denom: string;
+  chainId: string;
+  rows: readonly SendToken[];
+  selected: SendToken | undefined;
   hidden: boolean;
-  fallbackIconUrl?: string;
-  onSelect: (denom: string) => void;
+  onSelect: (row: SendToken) => void;
 }) {
   const [open, setOpen] = useState(false);
   const memory = usePickerMemory("token");
-  const selected = tokens.find((token) => token.denom === denom) ?? tokens[0];
-  const items = useMemo<PickerItem[]>(
-    () =>
-      tokens.map((token) => ({
-        id: token.denom,
-        label: token.displayName,
-        sublabel: `${tokenKindLabel(token)} · ${shortDenom(token.denom)}`,
-        keywords: [token.symbol, token.denom, token.kind, token.displayName],
-        icon: (
-          <TokenLogo
-            src={tokenLogoSrc(token, fallbackIconUrl)}
-            symbol={token.symbol}
-            size={24}
-          />
-        ),
-        trailing: (
-          <span className="font-mono text-[9.5px] tabular-nums text-fg-dim">
-            {hidden ? "••••" : formatUnits(token.amount, token.decimals)}
-          </span>
-        ),
-      })),
-    [tokens, hidden, fallbackIconUrl],
-  );
+  const denoms = rows.map((row) => row.token.denom);
+  const denomList = denoms.join("\n");
+  useEffect(() => {
+    if (!chainId || !denomList) return;
+    void migrateStoredTokenMemory(chainId, denomList.split("\n"));
+  }, [chainId, denomList]);
+  const items = rows.map((row) => sendPickerItem(row, hidden));
+  const identity = selected?.identity;
+  const verified = identity && provenanceLabel(identity) ? ", verified" : "";
   return (
     <>
-      <button
-        type="button"
+      <TokenPill
+        identity={identity}
+        chevron={false}
+        emptyLabel="Token"
+        aria-label={identity ? `Token: ${tokenA11yName(identity)}${verified}` : "Token: none"}
         aria-haspopup="dialog"
         aria-expanded={open}
-        aria-label={`Token: ${selected?.displayName ?? "none"}`}
-        disabled={tokens.length === 0}
+        disabled={rows.length === 0}
         onClick={() => setOpen(true)}
-        className={cn(
-          "flex min-w-0 max-w-[168px] shrink-0 items-center gap-1.5 rounded-full border border-[var(--z-line)] bg-[var(--z-surface-raised)] py-1.5 pl-1.5 pr-2.5",
-          "transition-colors duration-[var(--z-duration-base)] hover:border-[var(--z-line-strong)] hover:bg-[var(--z-state-hover)]",
-          "disabled:cursor-not-allowed disabled:opacity-50",
-          focusRing,
-        )}
-      >
-        <TokenLogo
-          src={tokenLogoSrc(selected, fallbackIconUrl)}
-          symbol={selected?.symbol ?? "?"}
-          size={24}
-        />
-        <span className="min-w-0 text-left">
-          <span className="block truncate text-[12.5px] font-semibold leading-none tracking-tight text-fg">
-            {selected?.symbol ?? "Token"}
-          </span>
-          <span className="mt-0.5 block truncate font-mono text-[9px] leading-none text-fg-dim">
-            {selected ? tokenKindLabel(selected) : "None"}
-          </span>
-        </span>
-      </button>
+      />
       <PickerSheet
         open={open}
         onClose={() => setOpen(false)}
         title="Choose an asset"
         items={items}
-        selectedId={selected?.denom}
-        searchPlaceholder="Search native, IBC, factory, or any denom"
-        favorites={memory.favorites}
-        recents={memory.recents}
+        selectedId={identity?.key}
+        searchPlaceholder="Search a ticker, chain or denom"
+        favorites={migrateTokenIds(memory.favorites, chainId, denoms)}
+        recents={migrateTokenIds(memory.recents, chainId, denoms)}
         onToggleFavorite={memory.toggleFavorite}
         emptyLabel="No assets on this network"
         onSelect={(id) => {
+          const row = rows.find((candidate) => candidate.identity.key === id);
+          if (!row) return;
           memory.remember(id);
-          onSelect(id);
+          onSelect(row);
         }}
       />
     </>
@@ -358,11 +533,14 @@ function ReachLabel({ reach }: { reach: ChainReach | undefined }) {
   );
 }
 
-/** "channel-141 to osmosis-1, then channel-0 to cosmoshub-4". */
+/** "channel-141 to Osmosis, then channel-0 to Cosmos Hub". */
 function routeSentence(hops: readonly RouteHopView[]): string {
   return hops
     .filter((hop) => hop.kind !== "swap" && hop.counterpartyChainId)
-    .map((hop) => `${hop.channelId || "?"} to ${hop.counterpartyChainId}`)
+    .map(
+      (hop) =>
+        `${hop.channelId || "?"} to ${hop.counterpartyChainName ?? hop.counterpartyChainId}`,
+    )
     .join(", then ");
 }
 
@@ -376,9 +554,78 @@ function timeoutLabel(msg: BuiltMsg | undefined): string {
   return `${PACKET_TIMEOUT_MINUTES} min, refunded if not received by ${clock}`;
 }
 
-/** IBC denoms are long hashes; the start is enough to tell two apart. */
-function shortDenom(denom: string): string {
-  return denom.startsWith("ibc/") ? `${denom.slice(0, 14)}…` : denom;
+/** The route the screen previews, as pins, so the plan follows that route. */
+export function routePinsOf(route: Pick<ChainReach, "hops"> | undefined): ManualChannel[] {
+  if (!route) return [];
+  return route.hops.flatMap((hop) =>
+    hop.counterpartyChainId && hop.channelId
+      ? [
+          {
+            fromChainId: hop.chainId,
+            toChainId: hop.counterpartyChainId,
+            channelId: hop.channelId,
+            ...(hop.channelVerified ? { verdict: "verified" as const } : {}),
+          },
+        ]
+      : [],
+  );
+}
+
+/**
+ * The screen's pins, with a channel the user entered replacing any on the
+ * same leg, each with the registry's far end when it has none
+ * (lib/send-arrival.ts `withRegistryEnds`): without it the planner cannot
+ * compute the denom a wrapped token arrives as.
+ */
+export function mergePins(
+  screen: readonly ManualChannel[],
+  user: readonly ManualChannel[],
+): ManualChannel[] {
+  const byPair = new Map<string, ManualChannel>();
+  for (const pin of screen) byPair.set(`${pin.fromChainId}>${pin.toChainId}`, pin);
+  for (const pin of user) byPair.set(`${pin.fromChainId}>${pin.toChainId}`, pin);
+  return withRegistryEnds([...byPair.values()]);
+}
+
+/**
+ * Whether a failed channel check is on a channel this screen pinned on its
+ * own (the route it previews), not one the user entered for that leg.
+ */
+function pinnedByScreen(
+  failed: ChannelHopCheck,
+  screen: readonly ManualChannel[],
+  user: readonly ManualChannel[],
+): boolean {
+  const onLeg = (pin: ManualChannel) =>
+    pin.fromChainId === failed.sourceChainId && pin.toChainId === failed.destChainId;
+  if (user.some(onLeg)) return false;
+  const channel = normalizeChannelId(failed.channelId);
+  return screen.some((pin) => onLeg(pin) && normalizeChannelId(pin.channelId) === channel);
+}
+
+/** The one message a same-chain send signs, built the same way for the review and the signature. */
+export function sameChainMsgs(fromAddress: string, toAddress: string, reviewed: ReviewedSend) {
+  return [
+    msgSend({
+      fromAddress,
+      toAddress,
+      amount: [{ denom: reviewed.denom, amount: reviewed.units.toString() }],
+    }),
+  ];
+}
+
+/**
+ * The memo a transfer is shown and signed with: the one its preview was built
+ * over, which the review set to the chain-aware default. Should a preview
+ * come back without one, the same default is passed explicitly, so the kernel
+ * never writes a memo other than the one shown.
+ */
+function transferMemo(
+  preview: TxPreview | null,
+  msgs: readonly BuiltMsg[] | null,
+  chainId: string,
+): string {
+  return preview?.preview.memo || resolveTxMemo("", msgs ?? [], chainId);
 }
 
 export function SendScreen({
@@ -417,10 +664,14 @@ export function SendScreen({
   const [recipient, setRecipient] = useState("");
   /** Cross-chain To field stays closed until the user wants a different address. */
   const [toOpen, setToOpen] = useState(false);
-  const [amount, setAmount] = useState("");
+  // The typed text belongs to the token and the exponent it was typed with: a
+  // text read against another token, or against decimals that changed when
+  // the balances were read again, reads as nothing rather than another amount.
+  const [draft, setDraft] = useState<{ text: string; scale: string }>({ text: "", scale: "" });
   const [memo, setMemo] = useState("");
   const [manual, setManual] = useState<ManualChannel[]>([]);
-  const [routeKey, setRouteKey] = useState<string | null>(null);
+  /** A route the user chose from the list, kept with the pair it was chosen for. */
+  const [routeChoice, setRouteChoice] = useState<{ pair: string; key: string } | null>(null);
   // Bumped by the route panel's retry, so re-planning the same inputs actually
   // re-plans rather than reusing the settled answer.
   const [retryToken, setRetryToken] = useState(0);
@@ -432,10 +683,15 @@ export function SendScreen({
   const [preview, setPreview] = useState<TxPreview | null>(null);
   const [pendingMsgs, setPendingMsgs] = useState<readonly BuiltMsg[] | null>(null);
   const [reviewedPlan, setReviewedPlan] = useState<RoutePlanView | null>(null);
+  const [reviewed, setReviewed] = useState<ReviewedSend | null>(null);
   /** The route being followed. Survives a popup close through storage. */
   const [tracked, setTracked] = useState<PendingTransfer | null>(null);
   /** Who the transfer just signed went to, for the save-contact offer. */
   const [sentTo, setSentTo] = useState("");
+  /** Pinned channels the chains refused, already dropped from the preview once. */
+  const droppedPins = useRef(new Set<string>());
+  /** Why those channels were dropped, to say so while the route is shown. */
+  const [refusedPins, setRefusedPins] = useState<readonly ChannelHopCheck[]>([]);
 
   const kernel = useKernelSigning();
   const resolveAddresses = useResolveAddresses();
@@ -456,6 +712,8 @@ export function SendScreen({
   const channelReach = useChannelReach(cross ? (chain?.chainId ?? "") : "", chainIdList);
   const knownReach = destChain ? channelReach.reach.get(destChain.chainId) : undefined;
   const routeOptions = destChain ? (channelReach.paths.get(destChain.chainId) ?? []) : [];
+  const routePair = `${chain?.chainId ?? ""}>${destChain?.chainId ?? ""}`;
+  const routeKey = routeChoice?.pair === routePair ? routeChoice.key : null;
   const selectedRoute =
     routeOptions.find((option) => option.key === routeKey) ?? routeOptions[0];
   const discovery = useAutoDiscovery(
@@ -465,32 +723,8 @@ export function SendScreen({
     channelReach.reload,
   );
 
-  useEffect(() => {
-    setRouteKey(null);
-  }, [chain?.chainId, destChain?.chainId]);
-
-  const routePins = useMemo<ManualChannel[]>(() => {
-    if (!selectedRoute) return [];
-    return selectedRoute.hops.flatMap((hop) =>
-      hop.counterpartyChainId && hop.channelId
-        ? [
-            {
-              fromChainId: hop.chainId,
-              toChainId: hop.counterpartyChainId,
-              channelId: hop.channelId,
-              ...(hop.channelVerified ? { verdict: "verified" as const } : {}),
-            },
-          ]
-        : [],
-    );
-  }, [selectedRoute]);
-
-  const effectiveManual = useMemo(() => {
-    const byPair = new Map<string, ManualChannel>();
-    for (const pin of routePins) byPair.set(`${pin.fromChainId}>${pin.toChainId}`, pin);
-    for (const pin of manual) byPair.set(`${pin.fromChainId}>${pin.toChainId}`, pin);
-    return [...byPair.values()];
-  }, [routePins, manual]);
+  const routePins = routePinsOf(selectedRoute);
+  const effectiveManual = mergePins(routePins, manual);
 
   // Reachable networks first, fewest hops first; the rest keep their order.
   const destOptions = useMemo(() => {
@@ -502,11 +736,24 @@ export function SendScreen({
       .map(({ c }) => c);
   }, [chains, chain?.chainId, channelReach.reach]);
 
-  const tokens = chain ? tokensOn(chain, balance) : [];
-  const token = tokens.find((row) => row.denom === denom) ?? tokens[0];
-  const decimals = token?.decimals ?? chain?.entry.coinDecimals ?? 6;
+  const rows: SendToken[] = chain
+    ? tokensOn(chain, balance).map((token) => ({
+        token,
+        identity: sendTokenIdentity(chain.chainId, token),
+      }))
+    : [];
+  const selected = rows.find((row) => row.token.denom === denom) ?? rows[0];
+  const token = selected?.token;
+  const sendId = selected?.identity;
+  const scale = sendId ? `${sendId.key}|${sendId.decimalsKnown ? sendId.decimals : "?"}` : "";
+  const amount = draft.scale === scale ? draft.text : "";
+  const setAmount = (text: string) => setDraft({ text, scale });
+  const clearAmount = () => setDraft({ text: "", scale: "" });
+  // Typed text is converted with the token's decimals; without them only Max,
+  // the exact balance, can be used (lib/token-amount.ts).
+  const maxOnly = sendId ? !canTypeAmount(sendId) : false;
   const available = token ? BigInt(token.amount) : null;
-  const amountUnits = toBaseUnits(amount, decimals);
+  const amountUnits = sendId ? toBaseUnits(amount, sendId.decimals) : null;
   const feeReserve =
     chain && token
       ? reservedFeeUnits(chain.chainId, token.denom, settings)
@@ -558,6 +805,8 @@ export function SendScreen({
   useEffect(() => {
     if (!planKey) return;
     const controller = new AbortController();
+    const screenPins = routePins;
+    const userPins = manual;
     const timer = window.setTimeout(() => {
       void planTransfer({
         sourceChainId: chain!.chainId,
@@ -570,7 +819,22 @@ export function SendScreen({
         resolveAddresses,
         signal: controller.signal,
       }).then((next) => {
-        if (!controller.signal.aborted) setSettledPlan({ key: planKey, result: next });
+        if (controller.signal.aborted) return;
+        setSettledPlan({ key: planKey, result: next });
+        // The chains refused a channel this screen pinned only because its
+        // preview showed that route. The refusal drops it from the channel
+        // cache for this session, so reading the cache again previews (and
+        // pins) another route instead of blocking on this one. A channel the
+        // user entered stays theirs; a check that could not complete is
+        // offered as a retry instead.
+        const failed = next.best?.failedCheck ?? null;
+        if (!failed || failed.verdict === "inconclusive") return;
+        if (!pinnedByScreen(failed, screenPins, userPins)) return;
+        const key = `${failed.sourceChainId}>${failed.destChainId}:${normalizeChannelId(failed.channelId)}`;
+        if (droppedPins.current.has(key)) return;
+        droppedPins.current.add(key);
+        setRefusedPins((rows) => [...rows, failed]);
+        channelReach.reload();
       });
     }, 450);
     return () => {
@@ -586,6 +850,22 @@ export function SendScreen({
   const result = settledPlan?.key === planKey ? settledPlan.result : null;
   const planning = Boolean(planKey) && settledPlan?.key !== planKey;
   const plan = result?.best ?? null;
+  // Why a route is gone: the checks that refused channels this screen had
+  // pinned, and, with no route left, the planner's notes that name a channel
+  // (each refusal names its channel; the summary is the button's reason).
+  const refusals = [
+    ...new Set([
+      ...refusedPins
+        .filter(
+          (check) =>
+            check.sourceChainId === chain?.chainId && check.destChainId === destChain?.chainId,
+        )
+        .map((check) => check.message),
+      ...(!plan && !planning && !result?.error
+        ? (result?.warnings.slice(1) ?? []).filter((note) => NAMES_A_CHANNEL.test(note))
+        : []),
+    ]),
+  ];
 
   function pinChannel(channel: ManualChannel) {
     setManual((rows) => [
@@ -606,7 +886,7 @@ export function SendScreen({
   // The route before there is a plan to show: the cached path when there is
   // one, otherwise the single leg a direct transfer needs, so the channel can
   // still be entered by hand when nothing was found.
-  const previewHops = useMemo((): RouteHopView[] => {
+  const previewHops = ((): RouteHopView[] => {
     if (!cross || !chain || !destChain) return [];
     if (selectedRoute) return [...selectedRoute.hops];
     const pinnedDirect = manual.some(
@@ -625,7 +905,7 @@ export function SendScreen({
         kind: "transfer",
       },
     ];
-  }, [cross, chain, destChain, manual, knownReach, selectedRoute]);
+  })();
 
   const routeHint = ((): string => {
     if (!chain || !destChain) return "";
@@ -673,36 +953,39 @@ export function SendScreen({
     : chain?.entry.bech32Prefix;
   const recipientChainId = cross ? destChain?.chainId : chain?.chainId;
 
-  const recipientState = useMemo(() => {
+  const recipientState = ((): {
+    tone: "default" | "error" | "valid";
+    hint: string | undefined;
+  } => {
     const value = recipient.trim();
     if (!value) {
       if (cross && destSelf) {
         return {
-          tone: "valid" as const,
+          tone: "valid",
           hint: destChain
             ? `This wallet on ${destChain.entry.chainName}`
             : "This wallet on the destination",
         };
       }
-      return { tone: "default" as const, hint: undefined };
+      return { tone: "default", hint: undefined };
     }
     if (!isBech32(value)) {
-      return { tone: "error" as const, hint: "Not a valid address. Check it for a typo." };
+      return { tone: "error", hint: "Not a valid address. Check it for a typo." };
     }
     if (expectedPrefix && prefixOf(value) !== expectedPrefix) {
-      return { tone: "error" as const, hint: `Expected a ${expectedPrefix}1… address` };
+      return { tone: "error", hint: `Expected a ${expectedPrefix}1… address` };
     }
     if (chain && value === chain.address && !cross) {
-      return { tone: "error" as const, hint: "That is this wallet's address" };
+      return { tone: "error", hint: "That is this wallet's address" };
     }
     const known = contacts.find((c) => c.address === value);
     return {
-      tone: "valid" as const,
+      tone: "valid",
       hint: known ? `Saved as ${known.label}` : "Valid address",
     };
-  }, [recipient, chain, contacts, expectedPrefix, cross, destSelf, destChain]);
+  })();
 
-  const blockedReason = useMemo((): string | null => {
+  const blockedReason = ((): string | null => {
     if (!chain) return "Enable at least one network first.";
     if (cross && !liveReads) {
       return "Sending to another chain plans the route from public endpoints. Turn on live balances in Settings → Preferences.";
@@ -713,10 +996,12 @@ export function SendScreen({
       return "This wallet has no address on the destination. Add one to continue.";
     }
     if (recipientState.tone !== "valid") return null;
-    if (!amount) return null;
+    if (!amount) {
+      return maxOnly ? "Use Max to set the amount: this token's decimals are unknown." : null;
+    }
     if (amountUnits === null) return "That amount is not a number this chain can hold.";
     if (amountUnits <= 0n) return "Enter an amount above zero.";
-    if (overBalance) return `More than the ${token?.symbol ?? "balance"} available.`;
+    if (overBalance) return `More than the ${sendId?.ticker ?? "balance"} available.`;
     if (!cross) return null;
     if (planning) return null;
     if (result?.error) return result.error;
@@ -727,22 +1012,7 @@ export function SendScreen({
       );
     }
     return plan.blockedReason;
-  }, [
-    chain,
-    cross,
-    liveReads,
-    kernel.reason,
-    destChain,
-    effectiveRecipient,
-    recipientState.tone,
-    amount,
-    amountUnits,
-    overBalance,
-    token,
-    planning,
-    result,
-    plan,
-  ]);
+  })();
 
   const canReview =
     blockedReason === null &&
@@ -753,19 +1023,28 @@ export function SendScreen({
     (!cross || Boolean(plan));
 
   function applyPercent(pct: number) {
-    if (available === null) return;
+    if (available === null || !sendId) return;
     const units = (maxSendable(available, feeReserve) * BigInt(pct)) / 100n;
-    setAmount(formatUnitsExact(units.toString(), decimals));
+    // Exact digits for any size: the field converts back with the same
+    // exponent (0 when unknown), so Max signs the balance, not a rounding.
+    setAmount(amountFieldText(units, sendId));
   }
 
   /* ---------------------------------------------------------------- *
    * Review and sign
    * ---------------------------------------------------------------- */
 
-  const review = useCallback(async () => {
-    if (!chain || amountUnits === null) return;
+  async function review() {
+    if (!chain || !token || !sendId || amountUnits === null) return;
     setError(null);
+    const captured: ReviewedSend = {
+      chainId: chain.chainId,
+      denom: token.denom,
+      identity: sendId,
+      units: amountUnits,
+    };
     if (!cross) {
+      setReviewed(captured);
       setPhase("confirm");
       return;
     }
@@ -783,6 +1062,11 @@ export function SendScreen({
         chainId: chain.chainId,
         signerAddress: chain.address,
         msgs,
+        // The default memo names the token as the signing chain holds it
+        // (`IBC transfer USDC.n`, or no ticker for a token nothing proves).
+        // The kernel keeps a memo it is given, so the preview carries the
+        // memo that is shown and then signed.
+        memo: resolveTxMemo("", msgs, chain.chainId),
         feeSpeed: settings.feeSpeed,
         gasAdjustment: settings.gasAdjustment,
       });
@@ -790,6 +1074,7 @@ export function SendScreen({
       // Captured here, not at signing: this is the plan the confirm screen
       // describes, and it is the one tracking must follow afterwards.
       setReviewedPlan(plan);
+      setReviewed(captured);
       setPreview(built);
       setPhase("confirm");
     } catch (caught) {
@@ -797,7 +1082,46 @@ export function SendScreen({
     } finally {
       setBusy(false);
     }
-  }, [chain, amountUnits, cross, plan, settings.feeSpeed, settings.gasAdjustment]);
+  }
+
+  /**
+   * New gas preferences on the review of a transfer: the reviewed plan, token
+   * and amount, priced again (with a fresh timeout, as a new review would
+   * have). They stay the ones reviewed even if the plan behind the form has
+   * moved since: a discovery that ends while the review is open re-plans, and
+   * may pick another channel, which a fee change must not slip in. No
+   * preference is passed: GasFeePrefs saves the new ones before it calls
+   * back, through a callback that still holds this render's old ones, and
+   * the kernel reads the saved ones.
+   */
+  async function reprice() {
+    if (!cross || !chain || !reviewed || !reviewedPlan || reviewed.chainId !== chain.chainId) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const msgs = [
+        buildTransferMsgFromPlan({
+          view: reviewedPlan,
+          sender: chain.address,
+          amountBaseUnits: reviewed.units.toString(),
+        }),
+      ];
+      const built = await sendToBackground<TxPreview>("BUILD_TX_PREVIEW", {
+        chainId: chain.chainId,
+        signerAddress: chain.address,
+        msgs,
+        memo: resolveTxMemo("", msgs, chain.chainId),
+      });
+      setPendingMsgs(msgs);
+      setPreview(built);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setBusy(false);
+    }
+  }
 
   /** Moves a saved recipient up the Recent list. Best effort: the send already happened. */
   function countSend(address: string) {
@@ -817,7 +1141,14 @@ export function SendScreen({
   }
 
   async function confirmAndBroadcast() {
-    if (!chain || amountUnits === null || !token) return;
+    if (!chain || !reviewed) return;
+    // The review is bound to the chain it was made on. Should the network list
+    // change under it (a chain removed in another window), the screen falls
+    // back to another chain: nothing is signed there with this review's denom.
+    if (reviewed.chainId !== chain.chainId) {
+      setError("The network changed after this review. Go back and review the send again.");
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -829,7 +1160,7 @@ export function SendScreen({
             chainId: chain.chainId,
             signerAddress: chain.address,
             msgs: pendingMsgs,
-            memo: preview.preview.memo,
+            memo: transferMemo(preview, pendingMsgs, chain.chainId),
             fee: preview.fee,
             accountNumber: preview.accountNumber,
             sequence: preview.sequence,
@@ -842,8 +1173,12 @@ export function SendScreen({
             txHash: broadcastResult.txhash,
             chainId: chain.chainId,
             plan: reviewedPlan.plan,
-            amountBaseUnits: amountUnits.toString(),
-            label: `${amount} ${token.symbol} → ${destChain?.entry.chainName ?? "?"}`,
+            amountBaseUnits: reviewed.units.toString(),
+            label: transferLabel(
+              reviewed.units,
+              reviewed.identity,
+              chainNameOf(reviewedPlan.plan.destChainId),
+            ),
             startedAt: Date.now(),
           };
           // Persisted before the screen changes, so a popup that closes on the
@@ -860,20 +1195,14 @@ export function SendScreen({
           alert: true,
         });
       } else {
-        const msgs = [
-          msgSend({
-            fromAddress: chain.address,
-            toAddress: recipient.trim(),
-            amount: [{ denom: token.denom, amount: amountUnits.toString() }],
-          }),
-        ];
+        const msgs = sameChainMsgs(chain.address, recipient.trim(), reviewed);
         const broadcastResult = await signedSend<{ txhash: string }>(
           "SIGN_AND_BROADCAST",
           {
             chainId: chain.chainId,
             signerAddress: chain.address,
             msgs,
-            memo: resolveTxMemo(memo, msgs),
+            memo: resolveTxMemo(memo, msgs, chain.chainId),
             fee: localFee,
             gasLimit: 200_000,
           },
@@ -934,6 +1263,15 @@ export function SendScreen({
     if (cross && tracked) {
       const route = tracking.route;
       const failed = outcome === "failed" || route?.failure === "source-failed";
+      // The transfer just signed keeps the name and exponent it was reviewed
+      // with; one resumed from an earlier popup is named from its plan.
+      const moved =
+        reviewed &&
+        reviewed.chainId === tracked.plan.sourceChainId &&
+        reviewed.denom === tracked.plan.inputDenom
+          ? reviewed.identity
+          : identityOf(tracked.plan.sourceChainId, tracked.plan.inputDenom);
+      const movedAmount = amountParts(tracked.amountBaseUnits, moved);
       return (
         <ScreenScaffold
           title={failed ? "Transfer failed" : "Transfer in flight"}
@@ -944,6 +1282,18 @@ export function SendScreen({
           }
         >
           <div className="pt-1">
+            <section className="mb-3 flex items-center gap-2.5 rounded-[14px] border border-[var(--z-line)] px-3 py-2.5">
+              <TokenAvatar identity={moved} size={30} locationBadge="always" />
+              <span className="min-w-0 flex-1">
+                <span className="block text-[13px] font-semibold leading-snug tracking-[-0.02em] tabular-nums text-fg [overflow-wrap:anywhere]">
+                  {movedAmount.figure} {movedAmount.unit}
+                </span>
+                <span className="mt-0.5 block text-[11px] leading-snug text-fg-muted [overflow-wrap:anywhere]">
+                  {chainNameOf(tracked.plan.sourceChainId)} →{" "}
+                  {chainNameOf(tracked.plan.destChainId)}
+                </span>
+              </span>
+            </section>
             <PacketTracker
               compact
               hops={route?.hops ?? []}
@@ -993,7 +1343,7 @@ export function SendScreen({
       liveReads && !confirmed && (inclusion.retrying || inclusion.loading || inclusion.missing);
     const failed = Boolean(confirmed && !confirmed.success);
     const included = Boolean(confirmed?.success);
-    const symbol = token?.symbol ?? chainTicker(chain.entry);
+    const sentAmount = reviewed ? amountParts(reviewed.units, reviewed.identity) : null;
     const explorer = sentUrl ? (
       <Button className="w-full" asChild>
         <a href={sentUrl} target="_blank" rel="noreferrer">
@@ -1049,10 +1399,18 @@ export function SendScreen({
           <p className="mt-5 text-[18px] font-semibold tracking-tight text-fg">
             {failed ? "Not included" : included ? "Included" : "Broadcast accepted"}
           </p>
-          {amount ? (
-            <p className="mt-2 text-[22px] font-semibold tracking-[-0.03em] tabular-nums text-fg">
-              {amount} {symbol}
-            </p>
+          {reviewed && sentAmount ? (
+            <>
+              <p className="mt-2 max-w-full text-[22px] font-semibold leading-tight tracking-[-0.03em] tabular-nums text-fg [overflow-wrap:anywhere]">
+                {sentAmount.figure}{" "}
+                <span className="text-[14px] tracking-[-0.02em] text-fg-muted">
+                  {sentAmount.unit}
+                </span>
+              </p>
+              <p className="mt-1 max-w-[260px] text-[11px] leading-snug text-fg-muted [overflow-wrap:anywhere]">
+                {tokenText(reviewed.identity, "row")}
+              </p>
+            </>
           ) : null}
           <p className="mt-1.5 max-w-[250px] text-[12.5px] leading-snug text-fg-muted">
             {failed
@@ -1079,7 +1437,7 @@ export function SendScreen({
     );
   }
 
-  if (phase === "confirm") {
+  if (phase === "confirm" && reviewed) {
     const memoInfo = preview?.packetMemo ?? null;
     const feeCoin = cross ? preview?.fee.amount[0] : localFee?.amount[0];
     const gas = cross ? preview?.fee.gas_limit : localFee?.gas;
@@ -1117,29 +1475,27 @@ export function SendScreen({
         : confirmKind === "ibc-forward"
           ? "Sign route"
           : "Sign IBC send";
-    const shownMemo = cross
-      ? preview?.preview.memo || resolveTxMemo("", pendingMsgs ?? [])
-      : resolveTxMemo(
-          memo,
-          token
-            ? [
-                {
-                  type: "cosmos-sdk/MsgSend",
-                  value: {
-                    amount: [
-                      {
-                        denom: token.denom,
-                        amount: amountUnits?.toString() ?? "0",
-                      },
-                    ],
-                  },
-                },
-              ]
-            : [],
-        );
     const toAddress = effectiveRecipient;
     const toContact = contacts.find((contact) => contact.address === toAddress);
-    const symbol = token?.symbol ?? chainTicker(chain.entry);
+    const sent = reviewed.identity;
+    const sentAmount = amountParts(reviewed.units, sent);
+    const tag = networkTag(sent);
+    const shownMemo = cross
+      ? transferMemo(preview, pendingMsgs, chain.chainId)
+      : resolveTxMemo(memo, sameChainMsgs(chain.address, toAddress, reviewed), chain.chainId);
+    // What the recipient holds afterwards, from the plan that is signed.
+    const arrival =
+      cross && signedPlan
+        ? sendArrival({
+            sourceChainId: signedPlan.plan.sourceChainId,
+            inputDenom: signedPlan.plan.inputDenom,
+            destChainId: signedPlan.plan.destChainId,
+            outputDenom: signedPlan.plan.outputDenom,
+            warnings: signedPlan.warnings,
+            links: signedPlan.candidate.links,
+            sent,
+          })
+        : null;
     return (
       <ScreenScaffold
         title={confirmTitle}
@@ -1173,11 +1529,7 @@ export function SendScreen({
         <div className="flex flex-col gap-3 pt-1">
           <section className="rounded-[18px] border border-[var(--z-line)] bg-[var(--z-glass)] px-3.5 py-4">
             <div className="flex items-start gap-3">
-              <TokenLogo
-                src={tokenLogoSrc(token, chain.iconUrl)}
-                symbol={symbol}
-                size={44}
-              />
+              <TokenAvatar identity={sent} size={44} locationBadge="always" />
               <div className="min-w-0 flex-1">
                 <p className="font-mono text-[9px] uppercase tracking-[0.16em] text-fg-dim">
                   {confirmKind === "send"
@@ -1186,16 +1538,22 @@ export function SendScreen({
                       ? "Multi-hop IBC"
                       : "IBC transfer"}
                 </p>
-                <p className="mt-1 text-[26px] font-semibold leading-none tracking-[-0.04em] tabular-nums text-fg">
-                  {amount}{" "}
+                <p className="mt-1 text-[26px] font-semibold leading-tight tracking-[-0.04em] tabular-nums text-fg [overflow-wrap:anywhere]">
+                  {sentAmount.figure}{" "}
                   <span className="text-[15px] font-semibold tracking-[-0.02em] text-fg-muted">
-                    {symbol}
+                    {sentAmount.unit}
                   </span>
                 </p>
+                <p className="mt-1 text-[11px] leading-snug text-fg-muted [overflow-wrap:anywhere]">
+                  {tokenText(sent, "row")}
+                </p>
                 <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                  {token ? (
-                    <Pill className="px-1.5 py-0.5 text-[8.5px] tracking-[0.08em]">
-                      {tokenKindLabel(token)}
+                  <Pill className="px-1.5 py-0.5 text-[8.5px] tracking-[0.08em]">
+                    {tokenKindLabel(sent.kind)}
+                  </Pill>
+                  {tag ? (
+                    <Pill tone="warning" className="px-1.5 py-0.5 text-[8.5px] tracking-[0.08em]">
+                      {tag}
                     </Pill>
                   ) : null}
                   {cross && destChain ? (
@@ -1218,7 +1576,7 @@ export function SendScreen({
                   size={22}
                   verified={chain.entry.inCosmosRegistry}
                 />
-                <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-fg-muted">
+                <span className="min-w-0 flex-1 font-mono text-[10px] leading-snug text-fg-muted [overflow-wrap:anywhere]">
                   {routeSentence(signedPlan?.hops ?? []) ||
                     `${chain.entry.chainName} → ${destChain.entry.chainName}`}
                 </span>
@@ -1263,28 +1621,29 @@ export function SendScreen({
                 value={confirmKind === "ibc-forward" ? "MsgTransfer · PFM" : "MsgTransfer"}
               />
             )}
-            {token?.kind === "ibc" && token.baseDenom ? (
-              <KeyValueRow
-                label="Origin"
-                value={<TruncatedValue>{token.baseDenom}</TruncatedValue>}
-              />
-            ) : null}
-            {token && (token.kind === "factory" || token.kind === "other") ? (
+            <KeyValueRow label="Issued on" value={issuerText(sent)} />
+            {sent.kind !== "native" ? (
               <KeyValueRow
                 label="Denom"
-                value={<TruncatedValue>{token.denom}</TruncatedValue>}
+                value={<CopyDenom denom={reviewed.denom} what="Denom" onCopy={copyParty} />}
+              />
+            ) : null}
+            {arrival ? (
+              <KeyValueRow
+                label="Arrives as"
+                value={<ArrivalValue arrival={arrival} onCopy={copyParty} />}
               />
             ) : null}
             {forwarders.length > 0 ? (
               <KeyValueRow
                 label="Forwarded by"
-                value={<TruncatedValue>{forwarders.join(", ")}</TruncatedValue>}
+                value={<WholeValue>{forwarders.join(", ")}</WholeValue>}
               />
             ) : null}
             {cross ? (
               <KeyValueRow
                 label="Timeout"
-                value={<TruncatedValue>{timeoutLabel(pendingMsgs?.[0])}</TruncatedValue>}
+                value={<WholeValue>{timeoutLabel(pendingMsgs?.[0])}</WholeValue>}
               />
             ) : null}
             {cross && eta ? (
@@ -1293,8 +1652,14 @@ export function SendScreen({
                 value={`about ${Math.max(1, Math.round(eta / 60))} min`}
               />
             ) : null}
-            <KeyValueRow label="Memo" value={<TruncatedValue>{shownMemo}</TruncatedValue>} />
+            <KeyValueRow label="Memo" value={<WholeValue>{shownMemo}</WholeValue>} />
           </section>
+
+          {arrival?.warning ? (
+            <Callout tone="warning" title={arrival.warning.title}>
+              {arrival.warning.body}
+            </Callout>
+          ) : null}
 
           {unconfirmedPins.map((pin) => (
             <Callout
@@ -1328,7 +1693,7 @@ export function SendScreen({
               feeDecimals={chain.entry.feeDecimals}
               feeSymbol={feeTicker(chain.entry)}
               onChanged={() => {
-                if (cross) void review();
+                if (cross) void reprice();
               }}
             />
             {gas ? (
@@ -1397,6 +1762,7 @@ export function SendScreen({
           onResume={(row) => {
             setMode("cross");
             setTracked(row);
+            setReviewed(null);
             setSentTo("");
             setTxHash(row.txHash);
             setError(null);
@@ -1433,7 +1799,7 @@ export function SendScreen({
             setChainId(id);
             setRecipient("");
             setToOpen(false);
-            setAmount("");
+            clearAmount();
             setDenom("");
             setManual([]);
             if (id === destChainId) {
@@ -1530,14 +1896,15 @@ export function SendScreen({
           )}
         >
           <div className="flex items-baseline justify-between gap-2">
-            <p className="font-mono text-[9px] uppercase tracking-[0.16em] text-fg-muted">
+            <p className="shrink-0 whitespace-nowrap font-mono text-[9px] uppercase tracking-[0.16em] text-fg-muted">
               You send
             </p>
-            <p className="truncate font-mono text-[10px] tabular-nums text-fg-dim">
+            {/* Wrapped, never cut: a balance in base units can run to 25 digits. */}
+            <p className="min-w-0 text-right font-mono text-[10px] tabular-nums text-fg-dim [overflow-wrap:anywhere]">
               {hidden
                 ? "••••"
-                : token
-                  ? `${formatUnits(token.amount, decimals)} available`
+                : token && sendId
+                  ? `${formatTokenAmount(token.amount, sendId, "picker")} available`
                   : "balance unknown"}
             </p>
           </div>
@@ -1550,30 +1917,38 @@ export function SendScreen({
               inputMode="decimal"
               placeholder="0"
               value={amount}
+              readOnly={maxOnly}
+              aria-describedby={maxOnly ? "send-amount-note" : undefined}
               onChange={(e) => setAmount(decimalText(e.target.value))}
               className={cn(
-                "min-w-0 flex-1 bg-transparent text-left text-[26px] font-semibold leading-none tracking-[-0.04em] tabular-nums text-fg outline-none",
+                "min-w-0 flex-1 bg-transparent text-left text-[26px] font-semibold leading-none tracking-[-0.04em] tabular-nums outline-none",
                 "placeholder:text-fg-faint",
+                maxOnly ? "text-fg-muted" : "text-fg",
               )}
             />
             <TokenPicker
-              tokens={tokens}
-              denom={token?.denom ?? ""}
+              chainId={chain.chainId}
+              rows={rows}
+              selected={selected}
               hidden={hidden}
-              fallbackIconUrl={chain.iconUrl}
               onSelect={(next) => {
-                setDenom(next);
-                setAmount("");
+                setDenom(next.token.denom);
+                clearAmount();
                 setManual([]);
               }}
             />
           </div>
+          {maxOnly ? (
+            <p id="send-amount-note" className="mt-2 text-[10.5px] leading-snug text-fg-muted">
+              {MAX_ONLY_NOTE}
+            </p>
+          ) : null}
           <div className="mt-2.5 flex gap-1">
             {PERCENTS.map((pct) => (
               <button
                 key={pct}
                 type="button"
-                disabled={available === null}
+                disabled={available === null || (maxOnly && pct !== 100)}
                 onClick={() => applyPercent(pct)}
                 className={cn(
                   "flex-1 rounded-full border border-[var(--z-line)] py-1 font-mono text-[10px] font-semibold uppercase tracking-[0.06em] text-fg-muted",
@@ -1600,7 +1975,9 @@ export function SendScreen({
               title="Route"
               hops={plan?.hops ?? []}
               estimatedDurationSeconds={plan?.plan.estimatedDurationSeconds ?? null}
-              warnings={plan?.warnings ?? result?.warnings ?? []}
+              warnings={
+                plan ? routeNotes(plan.warnings, routePins, manual) : (result?.warnings ?? [])
+              }
               requiresPfm={plan?.plan.requiresPfm ?? false}
               gasChainName={chain.entry.chainName}
               loading={planning && !plan}
@@ -1609,10 +1986,28 @@ export function SendScreen({
               footer={
                 plan ? (
                   <div className="flex flex-col gap-2">
+                    {refusals.map((reason) => (
+                      <p
+                        key={reason}
+                        className="text-[10.5px] leading-snug text-[var(--z-warning-fg)] [overflow-wrap:anywhere]"
+                      >
+                        {reason}
+                      </p>
+                    ))}
+                    {plan.failedCheck?.verdict === "inconclusive" ? (
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        className="self-start"
+                        onClick={() => setRetryToken((n) => n + 1)}
+                      >
+                        Check again
+                      </Button>
+                    ) : null}
                     <RouteChoiceList
                       options={routeOptions}
                       selectedKey={selectedRoute?.key ?? ""}
-                      onSelect={setRouteKey}
+                      onSelect={(key) => setRouteChoice({ pair: routePair, key })}
                     />
                     <HopChannelList
                       hops={plan.hops}
@@ -1630,7 +2025,7 @@ export function SendScreen({
               <RouteChoiceList
                 options={routeOptions}
                 selectedKey={selectedRoute?.key ?? ""}
-                onSelect={setRouteKey}
+                onSelect={(key) => setRouteChoice({ pair: routePair, key })}
               />
               {previewHops.length > 0 ? (
                 <HopChannelList
@@ -1647,6 +2042,14 @@ export function SendScreen({
                 {discovery.searching ? <Spinner className="size-3 shrink-0" /> : null}
                 {routeHint}
               </p>
+              {refusals.map((reason) => (
+                <p
+                  key={reason}
+                  className="text-[10.5px] leading-snug text-[var(--z-warning-fg)] [overflow-wrap:anywhere]"
+                >
+                  {reason}
+                </p>
+              ))}
             </section>
           )
         ) : null}

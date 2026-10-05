@@ -2,7 +2,7 @@
  * Swap settings sheet: slippage plus the same gas prefs used on every tx.
  */
 
-import { useState } from "react";
+import { useId, useState } from "react";
 import {
   Button,
   Dialog,
@@ -38,6 +38,7 @@ export function SwapSettingsDialog({
   onAdvancedChange: (next: boolean) => void;
 }) {
   const { settings, update } = usePrefs();
+  const routeDetailsId = useId();
   const [slippage, setSlippage] = useState(settings.swapSlippage);
   const [speed, setSpeed] = useState<FeeSpeedPref>(settings.feeSpeed);
   const [adjustment, setAdjustment] = useState(settings.gasAdjustment);
@@ -154,7 +155,9 @@ export function SwapSettingsDialog({
           />
         </div>
 
+        {/* The switch renders a button, which a label can name by id. */}
         <label
+          htmlFor={routeDetailsId}
           className={cn(
             "mt-4 flex items-center justify-between gap-3 rounded-[12px] border border-[var(--z-line)] px-3 py-2",
             focusRing,
@@ -169,6 +172,7 @@ export function SwapSettingsDialog({
             </span>
           </span>
           <Switch
+            id={routeDetailsId}
             checked={advanced}
             onCheckedChange={onAdvancedChange}
             aria-label="Show route details"

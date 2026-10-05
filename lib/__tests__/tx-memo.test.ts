@@ -1,8 +1,57 @@
-import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
+
+import { bech32 } from "@scure/base";
+import { afterEach, describe, expect, it } from "vitest";
 import { msgDelegate, msgSend, msgVote, msgWithdrawReward } from "../amino-tx";
-import { ZUNIA_WALLET_TAG, defaultTxMemo, resolveTxMemo } from "../tx-memo";
+import { CHAIN_CATALOG, setCustomCatalogEntries, type CatalogEntry } from "../chain-catalog";
+import { ZUNIA_WALLET_TAG, defaultTxMemo, resolveTxMemo, type MemoSourceMsg } from "../tx-memo";
 
 const ME = "cosmos1qyqszqgpqyqszqgpqyqszqgpqyqszqgpgq2rsw";
+
+/** Noble USDC on Osmosis (`transfer/channel-750/uusdc`). */
+const USDC_N_ON_OSMOSIS = "ibc/498A0751C798A0D9A389AA3691123DADA57DAA4FE165D5C75894505B876BA6E4";
+/** A voucher nothing names. */
+const UNLISTED = "ibc/0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF";
+
+const send = (denom: string): MemoSourceMsg => ({
+  typeUrl: "/cosmos.bank.v1beta1.MsgSend",
+  value: { from_address: ME, to_address: ME, amount: [{ denom, amount: "1" }] },
+});
+const transfer = (denom: string, memo = ""): MemoSourceMsg => ({
+  typeUrl: "/ibc.applications.transfer.v1.MsgTransfer",
+  value: { token: { denom, amount: "1" }, memo },
+});
+
+/** Freeze a message all the way down, so any write to it throws. */
+function deepFreeze<T>(value: T): T {
+  if (value && typeof value === "object") {
+    for (const inner of Object.values(value)) deepFreeze(inner);
+    Object.freeze(value);
+  }
+  return value;
+}
+
+/**
+ * The 0.1.2 MsgTransfer for ATOM (Hub) → OSMO, with its ibc-hooks packet memo,
+ * byte for byte (captured from the planner; see swap-plan.test.ts).
+ */
+const XCS_PACKET_MEMO =
+  '{"wasm":{"contract":"osmo1uwk8xc6q0s6t5qcpr6rht3sczu6du83xq8pwxjua0hfj5hzcnh3sqxwvxs",' +
+  '"msg":{"osmosis_swap":{"output_denom":"uosmo",' +
+  '"slippage":{"twap":{"slippage_percentage":"1","window_seconds":10}},' +
+  '"receiver":"osmo1sender00000000000000000000000000000000",' +
+  '"on_failed_delivery":{"local_recovery_addr":"osmo1recovery000000000000000000000000000000"},' +
+  '"next_memo":null}}}}';
+const XCS_TRANSFER =
+  '{"typeUrl":"/ibc.applications.transfer.v1.MsgTransfer","value":{"source_port":"transfer",' +
+  '"source_channel":"channel-141","token":{"denom":"uatom","amount":"1000000"},' +
+  '"sender":"cosmos1sender0000000000000000000000000000000",' +
+  '"receiver":"osmo1uwk8xc6q0s6t5qcpr6rht3sczu6du83xq8pwxjua0hfj5hzcnh3sqxwvxs",' +
+  '"timeout_height":{"revision_number":"0","revision_height":"0"},' +
+  `"timeout_timestamp":"1791202200000000000","memo":${JSON.stringify(XCS_PACKET_MEMO)}}}`;
 
 describe("resolveTxMemo", () => {
   it("keeps a user-written memo", () => {
@@ -125,5 +174,260 @@ describe("defaultTxMemo", () => {
     expect(defaultTxMemo([{ typeUrl: "/cosmos.unknown.v1.MsgNope", value: {} }])).toBe(
       `Signed · ${ZUNIA_WALLET_TAG}`,
     );
+  });
+});
+
+describe("chain-aware naming", () => {
+  afterEach(() => setCustomCatalogEntries([]));
+
+  it("names Noble's own USDC by the chain that signs: 'Send USDC.n'", () => {
+    expect(resolveTxMemo("", [send("uusdc")], "noble-1")).toBe(`Send USDC.n · ${ZUNIA_WALLET_TAG}`);
+    expect(defaultTxMemo([transfer("uusdc")], "noble-1")).toBe(`IBC transfer USDC.n · ${ZUNIA_WALLET_TAG}`);
+  });
+
+  it("names a voucher on the chain that holds it, never by its base denom", () => {
+    expect(resolveTxMemo("", [transfer(USDC_N_ON_OSMOSIS)], "osmosis-1")).toBe(
+      `IBC transfer USDC.n · ${ZUNIA_WALLET_TAG}`,
+    );
+    expect(resolveTxMemo("", [send("erc20:0xa00C59fF5a080D2b954d0c75e46E22a0c371235a")], "injective-1")).toBe(
+      `Send USDC.inj · ${ZUNIA_WALLET_TAG}`,
+    );
+  });
+
+  it("writes the generic phrase for anything it cannot prove", () => {
+    // An unknown voucher: no bare hash is written on chain.
+    expect(resolveTxMemo("", [transfer(UNLISTED)], "osmosis-1")).toBe(`IBC transfer · ${ZUNIA_WALLET_TAG}`);
+    // Anyone's factory/<self>/USDC.n: its free text never reaches the memo.
+    expect(
+      resolveTxMemo("", [send("factory/osmo1qyqszqgpqyqszqgpqyqszqgpqyqszqgpjnp7du/USDC.n")], "osmosis-1"),
+    ).toBe(`Send · ${ZUNIA_WALLET_TAG}`);
+    // The catalog's lowercase spelling of Injective USDC is another, empty denom.
+    expect(
+      resolveTxMemo("", [send("erc20:0xa00c59ff5a080d2b954d0c75e46e22a0c371235a")], "injective-1"),
+    ).toBe(`Send · ${ZUNIA_WALLET_TAG}`);
+    // A packet path is not a bank denom.
+    expect(resolveTxMemo("", [send("transfer/channel-0/uatom")], "osmosis-1")).toBe(`Send · ${ZUNIA_WALLET_TAG}`);
+    // A chain the user added is not evidence of what its coins are.
+    const osmosis = CHAIN_CATALOG.find((entry) => entry.chainId === "osmosis-1") as CatalogEntry;
+    setCustomCatalogEntries([
+      {
+        ...osmosis,
+        chainId: "mine-1",
+        chainName: "Mine",
+        bech32Prefix: "mine",
+        coinDenom: "USDC",
+        coinMinimalDenom: "umine",
+        feeDenom: "USDC",
+        feeMinimalDenom: "umine",
+        currencies: [{ coinDenom: "USDC", coinMinimalDenom: "umine", coinDecimals: 6 }],
+      },
+    ]);
+    expect(resolveTxMemo("", [send("umine")], "mine-1")).toBe(`Send · ${ZUNIA_WALLET_TAG}`);
+  });
+
+  it("names nothing a base denom cannot pin to one issuer when no chain is given", () => {
+    // uusdc is Noble's and Axelar's alike: 0.1.2 wrote 'Send USDC.axl' for both.
+    expect(resolveTxMemo("", [send("uusdc")])).toBe(`Send · ${ZUNIA_WALLET_TAG}`);
+    // uluna is LUNA on Terra and LUNC on Terra Classic.
+    expect(resolveTxMemo("", [send("uluna")])).toBe(`Send · ${ZUNIA_WALLET_TAG}`);
+    // A voucher names a path, and only its holding chain knows which.
+    expect(resolveTxMemo("", [transfer(USDC_N_ON_OSMOSIS)])).toBe(`IBC transfer · ${ZUNIA_WALLET_TAG}`);
+  });
+
+  it("keeps a user-written memo whatever the chain", () => {
+    expect(resolveTxMemo("  rent  ", [send("uusdc")], "noble-1")).toBe("rent");
+  });
+});
+
+describe("Earn and Governance memos", () => {
+  // Both screens resolve their memos without a chain; staking coins read as before.
+  const stake = (type: string, denom: string): MemoSourceMsg => ({ type, value: { amount: { denom } } });
+
+  it("name the staking coin as 0.1.2 did", () => {
+    const cases: Array<[string, string]> = [
+      ["uatom", "ATOM"],
+      ["uosmo", "OSMO"],
+      ["inj", "INJ"],
+      ["uaxl", "AXL"],
+      ["utia", "TIA"],
+      ["untrn", "NTRN"],
+      ["ustrd", "STRD"],
+      ["ujuno", "JUNO"],
+      ["uakt", "AKT"],
+      ["adydx", "DYDX"],
+      ["ukuji", "KUJI"],
+    ];
+    for (const [denom, ticker] of cases) {
+      expect(resolveTxMemo("", [stake("cosmos-sdk/MsgDelegate", denom)])).toBe(`Stake ${ticker} · ${ZUNIA_WALLET_TAG}`);
+      expect(resolveTxMemo("", [stake("cosmos-sdk/MsgUndelegate", denom)])).toBe(
+        `Unstake ${ticker} · ${ZUNIA_WALLET_TAG}`,
+      );
+      expect(resolveTxMemo("", [stake("cosmos-sdk/MsgBeginRedelegate", denom)])).toBe(
+        `Redelegate ${ticker} · ${ZUNIA_WALLET_TAG}`,
+      );
+      // The same words as when the chain is known.
+      const chainId = CHAIN_CATALOG.find((entry) => entry.coinMinimalDenom === denom && entry.network === "mainnet")?.chainId;
+      expect(resolveTxMemo("", [stake("cosmos-sdk/MsgDelegate", denom)], chainId)).toBe(
+        `Stake ${ticker} · ${ZUNIA_WALLET_TAG}`,
+      );
+    }
+  });
+
+  it("keep their claim and vote wording", () => {
+    const claim = msgWithdrawReward({
+      delegatorAddress: ME,
+      validatorAddress: "cosmosvaloper1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqnrql8a",
+    });
+    expect(resolveTxMemo("", [claim, claim])).toBe(`Claim rewards · ${ZUNIA_WALLET_TAG}`);
+    expect(resolveTxMemo("", [msgVote({ proposalId: "981", voter: ME, option: "no" })])).toBe(
+      `Vote No on #981 · ${ZUNIA_WALLET_TAG}`,
+    );
+    expect(resolveTxMemo("", [{ typeUrl: "/cosmos.gov.v1beta1.MsgVote", value: { proposal_id: "42", option: 1 } }])).toBe(
+      `Vote Yes on #42 · ${ZUNIA_WALLET_TAG}`,
+    );
+  });
+});
+
+describe("the packet memo inside MsgTransfer", () => {
+  it("is read to choose the phrase and never written: the message stays byte-identical", () => {
+    const msg = deepFreeze(JSON.parse(XCS_TRANSFER) as MemoSourceMsg & { value: { memo: string } });
+    expect(resolveTxMemo("", [msg], "cosmoshub-4")).toBe(`Swap ATOM · ${ZUNIA_WALLET_TAG}`);
+    expect(resolveTxMemo("", [msg])).toBe(`Swap ATOM · ${ZUNIA_WALLET_TAG}`);
+    expect(JSON.stringify(msg)).toBe(XCS_TRANSFER);
+    expect(msg.value.memo).toMatchInlineSnapshot(
+      `"{"wasm":{"contract":"osmo1uwk8xc6q0s6t5qcpr6rht3sczu6du83xq8pwxjua0hfj5hzcnh3sqxwvxs","msg":{"osmosis_swap":{"output_denom":"uosmo","slippage":{"twap":{"slippage_percentage":"1","window_seconds":10}},"receiver":"osmo1sender00000000000000000000000000000000","on_failed_delivery":{"local_recovery_addr":"osmo1recovery000000000000000000000000000000"},"next_memo":null}}}}"`,
+    );
+  });
+
+  it("keeps a forward hop's memo whole too", () => {
+    const forward = '{"forward":{"receiver":"pfm","port":"transfer","channel":"channel-1"}}';
+    const msg = deepFreeze(transfer(USDC_N_ON_OSMOSIS, forward));
+    const before = JSON.stringify(msg);
+    expect(resolveTxMemo("", [msg], "osmosis-1")).toBe(`IBC forward USDC.n · ${ZUNIA_WALLET_TAG}`);
+    expect(JSON.stringify(msg)).toBe(before);
+    expect((msg.value as { memo: string }).memo).toBe(forward);
+  });
+});
+
+describe("Earn memos without a chain", () => {
+  const stake = (denom: string): MemoSourceMsg => ({ type: "cosmos-sdk/MsgDelegate", value: { amount: { denom } } });
+
+  it("name a stake by the chains whose staking coin the denom is", () => {
+    // Only Noble stakes `uusdc`: 0.1.2 wrote Axelar's `USDC.axl` here, and a
+    // lookup over every chain listing `uusdc` could only write `Stake`.
+    expect(resolveTxMemo("", [stake("uusdc")])).toBe(`Stake USDC.n · ${ZUNIA_WALLET_TAG}`);
+    expect(resolveTxMemo("", [stake("uusdc")])).toBe(resolveTxMemo("", [stake("uusdc")], "noble-1"));
+    // CrossFi's coin keeps the name 0.1.2 wrote, although Mineplex lists `xfi` too.
+    expect(resolveTxMemo("", [stake("xfi")])).toBe(`Stake XFI · ${ZUNIA_WALLET_TAG}`);
+    expect(resolveTxMemo("", [stake("mpx")])).toBe(resolveTxMemo("", [stake("mpx")], "mineplex-mainnet-1"));
+    // Terra and Terra Classic both stake `uluna`: no chain, no name.
+    expect(resolveTxMemo("", [stake("uluna")])).toBe(`Stake · ${ZUNIA_WALLET_TAG}`);
+  });
+
+  it("do not stretch that rule to a send, which any chain listing the denom could sign", () => {
+    expect(resolveTxMemo("", [send("uusdc")])).toBe(`Send · ${ZUNIA_WALLET_TAG}`);
+    expect(resolveTxMemo("", [transfer("uusdc")])).toBe(`IBC transfer · ${ZUNIA_WALLET_TAG}`);
+  });
+});
+
+/* -------------------------------------------------------------------------- *
+ * What gets signed, through the real kernel
+ * -------------------------------------------------------------------------- */
+
+type Core = typeof import("@zunialab/core");
+
+/** The Rust kernel the worker signs with, loaded from its wasm in this process. */
+async function loadCore(): Promise<Core> {
+  const dir = dirname(createRequire(import.meta.url).resolve("@zunialab/core/package.json"));
+  const core = (await import(/* @vite-ignore */ pathToFileURL(join(dir, "index.js")).href)) as Core;
+  core.initZuniaCoreSync({ module: readFileSync(join(dir, "zunia_core_bg.wasm")) });
+  return core;
+}
+
+/** A bech32 address the kernel accepts. */
+const address = (prefix: string, fill: number, bytes = 20): string =>
+  bech32.encode(prefix, bech32.toWords(new Uint8Array(bytes).fill(fill)));
+
+const hexOf = (text: string): string => Buffer.from(text, "utf8").toString("hex");
+
+describe("the transaction a default memo goes into", () => {
+  const PUBKEY = `02${"11".repeat(32)}`;
+  const FEE = JSON.stringify({ amount: [{ denom: "uatom", amount: "5000" }], gas_limit: "250000" });
+
+  it("signs the exact denom, amount, channel and packet memo it was given, whatever the memo says", async () => {
+    const core = await loadCore();
+    const hub = address("cosmos", 1);
+    const xcs = address("osmo", 9, 32);
+    const osmoSender = address("osmo", 1);
+    const noble = address("noble", 5);
+    // The 0.1.2 swap leg (ATOM on the Hub into the XCS contract) and an IBC
+    // send of Noble USDC from Osmosis with a forward memo, as the planner
+    // builds them.
+    const cases = [
+      {
+        chainId: "cosmoshub-4",
+        expected: `IBC transfer 1000000 uatom to ${xcs} over channel-141`,
+        memoText: `Swap ATOM · ${ZUNIA_WALLET_TAG}`,
+        withoutChain: `Swap ATOM · ${ZUNIA_WALLET_TAG}`,
+        packetMemo: XCS_PACKET_MEMO,
+        msg: {
+          typeUrl: "/ibc.applications.transfer.v1.MsgTransfer",
+          value: {
+            source_port: "transfer",
+            source_channel: "channel-141",
+            token: { denom: "uatom", amount: "1000000" },
+            sender: hub,
+            receiver: xcs,
+            timeout_height: { revision_number: "0", revision_height: "0" },
+            timeout_timestamp: "1791202200000000000",
+            memo: XCS_PACKET_MEMO,
+          },
+        },
+      },
+      {
+        chainId: "osmosis-1",
+        expected: `IBC transfer 2500000 ${USDC_N_ON_OSMOSIS} to ${noble} over channel-750`,
+        memoText: `IBC forward USDC.n · ${ZUNIA_WALLET_TAG}`,
+        // A voucher is named only by the chain that holds it.
+        withoutChain: `IBC forward · ${ZUNIA_WALLET_TAG}`,
+        packetMemo: '{"forward":{"receiver":"cosmos1pfm","port":"transfer","channel":"channel-536"}}',
+        msg: {
+          typeUrl: "/ibc.applications.transfer.v1.MsgTransfer",
+          value: {
+            source_port: "transfer",
+            source_channel: "channel-750",
+            token: { denom: USDC_N_ON_OSMOSIS, amount: "2500000" },
+            sender: osmoSender,
+            receiver: noble,
+            timeout_height: { revision_number: "0", revision_height: "0" },
+            timeout_timestamp: "1791202200000000000",
+            memo: '{"forward":{"receiver":"cosmos1pfm","port":"transfer","channel":"channel-536"}}',
+          },
+        },
+      },
+    ];
+    for (const { chainId, expected, memoText, withoutChain, packetMemo, msg } of cases) {
+      const pristine = JSON.stringify([msg]);
+      const msgs = deepFreeze(JSON.parse(pristine) as MemoSourceMsg[]);
+      const memo = resolveTxMemo("", msgs, chainId);
+      expect(memo).toBe(memoText);
+      // Naming the memo read the messages and wrote nothing to them.
+      expect(resolveTxMemo("", msgs)).toBe(withoutChain);
+      expect(JSON.stringify(msgs)).toBe(pristine);
+      // Unfrozen too, as the screens pass them: a write that a frozen object
+      // would have refused in silence shows up here.
+      const live = JSON.parse(pristine) as MemoSourceMsg[];
+      resolveTxMemo("", live, chainId);
+      resolveTxMemo("", live);
+      expect(JSON.stringify(live)).toBe(pristine);
+      const signed = core.buildSignBytes(chainId, JSON.stringify(msgs), FEE, memo, 1n, 2n, PUBKEY, false, "direct");
+      expect(signed).toBe(core.buildSignBytes(chainId, pristine, FEE, memo, 1n, 2n, PUBKEY, false, "direct"));
+      // The bytes carry the exact denom, amount and channel, and the packet
+      // memo byte for byte; the default memo is the body memo, nothing else.
+      const decoded = core.decodeDirectTx(signed);
+      expect(decoded.summaries).toEqual([expected]);
+      expect(decoded.memo).toBe(memoText);
+      expect(signed).toContain(hexOf(packetMemo));
+    }
   });
 });

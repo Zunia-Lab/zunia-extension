@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { ChainBalance } from "../balances";
+import { describeMessage } from "../chain-queries";
 import {
   INITIAL_REWARDS_NOTICE,
   deriveNotices,
+  describeCoin,
   nextRewardsNotice,
   parseRewardsNotice,
   reminderInterval,
@@ -175,5 +177,78 @@ describe("notification preferences", () => {
       rewards: "weekly",
     });
     expect(parseNotifyPrefs({ rewards: "hourly" }).rewards).toBe("once");
+  });
+});
+
+describe("transfer notices named by identity", () => {
+  /** Noble USDC on Osmosis (`transfer/channel-750/uusdc`). */
+  const USDC_N = "ibc/498A0751C798A0D9A389AA3691123DADA57DAA4FE165D5C75894505B876BA6E4";
+  const UNLISTED = "ibc/0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF";
+  const ME = "osmo1qyqszqgpqyqszqgpqyqszqgpqyqszqgpjnp7du";
+  const quiet: RewardsNoticeState = INITIAL_REWARDS_NOTICE;
+  const arrival = (hash: string, denom: string, amount: string): NoticeInput["arrivals"][number] => ({
+    chainId: "osmosis-1",
+    hash,
+    coins: [{ denom, amount }],
+    at: T0,
+  });
+  const osmosisRow = (tokens: ChainBalance["tokens"]): ChainBalance => ({
+    ...chain("osmosis-1", "0"),
+    denom: "uosmo",
+    symbol: "OSMO",
+    tokens,
+  });
+
+  it("names a voucher arrival by the chain it landed on, held or not", () => {
+    // Noble USDC used to read as Axelar's USDC.axl here.
+    const [held] = feed([osmosisRow([])], quiet, { arrivals: [arrival("H1", USDC_N, "12340000")] });
+    expect(held).toMatchObject({ id: "transfer:H1", kind: "transfer", title: "Received on Osmosis", meta: "12.34 USDC.n" });
+    // No balance row for the chain at all: still named by the arrival's chain.
+    const [bare] = feed([], quiet, { arrivals: [arrival("H2", USDC_N, "5000000")] });
+    expect(bare?.meta).toBe("5 USDC.n");
+    expect(describeCoin({ denom: "uosmo", amount: "1500000" }, undefined, "osmosis-1")).toBe("1.5 OSMO");
+  });
+
+  it("keeps a coin nothing names in base units, never as millions", () => {
+    const [row] = feed([osmosisRow([])], quiet, { arrivals: [arrival("H3", UNLISTED, "12340000")] });
+    expect(row?.meta).toBe("12340000 base units ibc/0123…ABCDEF");
+    expect(row?.meta).not.toMatch(/\d(k|M|Bn)\b/);
+    // The chain's own metadata may scale a held one, as on Home.
+    const scaled = osmosisRow([
+      { denom: UNLISTED, amount: "12340000", kind: "ibc", symbol: "IBC·0123", displayName: "IBC·0123", decimals: 6, decimalsKnown: true },
+    ]);
+    expect(feed([scaled], quiet, { arrivals: [arrival("H4", UNLISTED, "12340000")] })[0]?.meta).toBe(
+      "12.34 ibc/0123…ABCDEF",
+    );
+  });
+
+  it("names a history receipt with the same ticker and amount as its Activity row, under the same id", () => {
+    const received = (hash: string, denom: string): NoticeInput["activity"][number] => ({
+      ...describeMessage(
+        {
+          "@type": "/cosmos.bank.v1beta1.MsgSend",
+          from_address: "osmo1zgq2rswzqupqyqs3dqsdgq2rswzqupqyqs5c7ms0",
+          to_address: ME,
+          amount: [{ denom, amount: "12340000" }],
+        },
+        ME,
+        "osmosis-1",
+      ),
+      chainId: "osmosis-1",
+      hash,
+      timestamp: T0,
+      success: true,
+    });
+    const rows = feed([osmosisRow([])], quiet, { activity: [received("R1", USDC_N), received("R2", UNLISTED)] });
+    expect(rows.map((row) => [row.id, row.meta])).toEqual([
+      ["transfer:R1", "12.34 USDC.n"],
+      ["transfer:R2", "12340000 base units ibc/0123…ABCDEF"],
+    ]);
+    // The socket's arrival and the history row are one notice.
+    const both = feed([osmosisRow([])], quiet, {
+      activity: [received("R1", USDC_N)],
+      arrivals: [arrival("R1", USDC_N, "12340000")],
+    });
+    expect(both.map((row) => row.id)).toEqual(["transfer:R1"]);
   });
 });

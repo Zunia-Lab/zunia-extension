@@ -15,14 +15,21 @@
  */
 
 import type { ApprovalRequest } from "./approvals";
-import type { ChainBalance } from "./balances";
+import { heldTokenIdentity, type ChainBalance } from "./balances";
 import { showBrowserAlert } from "./browser-alerts";
-import { chainTicker, findCatalogEntry } from "./chain-catalog";
-import type { ActivityItem, ProposalInfo, UnbondingInfo } from "./chain-queries";
+import { findCatalogEntry } from "./chain-catalog";
+import {
+  activityAmount,
+  type ActivityItem,
+  type ProposalInfo,
+  type UnbondingInfo,
+} from "./chain-queries";
 import { formatUnits } from "./format";
 import type { MovedCoin, TxNotice } from "./realtime-protocol";
 import type { NotifyPrefs, RewardReminder } from "./settings";
 import { STORAGE_KEYS } from "./storage-keys";
+import { formatTokenAmount } from "./token-amount";
+import { identityOf } from "./token-identity";
 
 export type NoticeKind =
   | "approval"
@@ -103,31 +110,26 @@ function daysLeft(iso: string | undefined, now: number): number | null {
 }
 
 /**
- * Name a coin well enough for one line of notification text.
+ * Name a coin well enough for one line of notification text: `12.34 USDC.n`.
  *
- * The balance rows are the only asset registry the worker has, so a denom this
- * wallet already holds gets its real ticker and decimals. Anything else is
- * shown as its raw denom with no decimal scaling, which is honest: inventing
+ * The coin is a bank denom of the chain it landed on, so its identity there
+ * names it (Noble USDC arriving on Osmosis as `ibc/498A…` is `USDC.n`, never
+ * the Axelar USDC a base-denom lookup picked). A held coin reads through its
+ * balance row, so a token only the chain's metadata scales reads on the same
+ * scale as on Home. A coin nothing names stays in base units with its short
+ * denom (`12340000 base units ibc/0123…ABCDEF`), which is honest: inventing
  * six decimals for an unknown IBC denom would put a wrong number in a
  * notification, and a wrong number is worse than a raw one.
  */
 export function describeCoin(
   coin: MovedCoin,
   chainBalance: ChainBalance | undefined,
+  chainId: string = chainBalance?.chainId ?? "",
 ): string {
+  if (!/^\d+$/.test(coin.amount)) return `${coin.amount} ${coin.denom}`;
   const token = chainBalance?.tokens.find((row) => row.denom === coin.denom);
-  if (token) return `${formatUnits(coin.amount, token.decimals, 3)} ${token.symbol}`;
-  if (chainBalance && coin.denom === chainBalance.denom) {
-    return `${formatUnits(coin.amount, chainBalance.decimals, 3)} ${chainBalance.symbol}`;
-  }
-  const entry = findCatalogEntry(chainBalance?.chainId ?? "");
-  if (entry && coin.denom === entry.coinMinimalDenom) {
-    return `${formatUnits(coin.amount, entry.coinDecimals, 3)} ${chainTicker(entry)}`;
-  }
-  const short = coin.denom.startsWith("ibc/")
-    ? `IBC ${coin.denom.slice(4, 10).toUpperCase()}`
-    : coin.denom;
-  return `${coin.amount} ${short}`;
+  const identity = token ? heldTokenIdentity(chainId, token) : identityOf(chainId, coin.denom);
+  return formatTokenAmount(coin.amount, identity, "history", { unit: true });
 }
 
 /**
@@ -193,7 +195,7 @@ export function deriveNotices(input: NoticeInput): Notice[] {
   // the same id, so the later `Map` pass keeps whichever was pushed first.
   for (const arrival of input.arrivals) {
     const balance = input.balances[arrival.chainId];
-    const described = arrival.coins.map((coin) => describeCoin(coin, balance));
+    const described = arrival.coins.map((coin) => describeCoin(coin, balance, arrival.chainId));
     rows.push({
       id: `transfer:${arrival.hash}`,
       kind: "transfer",
@@ -206,13 +208,14 @@ export function deriveNotices(input: NoticeInput): Notice[] {
 
   for (const item of input.activity.slice(0, 8)) {
     if (item.kind !== "received") continue;
+    // Named by the identity the history row carries, so the notice and the
+    // Activity row read the same ticker and the same amount.
+    const amount = activityAmount(item, "history", { balances: input.balances });
     rows.push({
       id: `transfer:${item.hash}`,
       kind: "transfer",
       title: `Received on ${chainName(item.chainId)}`,
-      meta: item.amount
-        ? `${formatUnits(item.amount.replace("-", ""), item.decimals, 3)} ${item.symbol}`
-        : item.subtitle,
+      meta: amount ? `${amount.value}${amount.unit ? ` ${amount.unit}` : ""}` : item.subtitle,
       target: { route: "chain", chainId: item.chainId },
       timestamp: item.timestamp,
     });

@@ -8,15 +8,7 @@
  * editor, lives here so the screens cannot drift apart.
  */
 
-import {
-  useCallback,
-  useEffect,
-  useId,
-  useMemo,
-  useRef,
-  useState,
-  type ReactNode,
-} from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   Button,
   Callout,
@@ -27,7 +19,6 @@ import {
   SectionLabel,
   SheetContent,
   Spinner,
-  TokenLogo,
   cn,
   focusRing,
 } from "@zunialab/ui";
@@ -39,13 +30,7 @@ import type {
 } from "@zunialab/interchain";
 import { TRANSFER_PORT, findRoutePaths, normalizeChannelId } from "@zunialab/interchain";
 
-import type { ChainBalance } from "../../../lib/balances";
-import {
-  allCatalogEntries,
-  catalogIconFor,
-  chainTicker,
-  findCatalogEntry,
-} from "../../../lib/chain-catalog";
+import { findCatalogEntry } from "../../../lib/chain-catalog";
 /** Direct from→to only. Multi-hop via Hub is never auto-checked. */
 const PAIR_ROUTE_HOPS = 1;
 import {
@@ -54,14 +39,15 @@ import {
   type ChannelVerdict,
   type ChannelVerdictKind,
 } from "../../../lib/channel-verdict";
-import { decimalText, formatUnits } from "../../../lib/format";
 import {
+  canonicalChannelIds,
   describeInterchainError,
   setSwapContract,
   verifySwapVenue,
   type SwapVenueCheck,
 } from "../../../lib/interchain";
 import {
+  VENUE_CHAIN_ID,
   channelDirectory,
   discoverChannels,
   pathHopViews,
@@ -85,229 +71,18 @@ import {
   type PendingTransfer,
 } from "../../../lib/pending-transfers";
 import { sendToBackground } from "../../../lib/popup-client";
+import { formatTokenAmount, type TokenAmountVariant } from "../../../lib/token-amount";
+import { identityOf, type TokenIdentity } from "../../../lib/token-identity";
+import { loadXcsRoutes, type XcsRouteTable } from "../../../lib/xcs-routes";
 import type { KernelStatus } from "../../../lib/kernel";
 import type { ChainAccount } from "../../../lib/session";
-import type { ChainAccountView } from "../hooks/useChainAccounts";
-import { fieldFocusWithin } from "../components/field-focus";
-import { PickerSheet, type PickerItem } from "../components/PickerSheet";
-import { usePickerMemory } from "../hooks/usePickerMemory";
-import { IconChevronDown } from "./icons";
 
 /* -------------------------------------------------------------------------- *
- * Assets the wallet can spend
+ * What the swap lists need from the network
  * -------------------------------------------------------------------------- */
 
-/** One spendable holding: a denom on a chain, with enough to render it. */
-export interface AssetOption {
-  readonly key: string;
-  readonly chainId: string;
-  readonly chainName: string;
-  readonly chainIconUrl?: string;
-  readonly denom: string;
-  readonly symbol: string;
-  readonly label: string;
-  readonly decimals: number;
-  /** Base units. `"0"` for a destination asset the wallet does not hold. */
-  readonly amount: string;
-  readonly iconUrl?: string;
-  /** Extra line in the picker, e.g. the full token name. */
-  readonly note?: string;
-  /** Chain is in the Cosmos chain registry, shown as the check on the logo. */
-  readonly verified?: boolean;
-}
-
-/**
- * Every non-zero balance across every enabled chain, largest chains first.
- *
- * Sourced from the balance reader rather than from the catalog, so the list is
- * what the wallet can actually spend. When live reads are off the balance map
- * is empty and so is this. The screens then say why instead of offering a
- * picker that cannot be satisfied.
- */
-export function spendableAssets(
-  chains: readonly ChainAccountView[],
-  balances: Readonly<Record<string, ChainBalance>>,
-): AssetOption[] {
-  const out: AssetOption[] = [];
-  for (const chain of chains) {
-    const balance = balances[chain.chainId];
-    if (!balance) continue;
-    for (const token of balance.tokens) {
-      if (token.amount === "0") continue;
-      out.push({
-        key: `${chain.chainId}:${token.denom}`,
-        chainId: chain.chainId,
-        chainName: chain.entry.chainName,
-        ...(chain.iconUrl ? { chainIconUrl: chain.iconUrl } : {}),
-        denom: token.denom,
-        symbol: token.symbol,
-        label: token.displayName,
-        decimals: token.decimals,
-        amount: token.amount,
-        ...(token.iconUrl ? { iconUrl: token.iconUrl } : {}),
-        verified: chain.entry.inCosmosRegistry,
-      });
-    }
-  }
-  return out;
-}
-
-/**
- * Assets a chain can receive: its own token, plus anything the wallet already
- * holds there.
- *
- * The wallet's own holdings are included because a swap into a token you
- * already have a dust amount of is the common case, and because the engine can
- * name a held `ibc/…` denom on the venue chain while it cannot name an
- * arbitrary one the user typed.
- */
-export function receivableAssets(
-  chains: readonly ChainAccountView[],
-  balances: Readonly<Record<string, ChainBalance>>,
-): AssetOption[] {
-  const out: AssetOption[] = [];
-  const seen = new Set<string>();
-  for (const chain of chains) {
-    const nativeKey = `${chain.chainId}:${chain.entry.coinMinimalDenom}`;
-    seen.add(nativeKey);
-    out.push({
-      key: nativeKey,
-      chainId: chain.chainId,
-      chainName: chain.entry.chainName,
-      ...(chain.iconUrl ? { chainIconUrl: chain.iconUrl } : {}),
-      denom: chain.entry.coinMinimalDenom,
-      symbol: chainTicker(chain.entry),
-      label: chainTicker(chain.entry),
-      decimals: chain.entry.coinDecimals,
-      amount: balances[chain.chainId]?.available ?? "0",
-      ...(chain.iconUrl ? { iconUrl: chain.iconUrl } : {}),
-      verified: chain.entry.inCosmosRegistry,
-    });
-    for (const token of balances[chain.chainId]?.tokens ?? []) {
-      const key = `${chain.chainId}:${token.denom}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      out.push({
-        key,
-        chainId: chain.chainId,
-        chainName: chain.entry.chainName,
-        ...(chain.iconUrl ? { chainIconUrl: chain.iconUrl } : {}),
-        denom: token.denom,
-        symbol: token.symbol,
-        label: token.displayName,
-        decimals: token.decimals,
-        amount: token.amount,
-        ...(token.iconUrl ? { iconUrl: token.iconUrl } : {}),
-        verified: chain.entry.inCosmosRegistry,
-      });
-    }
-  }
-  return out;
-}
-
-/** Native tokens from the full chain registry, with logos when the catalog has them. */
-export function catalogNativeAssets(): AssetOption[] {
-  return allCatalogEntries().map((entry) => {
-    const icon = catalogIconFor(entry);
-    return {
-      key: `${entry.chainId}:${entry.coinMinimalDenom}`,
-      chainId: entry.chainId,
-      chainName: entry.chainName,
-      ...(icon ? { chainIconUrl: icon, iconUrl: icon } : {}),
-      denom: entry.coinMinimalDenom,
-      symbol: chainTicker(entry),
-      label: chainTicker(entry),
-      decimals: entry.coinDecimals,
-      amount: "0",
-      note: entry.chainName,
-      verified: entry.inCosmosRegistry,
-    };
-  });
-}
-
-/**
- * Merge registry natives into the receivable list.
- *
- * Existing rows keep their balances and pick up a missing logo from the
- * catalog. Tokens on chains the wallet has not enabled still appear in search.
- */
-export function withCatalogAssets(
-  receivable: readonly AssetOption[],
-  catalog: readonly AssetOption[],
-): AssetOption[] {
-  const byKey = new Map(catalog.map((row) => [row.key, row]));
-  const out = receivable.map((row) => {
-    const match = byKey.get(row.key);
-    if (!match) return row;
-    return {
-      ...row,
-      ...(!row.iconUrl && match.iconUrl ? { iconUrl: match.iconUrl } : {}),
-      ...(!row.chainIconUrl && match.chainIconUrl
-        ? { chainIconUrl: match.chainIconUrl }
-        : {}),
-      verified: row.verified || match.verified,
-    };
-  });
-  const seen = new Set(out.map((row) => row.key));
-  for (const row of catalog) {
-    if (seen.has(row.key)) continue;
-    seen.add(row.key);
-    out.push(row);
-  }
-  return out;
-}
-
-/** A balance row the reader could not name shows its raw denom as the ticker. */
-function isRawDenom(symbol: string): boolean {
-  return symbol.startsWith("ibc/") || symbol.startsWith("factory/");
-}
-
-/**
- * The receivable list plus every token Osmosis lists, delivered on Osmosis.
- *
- * Rows the wallet already has keep their place and balance, and take the
- * listed ticker when the reader only knew the raw denom. Listed tokens the
- * wallet does not hold follow, by symbol.
- */
-export function withOsmosisAssets(
-  receivable: readonly AssetOption[],
-  listed: readonly OsmosisAsset[],
-  venueChainId: string,
-): AssetOption[] {
-  if (listed.length === 0) return [...receivable];
-  const venueEntry = findCatalogEntry(venueChainId);
-  const chainName = venueEntry?.chainName ?? venueChainId;
-  const venueIcon = venueEntry ? catalogIconFor(venueEntry) : undefined;
-  const byKey = new Map(listed.map((asset) => [`${venueChainId}:${asset.denom}`, asset]));
-  const out = receivable.map((row) => {
-    const match = byKey.get(row.key);
-    if (!match || !isRawDenom(row.symbol)) return row;
-    return {
-      ...row,
-      symbol: match.symbol,
-      label: match.symbol,
-      decimals: match.decimals,
-      note: match.name,
-    };
-  });
-  const seen = new Set(out.map((row) => row.key));
-  for (const [key, asset] of byKey) {
-    if (seen.has(key)) continue;
-    out.push({
-      key,
-      chainId: venueChainId,
-      chainName,
-      ...(venueIcon ? { chainIconUrl: venueIcon } : {}),
-      denom: asset.denom,
-      symbol: asset.symbol,
-      label: asset.symbol,
-      decimals: asset.decimals,
-      amount: "0",
-      note: asset.name,
-    });
-  }
-  return out;
-}
+// The lists themselves are lib/swap-assets.ts: held balances to sell, and what
+// can be bought and where it is delivered, each row named by its identity.
 
 const NO_OSMOSIS_ASSETS: readonly OsmosisAsset[] = [];
 
@@ -340,6 +115,31 @@ export function useOsmosisAssets(enabled: boolean): {
   };
 }
 
+/**
+ * The swap contract's route table (lib/xcs-routes.ts), read once the venue is
+ * verified: pass its contract address, or null while there is none. `null`
+ * while it loads and when it cannot be read, which gates no To row; the live
+ * route check in the planner still decides what may be signed.
+ */
+export function useXcsRoutes(contract: string | null): XcsRouteTable | null {
+  const [settled, setSettled] = useState<{
+    contract: string;
+    table: XcsRouteTable | null;
+  } | null>(null);
+  useEffect(() => {
+    if (!contract) return;
+    const controller = new AbortController();
+    loadXcsRoutes(contract, { signal: controller.signal })
+      .then((table) => {
+        if (!controller.signal.aborted) setSettled({ contract, table });
+      })
+      // Only a cancelled read rejects, and nothing waits on it any more.
+      .catch(() => undefined);
+    return () => controller.abort();
+  }, [contract]);
+  return contract && settled?.contract === contract ? settled.table : null;
+}
+
 /** `Date.now()`, refreshed every second while `active`. */
 export function useClock(active: boolean): number {
   const [now, setNow] = useState(() => Date.now());
@@ -351,22 +151,18 @@ export function useClock(active: boolean): number {
   return now;
 }
 
-/** Parse a typed decimal amount into base units. `null` when unusable. */
+/**
+ * Parse a typed decimal amount into base units. `null` when unusable.
+ *
+ * `decimals` is the token's known exponent. When nobody knows it the screens
+ * pass 0 and take only Max, so the field holds the exact raw balance
+ * (lib/token-amount.ts `canTypeAmount`, `amountFieldText`).
+ */
 export function toBaseUnits(input: string, decimals: number): bigint | null {
   if (!/^\d*\.?\d*$/.test(input) || input === "" || input === ".") return null;
   const [whole = "0", fraction = ""] = input.split(".");
   if (fraction.length > decimals) return null;
   return BigInt(whole + fraction.padEnd(decimals, "0"));
-}
-
-/** Render base units with the asset's own exponent and ticker. */
-export function formatAsset(
-  amount: string | null | undefined,
-  decimals: number,
-  symbol: string,
-): string | null {
-  if (amount === null || amount === undefined) return null;
-  return `${formatUnits(amount, decimals)} ${symbol}`;
 }
 
 /* -------------------------------------------------------------------------- *
@@ -569,6 +365,15 @@ function detectOnce(sourceChainId: string, destChainId: string) {
   let run = discoveryRuns.get(key);
   if (!run) {
     run = (async () => {
+      // The registry's canonical channel needs no walk: checking it on both
+      // chains is a few reads, where walking a chain's channel list can take
+      // a minute (Injective's took 84 s). Only when no canonical channel
+      // passes its check is the list walked for another one.
+      for (const channelId of canonicalChannelIds(sourceChainId, destChainId)) {
+        if (await verifyChannelHop(sourceChainId, destChainId, channelId).catch(() => false)) {
+          return { found: 1, error: null };
+        }
+      }
       const found = await discoverChannels(sourceChainId, destChainId);
       const directory = await channelDirectory();
       const paths = findRoutePaths(sourceChainId, destChainId, directory, {
@@ -1463,6 +1268,97 @@ export function usePendingTransfers(): {
   return { rows: settled?.key === token ? settled.rows : [], reload, forget };
 }
 
+/**
+ * An amount with the ticker the token wears on every other line of these
+ * screens: `12.34 USDC.n`, or `12340000 base units IBC·498A` for a token
+ * nobody can name, as on its pill and picker row. Never a bare denom as the
+ * token's name; the exact denom has its own line where it matters.
+ */
+export function tickerAmount(
+  amount: string | bigint,
+  identity: TokenIdentity,
+  variant: TokenAmountVariant,
+): string {
+  return `${formatTokenAmount(amount, identity, variant)} ${identity.ticker}`;
+}
+
+/**
+ * A swap's one-line label, as its pending record keeps it for Activity, the
+ * resume banner and the OS notification: `10 OSMO (Osmosis) → USDC.axl
+ * (Axelar)`. Each side names its chain: the ticker says what a token is, and
+ * never where it is.
+ */
+export function swapRouteLabel(
+  amountBaseUnits: string | bigint,
+  from: TokenIdentity,
+  to: Pick<TokenIdentity, "ticker" | "heldOnChainName">,
+): string {
+  const sold = tickerAmount(amountBaseUnits, from, "history");
+  return `${sold} (${from.heldOnChainName}) → ${to.ticker} (${to.heldOnChainName})`;
+}
+
+/**
+ * The token a swap's plan delivers, named for the chain it lands on, or null
+ * when the plan cannot name it.
+ *
+ * A swap plan's `outputDenom` is the venue's own denom (the memo's
+ * `output_denom`) whenever the delivered form could not be computed, which is
+ * the case for every Osmosis voucher sent home: ATOM delivered on the Hub is
+ * planned as `ibc/2739…`, USDC.axl delivered on Axelar as `ibc/D189…`. Those
+ * denoms name nothing on the destination (they would read `IBC·2739`), so they
+ * are read on the venue: the ticker says what the asset is and never where,
+ * and the chain is the destination.
+ */
+function swapDelivered(
+  plan: Pick<PendingTransfer["plan"], "destChainId" | "outputDenom">,
+): Pick<TokenIdentity, "ticker" | "heldOnChainName"> | null {
+  const there = identityOf(plan.destChainId, plan.outputDenom);
+  if (there.provenance !== "unknown") return there;
+  if (plan.destChainId === VENUE_CHAIN_ID) return null;
+  const bought = identityOf(VENUE_CHAIN_ID, plan.outputDenom);
+  if (bought.provenance === "unknown") return null;
+  return {
+    ticker: bought.ticker,
+    heldOnChainName: findCatalogEntry(plan.destChainId)?.chainName ?? plan.destChainId,
+  };
+}
+
+/** A transfer's label, the same way: `10 USDC.n → Noble`. */
+export function transferRouteLabel(
+  amountBaseUnits: string | bigint,
+  token: TokenIdentity,
+  destChainName: string,
+): string {
+  return `${tickerAmount(amountBaseUnits, token, "history")} → ${destChainName}`;
+}
+
+/**
+ * What the resume banner says about a pending route: named from its plan by
+ * identity, not by the label stored when it was signed, so a record kept from
+ * before (0.1.2 called Noble USDC "USDC.axl") reads right too. A swap whose
+ * plan cannot name what it delivers keeps the words it was saved with, which
+ * Activity and the notification show as well, rather than a hash ticker.
+ */
+export function pendingRouteLabel(
+  row: Pick<PendingTransfer, "kind" | "plan" | "amountBaseUnits" | "label">,
+): string {
+  const { plan } = row;
+  // Stored records are checked for their hops only; one without these
+  // fields keeps the words it was saved with.
+  const named = [plan.sourceChainId, plan.inputDenom, plan.destChainId, plan.outputDenom];
+  if (!named.every((field) => typeof field === "string" && field.length > 0)) return row.label;
+  const sent = identityOf(plan.sourceChainId, plan.inputDenom);
+  if (row.kind === "swap") {
+    const delivered = swapDelivered(plan);
+    return delivered ? swapRouteLabel(row.amountBaseUnits, sent, delivered) : row.label;
+  }
+  return transferRouteLabel(
+    row.amountBaseUnits,
+    sent,
+    findCatalogEntry(plan.destChainId)?.chainName ?? plan.destChainId,
+  );
+}
+
 /** Offer to reopen the tracker for a route signed before this popup opened. */
 export function ResumeTrackingBanner({
   rows,
@@ -1482,7 +1378,10 @@ export function ResumeTrackingBanner({
           className="flex items-center gap-2 rounded-[11px] border border-[var(--z-info-line)] bg-[var(--z-info-fill)] px-2.5 py-2"
         >
           <span className="min-w-0 flex-1">
-            <span className="block truncate text-[11px] text-fg">{row.label}</span>
+            {/* Wrapped, never cut: a ticker's suffix and the chains are the point. */}
+            <span className="block text-[11px] leading-snug text-fg [overflow-wrap:anywhere]">
+              {pendingRouteLabel(row)}
+            </span>
             <span className="block truncate font-mono text-[9px] text-fg-dim">
               still in flight · {row.txHash.slice(0, 10)}…
             </span>
@@ -1523,162 +1422,5 @@ export function DisabledReason({ reason }: { reason: string | null }) {
     <p className="mt-1.5 text-[10.5px] leading-snug text-fg-muted" role="status">
       {reason}
     </p>
-  );
-}
-
-/* -------------------------------------------------------------------------- *
- * Asset picker
- * -------------------------------------------------------------------------- */
-
-/**
- * One side of a swap: the asset, and the amount when the side is editable.
- *
- * At 360px the chain and the ticker cannot both be full width, so the chain
- * name sits under the ticker and the amount takes the rest of the row. The
- * picker is a real listbox button, so it is reachable and operable from the
- * keyboard.
- */
-export function AssetSide({
-  label,
-  meta,
-  asset,
-  options,
-  onSelect,
-  amount,
-  onAmountChange,
-  readOnly,
-  placeholder,
-  emptyLabel,
-  renderLimit,
-  actions,
-}: {
-  label: string;
-  meta: string;
-  asset: AssetOption | undefined;
-  options: readonly AssetOption[];
-  onSelect: (key: string) => void;
-  amount: string;
-  onAmountChange?: (value: string) => void;
-  readOnly?: boolean;
-  placeholder?: string;
-  emptyLabel: string;
-  renderLimit?: number;
-  /** Optional controls under the amount, e.g. 25 / 50 / MAX. */
-  actions?: ReactNode;
-}) {
-  const [open, setOpen] = useState(false);
-  const amountId = useId();
-  const memory = usePickerMemory("token");
-  const items = useMemo<PickerItem[]>(
-    () =>
-      options.map((option) => ({
-        id: option.key,
-        label: option.label,
-        sublabel: option.note ? `${option.chainName} · ${option.note}` : option.chainName,
-        keywords: [
-          option.symbol,
-          option.denom,
-          option.chainId,
-          ...(option.note ? [option.note] : []),
-        ],
-        icon: (
-          <TokenLogo
-            src={option.iconUrl ?? option.chainIconUrl}
-            symbol={option.symbol}
-            size={24}
-            verified={option.verified}
-            verifiedLabel="Listed in the Cosmos chain registry"
-          />
-        ),
-        trailing:
-          option.amount === "0" ? null : (
-            <span className="font-mono text-[9.5px] tabular-nums text-fg-dim">
-              {formatUnits(option.amount, option.decimals)}
-            </span>
-          ),
-      })),
-    [options],
-  );
-  return (
-    <section
-      className={cn(
-        "rounded-[16px] border border-[var(--z-line)] bg-[var(--z-glass)] px-3.5 py-3",
-        !readOnly && fieldFocusWithin,
-      )}
-    >
-      <div className="flex items-baseline justify-between gap-2">
-        <span className="font-mono text-[9px] uppercase tracking-[0.16em] text-fg-muted">
-          {label}
-        </span>
-        <span className="truncate font-mono text-[10px] tabular-nums text-fg-dim">{meta}</span>
-      </div>
-      <div className="mt-2.5 flex items-center gap-2.5">
-        <label className="sr-only" htmlFor={amountId}>
-          {label} amount
-        </label>
-        <input
-          id={amountId}
-          inputMode="decimal"
-          placeholder={placeholder ?? "0"}
-          value={amount}
-          readOnly={readOnly}
-          onChange={(event) => onAmountChange?.(decimalText(event.target.value))}
-          className={cn(
-            "min-w-0 flex-1 bg-transparent text-left text-[26px] font-semibold leading-none tracking-[-0.04em] tabular-nums outline-none",
-            readOnly ? "text-fg-muted" : "text-fg",
-            "placeholder:text-fg-faint",
-          )}
-        />
-        <button
-          type="button"
-          aria-haspopup="dialog"
-          aria-expanded={open}
-          aria-label={`${label} asset: ${asset ? `${asset.symbol} on ${asset.chainName}` : emptyLabel}`}
-          disabled={options.length === 0}
-          onClick={() => setOpen(true)}
-          className={cn(
-            "flex min-w-0 max-w-[148px] shrink-0 items-center gap-1.5 rounded-full border border-[var(--z-line)] bg-[var(--z-surface-raised)] py-1.5 pl-1.5 pr-2.5",
-            "transition-colors duration-[var(--z-duration-base)] hover:border-[var(--z-line-strong)] hover:bg-[var(--z-state-hover)]",
-            "disabled:cursor-not-allowed disabled:opacity-50",
-            focusRing,
-          )}
-        >
-          <TokenLogo
-            src={asset?.iconUrl ?? asset?.chainIconUrl}
-            symbol={asset?.symbol ?? "?"}
-            size={24}
-            verified={asset?.verified}
-            verifiedLabel="Listed in the Cosmos chain registry"
-          />
-          <span className="min-w-0 text-left">
-            <span className="block truncate text-[12.5px] font-semibold leading-none tracking-tight text-fg">
-              {asset?.symbol ?? emptyLabel}
-            </span>
-            <span className="mt-0.5 block truncate font-mono text-[9px] leading-none text-fg-dim">
-              {asset?.chainName ?? "-"}
-            </span>
-          </span>
-          <IconChevronDown width={12} height={12} className="shrink-0 text-fg-dim" />
-        </button>
-        <PickerSheet
-          open={open}
-          onClose={() => setOpen(false)}
-          title={`${label}: choose an asset`}
-          items={items}
-          selectedId={asset?.key}
-          searchPlaceholder="Search by token or network"
-          favorites={memory.favorites}
-          recents={memory.recents}
-          onToggleFavorite={memory.toggleFavorite}
-          emptyLabel={emptyLabel}
-          renderLimit={renderLimit}
-          onSelect={(key) => {
-            memory.remember(key);
-            onSelect(key);
-          }}
-        />
-      </div>
-      {actions ? <div className="mt-2.5">{actions}</div> : null}
-    </section>
   );
 }

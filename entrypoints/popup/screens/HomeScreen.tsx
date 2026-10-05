@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Button,
   Callout,
@@ -24,23 +24,29 @@ import type { OriginGrant } from "../../../lib/permissions";
 import type { SessionStatus } from "../../../lib/session";
 import {
   hasLiveBalancePermission,
+  heldTokenIdentity,
   liveBalanceRefusalNote,
   requestLiveBalancePermission,
   type ChainBalance,
 } from "../../../lib/balances";
 import { chainTicker } from "../../../lib/chain-catalog";
 import type { PriceMap, SpotPrice } from "../../../lib/prices";
-import type { ActivityItem } from "../../../lib/chain-queries";
+import type { ActivityItem, HeldBalances } from "../../../lib/chain-queries";
 import {
+  activityAmountParts,
+  assetValues,
   groupHomeAssets,
   groupedSubtitle,
   homeAssets,
+  listAmount,
+  type HeldIdentify,
   type HomeAsset,
 } from "../../../lib/home-assets";
 import type { AssetListMode } from "../../../lib/settings";
 import { computePortfolio, toWholeCoins } from "../../../lib/portfolio";
 import { searchItems } from "../../../lib/picker";
 import { sendToBackground } from "../../../lib/popup-client";
+import { STORAGE_KEYS } from "../../../lib/storage-keys";
 import {
   NO_VALUE,
   displaysAsZero,
@@ -48,9 +54,11 @@ import {
   formatUnits,
   relativeTime,
 } from "../../../lib/format";
+import { tokenKeywords, type TokenIdentity } from "../../../lib/token-identity";
 import { ActivityBadge } from "../components/ActivityBadge";
 import { HeroSkeleton, ListSkeleton } from "../components/ListSkeleton";
 import { PopupHeader } from "../components/PopupHeader";
+import { TokenAvatar, TokenLabel, TokenTicker, tokenA11yName } from "../components/TokenLabel";
 import type { ChainAccountView } from "../hooks/useChainAccounts";
 import { useActivity } from "../hooks/useChainQuery";
 import { usePrefs } from "../state/Prefs";
@@ -111,28 +119,56 @@ function QuickAction({
   );
 }
 
+/**
+ * A balance row's accessible name: the token as {@link tokenA11yName} words
+ * it (the ticker whole, then where it comes from and where it sits, which a
+ * grouped row shows only in its header), `verified` when the row shows the
+ * seal, then the amount and its value. The row's own text would read the
+ * ticker in two pieces (`USDC` `.n`), and the seal has no words. Shared with
+ * a chain's page.
+ */
+export function assetRowLabel(
+  identity: TokenIdentity,
+  amount: { readonly figure: string; readonly words: string | null },
+  fiat: string | null,
+  hidden: boolean,
+): string {
+  const parts = [tokenA11yName(identity)];
+  if (identity.proven) parts.push("verified");
+  if (hidden) {
+    parts.push("amount hidden");
+  } else {
+    parts.push(amount.words ? `${amount.figure} ${amount.words}` : amount.figure);
+    if (fiat) parts.push(fiat);
+  }
+  return parts.join(", ");
+}
+
+/**
+ * One asset on Home, drawn from its identity: the token's own logo (a badge
+ * for the chain it sits on when that is not its origin, the seal only when the
+ * identity is proven), the ticker, and what it is and where it is. Under a
+ * chain's group header the chain is already named, so the badge and the
+ * location words are left out.
+ */
 function AssetRow({
   asset,
   currency,
   hidden,
-  verified,
   grouped,
   onOpen,
 }: {
   asset: HomeAsset;
   currency: string;
   hidden: boolean;
-  verified?: boolean;
   grouped?: boolean;
   onOpen: () => void;
 }) {
-  const { token } = asset;
-  const bridged = token.kind === "ibc" || token.kind === "factory";
-  const borrowedIcon = Boolean(
-    bridged && token.iconUrl && token.iconUrl === asset.chainIconUrl,
-  );
-  const amount = formatUnits(token.amount, token.decimals, 2);
-  const subtitle = grouped ? groupedSubtitle(token) : asset.subtitle;
+  const { identity, token } = asset;
+  // `12340000 base units` stacks: the number, then the words where a price
+  // would go, so the subtitle keeps its room.
+  const { figure, words } = listAmount(token.amount, identity, hidden);
+  const subtitle = grouped ? groupedSubtitle(identity) : null;
   const fiat =
     asset.fiatValue !== null ? formatFiat(asset.fiatValue, currency) : null;
   const change = asset.change24h;
@@ -141,6 +177,7 @@ function AssetRow({
     <button
       type="button"
       onClick={onOpen}
+      aria-label={assetRowLabel(identity, { figure, words }, fiat, hidden)}
       className={cn(
         "flex w-full min-w-0 items-center text-left",
         "transition-[background-color] duration-[var(--z-duration-fast)] ease-[var(--z-ease)]",
@@ -151,56 +188,49 @@ function AssetRow({
         focusRing,
       )}
     >
-      <TokenLogo
-        src={borrowedIcon ? undefined : (token.iconUrl ?? asset.chainIconUrl)}
-        symbol={token.symbol}
+      <TokenAvatar
+        identity={identity}
         size={grouped ? 26 : 32}
-        verified={token.kind === "native" ? verified : false}
-        verifiedLabel="Listed in the Cosmos chain registry"
-        chainSrc={!grouped && bridged ? asset.chainIconUrl : undefined}
-        chainLabel={!grouped && bridged ? asset.chainName : undefined}
+        locationBadge={grouped ? "never" : "auto"}
       />
-      <span className="min-w-0 flex-1">
-        <span className="flex min-w-0 items-center gap-1.5">
-          <span
-            className={cn(
-              "truncate font-semibold tracking-[-0.02em] text-fg",
-              grouped ? "text-[12.5px]" : "text-[13px]",
-            )}
-          >
-            {token.symbol}
-          </span>
-          {token.kind !== "native" ? (
-            <span className="shrink-0 rounded-full bg-[var(--z-glass-2)] px-1.5 py-px font-mono text-[8px] uppercase tracking-[0.08em] text-fg-dim">
-              {asset.kindLabel}
+      {grouped ? (
+        <span className="min-w-0 flex-1">
+          <TokenTicker
+            identity={identity}
+            className="text-[12.5px] font-semibold tracking-[-0.02em] text-fg"
+          />
+          {subtitle ? (
+            // Two lines before a cut, so an unknown token's short denom keeps its tail.
+            <span
+              className="mt-0.5 line-clamp-2 text-[11px] text-fg-muted [overflow-wrap:anywhere]"
+              title={subtitle}
+            >
+              {subtitle}
             </span>
           ) : null}
         </span>
-        {grouped && token.kind === "native" ? null : (
-          <span className="mt-0.5 flex min-w-0 items-center gap-1 text-[11px] text-fg-muted">
-            <span className="truncate">{subtitle}</span>
-            {!grouped && asset.testnet ? (
-              <IconLock
-                width={9}
-                height={9}
-                aria-label="Testnet"
-                className="shrink-0 text-fg-dim"
-              />
-            ) : null}
-          </span>
-        )}
-      </span>
-      <span className="max-w-[46%] shrink-0 text-right">
+      ) : (
+        <TokenLabel identity={identity} className="flex-1" />
+      )}
+      <span
+        className={cn("shrink-0 text-right", words === null ? "max-w-[46%]" : "max-w-[34%]")}
+      >
         <span
-          className={cn(
-            amountPrimaryClass,
-            "block truncate",
-            grouped ? "text-[13px]" : "text-[14px]",
-          )}
+          className={
+            words === null
+              ? cn(amountPrimaryClass, "block truncate", grouped ? "text-[13px]" : "text-[14px]")
+              : // Raw base units can run to 25 digits: a compact figure that
+                // wraps, rather than losing digits or the subtitle's room.
+                "block font-mono text-[11px] font-semibold leading-tight tabular-nums text-fg [overflow-wrap:anywhere]"
+          }
         >
-          {hidden ? "••••" : amount}
+          {figure}
         </span>
-        {fiat || (change !== null && token.amount !== "0") ? (
+        {words !== null ? (
+          <span className={cn(amountSecondaryClass, "mt-0.5 block text-[10px]")}>
+            {words}
+          </span>
+        ) : fiat || (change !== null && token.amount !== "0") ? (
           <span
             className={cn(
               amountSecondaryClass,
@@ -331,24 +361,99 @@ function ChainGroupHeader({
   );
 }
 
+/** A fresh copy of `heldTokenIdentity`: same answers, a new function identity. */
+const freshIdentify = (): HeldIdentify => (chainId, token) => heldTokenIdentity(chainId, token);
+
+/**
+ * The function that names held rows, replaced whenever newly proven token
+ * facts are stored (by the worker's balance read, usually). It reads
+ * `identityOf`, which adopts those facts in its own storage listener,
+ * registered at boot and so called first; a memo that names rows with this
+ * function names them again with the new facts. The facts and the balances
+ * that need them arrive by separate routes, in no set order. Shared with a
+ * chain's page.
+ */
+export function useHeldIdentify(): HeldIdentify {
+  // freshIdentify serves as the initializer and as the updater below, so the
+  // state is always the function it returns.
+  const [identify, setIdentify] = useState<HeldIdentify>(freshIdentify);
+  useEffect(() => {
+    const onChanged = (changes: Record<string, unknown>, area: string) => {
+      if (area === "local" && STORAGE_KEYS.tokenIdentity in changes) {
+        setIdentify(freshIdentify);
+      }
+    };
+    try {
+      browser.storage.onChanged.addListener(onChanged);
+    } catch {
+      return;
+    }
+    return () => browser.storage.onChanged.removeListener(onChanged);
+  }, []);
+  return identify;
+}
+
+/**
+ * A history amount, as the Activity screen words it ({@link activityAmountParts}):
+ * the signed number, `base units` when the decimals are unknown, then the
+ * unit the row's title names. Each part stays whole and wraps under the one
+ * before when the column is too narrow, so neither a long raw amount nor the
+ * short denom of an unnamed coin (`ibc/0123…ABCDEF`) is cut; a ticker wider
+ * than the column gives up its family first (`USDC.axl.polygon` keeps
+ * `.axl.polygon`). Screen readers get the unit as one word. `balances` lets a
+ * held coin nothing names read on the scale its balance row uses. Shared
+ * with a chain's page.
+ */
+export function ActivityAmountText({
+  item,
+  hidden,
+  balances,
+}: {
+  item: ActivityItem;
+  hidden: boolean;
+  balances?: HeldBalances;
+}) {
+  const amount = activityAmountParts(item, balances);
+  if (!amount) return null;
+  const color = activityAmountClass(item.kind, item.success, item.amount);
+  if (hidden) {
+    return <span className={cn(amountInlineClass, color, "shrink-0")}>••••</span>;
+  }
+  const unitClass = cn("text-[11px] font-semibold tracking-[-0.01em]", color);
+  return (
+    <span
+      className="flex min-w-0 max-w-[46%] shrink-0 flex-wrap items-baseline justify-end gap-x-1 text-right"
+      title={amount.text}
+    >
+      <span className={cn(amountInlineClass, color, "min-w-0 [overflow-wrap:anywhere]")}>
+        {amount.figure}
+      </span>
+      {amount.words ? (
+        <span className={cn(unitClass, "whitespace-nowrap")}>{amount.words}</span>
+      ) : null}
+      {amount.unit ? (
+        <span className={cn(unitClass, "flex min-w-0 max-w-full")}>
+          <span aria-hidden="true" className="flex min-w-0 max-w-full">
+            <TokenTicker identity={amount.unit} className="min-w-0" />
+          </span>
+          <span className="sr-only">{amount.unit.ticker}</span>
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
 function ActivityRow({
   item,
   hidden,
+  balances,
   onOpen,
 }: {
   item: ActivityItem;
   hidden: boolean;
+  balances: Record<string, ChainBalance>;
   onOpen: () => void;
 }) {
-  const signed =
-    item.amount && item.amount !== "0"
-      ? `${item.amount.startsWith("-") ? "" : "+"}${formatUnits(
-          item.amount,
-          item.decimals,
-        )} ${item.symbol}`
-      : null;
-  const amountClass = activityAmountClass(item.kind, item.success, item.amount);
-
   return (
     <button
       type="button"
@@ -361,24 +466,15 @@ function ActivityRow({
     >
       <ActivityBadge kind={item.kind} messageType={item.messageType} success={item.success} />
       <span className="min-w-0 flex-1">
-        <span className="block truncate text-[11.5px] font-medium text-fg">
+        <span className="line-clamp-2 text-[11.5px] font-medium leading-snug text-fg [overflow-wrap:anywhere]">
           {item.title}
         </span>
-        <span className="mt-[2px] block truncate font-mono text-[8.5px] text-fg-dim">
-          {item.subtitle} · {relativeTime(item.timestamp)}
+        <span className="mt-[2px] flex min-w-0 font-mono text-[8.5px] text-fg-dim">
+          <span className="truncate">{item.subtitle}</span>
+          <span className="shrink-0 whitespace-pre"> · {relativeTime(item.timestamp)}</span>
         </span>
       </span>
-      {signed ? (
-        <span
-          className={cn(
-            amountInlineClass,
-            "max-w-[46%] shrink-0 truncate",
-            amountClass,
-          )}
-        >
-          {hidden ? "••••" : signed}
-        </span>
-      ) : null}
+      <ActivityAmountText item={item} hidden={hidden} balances={balances} />
     </button>
   );
 }
@@ -488,25 +584,23 @@ export function HomeScreen({
   const [heldOnly, setHeldOnly] = useState(false);
   const toast = useToast();
   const connectedDomain = grants[0] ? hostOf(grants[0].origin) : "";
-  const [showConnected, setShowConnected] = useState(false);
-  // A site that is already connected when the wallet opens stays quiet.
-  // The bar only flashes when a new site connects while this screen is open.
-  const announcedDomain = useRef<string | null>(null);
+  // A site that is already connected when the wallet opens stays quiet. The
+  // bar only flashes when a different site connects while this screen is
+  // open: the domain seen last is kept with the state and compared during
+  // render, so no effect writes state after the render that changed it.
+  // Going from no site to one (the grants arriving) does not flash.
+  const [seenDomain, setSeenDomain] = useState(connectedDomain);
+  const [flashDomain, setFlashDomain] = useState<string | null>(null);
+  if (seenDomain !== connectedDomain) {
+    setSeenDomain(connectedDomain);
+    setFlashDomain(seenDomain && connectedDomain ? connectedDomain : null);
+  }
   useEffect(() => {
-    if (!connectedDomain) {
-      announcedDomain.current = null;
-      setShowConnected(false);
-      return;
-    }
-    if (announcedDomain.current === null || announcedDomain.current === connectedDomain) {
-      announcedDomain.current = connectedDomain;
-      return;
-    }
-    announcedDomain.current = connectedDomain;
-    setShowConnected(true);
-    const timer = window.setTimeout(() => setShowConnected(false), 4_000);
+    if (!flashDomain) return;
+    const timer = window.setTimeout(() => setFlashDomain(null), 4_000);
     return () => window.clearTimeout(timer);
-  }, [connectedDomain]);
+  }, [flashDomain]);
+  const showConnected = flashDomain !== null && flashDomain === connectedDomain;
   const { settings, update, hidden, toggleHidden } = usePrefs();
   const active =
     status.accounts.find((a) => a.index === status.activeAccountIndex) ??
@@ -518,6 +612,9 @@ export function HomeScreen({
   // account's default derivation, which belongs to a different prefix.
   const headerAddress = primary?.address ?? active?.address;
   const readsLive = settings.liveBalances && hostGranted;
+  // Rows are named by identityOf, so they are rebuilt when newly proven token
+  // facts land, not only when the balances do.
+  const identify = useHeldIdentify();
   const assets = useMemo(
     () =>
       homeAssets(
@@ -535,8 +632,9 @@ export function HomeScreen({
         })),
         balances,
         prices,
+        identify,
       ),
-    [chains, balances, prices],
+    [chains, balances, prices, identify],
   );
   const visibleAssets = useMemo(() => {
     const pool =
@@ -547,25 +645,20 @@ export function HomeScreen({
     return searchItems(
       pool.map((asset) => ({
         id: asset.key,
-        label: asset.token.symbol,
+        label: asset.identity.ticker,
         sublabel: asset.subtitle,
+        // The ticker, family and aliases (USDC.noble finds USDC.n), the name,
+        // the origin and location chains, and the exact denoms.
         keywords: [
-          asset.chainId,
+          ...tokenKeywords(asset.identity),
           asset.chainName,
-          asset.token.displayName,
-          asset.token.denom,
-          asset.token.baseDenom ?? "",
-          asset.token.originChainName ?? "",
           asset.kindLabel,
+          asset.token.name ?? "",
         ],
       })),
       query,
     ).flatMap((item) => byKey.get(item.id) ?? []);
   }, [assets, heldOnly, readsLive, query]);
-  const chainById = useMemo(
-    () => new Map(chains.map((chain) => [chain.chainId, chain])),
-    [chains],
-  );
   const listMode: AssetListMode =
     settings.assetListMode === "grouped" ? "grouped" : "separate";
   const groupedAssets = useMemo(
@@ -577,12 +670,14 @@ export function HomeScreen({
     return b && !displaysAsZero(b.staked, b.decimals, 2);
   });
 
+  // The headline is the sum of the rows Home lists (each priced through its
+  // identity), plus what each chain stakes and has earned.
   const totals = useMemo(
-    () => computePortfolio(balances, prices),
-    [balances, prices],
+    () => computePortfolio(balances, prices, assetValues(assets)),
+    [balances, prices, assets],
   );
   const currency = (settings.currency ?? "USD").toUpperCase();
-  const hasTotal = totals.pricedChains > 0;
+  const hasTotal = totals.pricedChains > 0 || totals.pricedAssets > 0;
 
   const chainIds = useMemo(() => chains.map((c) => c.chainId), [chains]);
   const { rows: activity, loading: activityLoading } = useActivity(
@@ -733,10 +828,10 @@ export function HomeScreen({
             )}
           </div>
 
-          {hasTotal && totals.unpricedChains > 0 ? (
+          {hasTotal && totals.unpricedAssets > 0 ? (
             <div className="mt-1 font-mono text-[9px] uppercase tracking-[0.1em] text-fg-dim">
-              {totals.pricedChains} of{" "}
-              {totals.pricedChains + totals.unpricedChains} chains priced
+              {totals.pricedAssets} of{" "}
+              {totals.pricedAssets + totals.unpricedAssets} assets priced
             </div>
           ) : null}
 
@@ -817,8 +912,8 @@ export function HomeScreen({
                 className="min-w-0 flex-1"
                 value={query}
                 onValueChange={setQuery}
-                placeholder="Search asset or network"
-                aria-label="Search asset or network"
+                placeholder="Token or network"
+                aria-label="Search token or network"
               />
               {readsLive ? (
                 <button
@@ -877,9 +972,6 @@ export function HomeScreen({
                               currency={currency}
                               hidden={hidden}
                               grouped
-                              verified={
-                                chainById.get(asset.chainId)?.entry.inCosmosRegistry
-                              }
                               onOpen={() => onOpenChain(asset.chainId)}
                             />
                           </li>
@@ -896,7 +988,6 @@ export function HomeScreen({
                         asset={asset}
                         currency={currency}
                         hidden={hidden}
-                        verified={chainById.get(asset.chainId)?.entry.inCosmosRegistry}
                         onOpen={() => onOpenChain(asset.chainId)}
                       />
                     </li>
@@ -1007,6 +1098,7 @@ export function HomeScreen({
                       <ActivityRow
                         item={item}
                         hidden={hidden}
+                        balances={balances}
                         onOpen={() => onOpenTx(item)}
                       />
                     </li>

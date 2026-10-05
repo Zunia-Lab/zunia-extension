@@ -22,8 +22,24 @@ export interface PickerItem extends Searchable {
   /** Right-aligned detail, usually a balance. */
   trailing?: ReactNode;
   disabled?: boolean;
-  /** Replaces the sublabel while the item is disabled. */
+  /**
+   * Why a disabled item cannot be picked, on its own line under the sublabel
+   * and never cut. The sublabel stays: it is often what tells two disabled
+   * rows apart, such as one token on two chains with the same reason.
+   */
   disabledReason?: string;
+  /**
+   * Drawn in place of `label`, which stays the text a search matches. For a
+   * label whose end must not be cut: a token ticker keeps its suffix
+   * (`.axl.polygon`, the `·8EF1` an impostor gets) and gives up its family
+   * part first. A plain `label` wraps rather than being cut.
+   */
+  labelNode?: ReactNode;
+  /**
+   * Read by assistive tech after the row's visible text, never shown: what
+   * the icon says and the text does not, such as a token's proven seal.
+   */
+  srNote?: string;
 }
 
 interface Entry {
@@ -32,12 +48,20 @@ interface Entry {
   item: PickerItem;
 }
 
+function defaultSearchOnlyNote(count: number): string {
+  return `${count.toLocaleString()} more ${count === 1 ? "appears" : "appear"} when you search.`;
+}
+
 /**
  * Bottom sheet for choosing one item from a list: search box on top, then
  * Favorites, Recent, and All. The search box keeps focus the whole time; the
  * arrow keys move a highlight through the list (announced through
  * aria-activedescendant), Enter picks, Shift+Enter toggles a favorite, and
  * Escape clears the search before it closes the sheet.
+ *
+ * Search-only items (lib/picker.ts) are listed only in search results; the
+ * footer says how many a search would add. A disabled item stays readable:
+ * its icon and label are dimmed, its sublabel and its reason are not.
  */
 export function PickerSheet({
   open,
@@ -54,6 +78,7 @@ export function PickerSheet({
   loading = false,
   emptyLabel = "Nothing to choose from yet.",
   renderLimit,
+  searchOnlyNote,
 }: {
   open: boolean;
   onClose: () => void;
@@ -74,6 +99,11 @@ export function PickerSheet({
    * tokens) shows its head and says how many more a search would reach.
    */
   renderLimit?: number;
+  /**
+   * The footer line while search-only items are left out of the list, given
+   * their count. Defaults to "N more appear when you search."
+   */
+  searchOnlyNote?: (count: number) => string;
 }) {
   const baseId = useId();
   const listId = `${baseId}-list`;
@@ -102,6 +132,13 @@ export function PickerSheet({
     });
     return { sections: capped, hiddenCount: hidden };
   }, [items, query, favorites, recents, allTitle, renderLimit]);
+  // Left out of the list until a search finds them (lib/picker.ts). A search
+  // lists them with everything else, so there is nothing to count then.
+  const searching = sections.some((section) => section.key === "results");
+  const searchOnlyCount = useMemo(
+    () => (searching ? 0 : items.filter((item) => item.searchOnly).length),
+    [items, searching],
+  );
 
   const entries = useMemo(() => {
     const out: Entry[] = [];
@@ -244,6 +281,10 @@ export function PickerSheet({
                     const isActive = entry.key === active?.key;
                     const isSelected = item.id === selectedId;
                     const isFavorite = favoriteSet.has(item.id);
+                    // A disabled row dims its logo, label and balance. Its
+                    // sublabel stays readable (it tells one token on two chains
+                    // apart), and so does the reason it is off.
+                    const dim = item.disabled ? "opacity-50" : undefined;
                     return (
                       <div key={entry.key} role="presentation" className="flex items-center">
                         <button
@@ -265,26 +306,34 @@ export function PickerSheet({
                             "transition-colors duration-[var(--z-duration-fast)]",
                             isActive && "bg-[var(--z-state-hover)]",
                             isSelected && "bg-[var(--z-state-selected)]",
-                            item.disabled && "cursor-not-allowed opacity-50",
+                            item.disabled && "cursor-not-allowed",
                           )}
                         >
-                          {item.icon ? <span className="shrink-0">{item.icon}</span> : null}
+                          {item.icon ? <span className={cn("shrink-0", dim)}>{item.icon}</span> : null}
                           <span className="min-w-0 flex-1">
-                            <span className="block truncate text-[12.5px] font-medium text-fg">
-                              {item.label}
+                            {/* Wrapped, never cut: the end of a label is where a ticker keeps its suffix. */}
+                            <span
+                              className={cn(
+                                "block min-w-0 text-[12.5px] font-medium leading-snug text-fg [overflow-wrap:anywhere]",
+                                dim,
+                              )}
+                            >
+                              {item.labelNode ?? item.label}
                             </span>
-                            {item.disabled && item.disabledReason ? (
-                              <span className="mt-[2px] block truncate text-[10px] text-fg-muted">
-                                {item.disabledReason}
-                              </span>
-                            ) : item.sublabel ? (
-                              <span className="mt-[2px] block truncate font-mono text-[9.5px] text-fg-dim">
+                            {item.sublabel ? (
+                              <span className="mt-[2px] block font-mono text-[9.5px] leading-snug text-fg-dim [overflow-wrap:anywhere]">
                                 {item.sublabel}
                               </span>
                             ) : null}
+                            {item.disabled && item.disabledReason ? (
+                              <span className="mt-1 block text-[10px] leading-snug text-fg-muted [overflow-wrap:anywhere]">
+                                {item.disabledReason}
+                              </span>
+                            ) : null}
+                            {item.srNote ? <span className="sr-only">{item.srNote}</span> : null}
                           </span>
                           {item.trailing ? (
-                            <span className="shrink-0 text-right">{item.trailing}</span>
+                            <span className={cn("shrink-0 text-right", dim)}>{item.trailing}</span>
                           ) : null}
                           {isSelected ? (
                             <IconCheck width={14} height={14} className="shrink-0 text-accent" />
@@ -317,9 +366,16 @@ export function PickerSheet({
           )}
         </div>
 
-        {hiddenCount > 0 ? (
-          <p className="border-t border-[var(--z-line)] px-4 py-1.5 text-[10.5px] text-fg-muted">
-            {hiddenCount.toLocaleString()} more not shown. Search to find them.
+        {hiddenCount > 0 || searchOnlyCount > 0 ? (
+          <p className="border-t border-[var(--z-line)] px-4 py-1.5 text-[10.5px] leading-snug text-fg-muted">
+            {[
+              hiddenCount > 0
+                ? `${hiddenCount.toLocaleString()} more not shown. Search to find them.`
+                : null,
+              searchOnlyCount > 0 ? (searchOnlyNote ?? defaultSearchOnlyNote)(searchOnlyCount) : null,
+            ]
+              .filter(Boolean)
+              .join(" ")}
           </p>
         ) : null}
         <p

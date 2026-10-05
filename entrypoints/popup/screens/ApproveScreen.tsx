@@ -13,7 +13,7 @@ import {
 } from "@zunialab/ui";
 import { SIGNING_KINDS, type ApprovalRequest } from "../../../lib/approvals";
 import type { CustomChainDraft } from "../../../lib/chain-draft";
-import { formatCoin } from "../../../lib/coin-display";
+import { exactCoinText } from "../../../lib/chain-queries";
 import type { FeeChoice, FeeTier } from "../../../lib/fee-tiers";
 import { assessOrigin } from "../../../lib/origin-risk";
 import type { SessionStatus } from "../../../lib/session";
@@ -349,9 +349,32 @@ function splitRecipient(summary: string): { lead: string; address?: string } {
   return { lead: summary.slice(0, at), address };
 }
 
+/**
+ * The coins a message moves in words, under its raw summary and never in its
+ * place: `= 12.34 USDC.n · Noble → on Osmosis · verified by channel`. The
+ * worker writes these only for proven identities (lib/signing.ts), so an
+ * unnamed or look-alike token shows its raw amount and denom alone.
+ */
+function ResolvedLines({ lines, className }: { lines: readonly string[] | undefined; className?: string }) {
+  if (!lines || lines.length === 0) return null;
+  return (
+    <>
+      {lines.map((line, index) => (
+        <span
+          key={`${index}:${line}`}
+          className={cn("block leading-snug text-fg-muted [overflow-wrap:anywhere]", className)}
+        >
+          {line}
+        </span>
+      ))}
+    </>
+  );
+}
+
 /** A decoded signature: the action, who it pays, then the account. JSON stays closed. */
 function SignTxBody({
   messages,
+  resolved,
   accountName,
   address,
   fees,
@@ -364,6 +387,8 @@ function SignTxBody({
   warnings,
 }: {
   messages: SignSafetySummary["messages"];
+  /** Same order as `messages`; see {@link ResolvedLines}. */
+  resolved: SignSafetySummary["resolved"];
   accountName: string;
   address: string;
   fees: Array<{ label: string; value: string }>;
@@ -385,6 +410,7 @@ function SignTxBody({
           <h1 className="text-[20px] font-medium leading-tight tracking-[-0.03em] text-fg [overflow-wrap:anywhere]">
             {split.lead}
           </h1>
+          <ResolvedLines lines={resolved?.[0]} className="mt-1.5 text-[12.5px]" />
           {split.address ? (
             <p className="mt-2 text-[13px] leading-relaxed text-fg-muted">
               to{" "}
@@ -414,6 +440,7 @@ function SignTxBody({
                   <span className="block text-[13px] leading-snug text-fg [overflow-wrap:anywhere]">
                     {message.summary}
                   </span>
+                  <ResolvedLines lines={resolved?.[i]} className="mt-1 text-[11.5px]" />
                   {message.type ? (
                     <span className="mt-1 block truncate font-mono text-[10px] text-fg-dim">
                       {message.type}
@@ -453,8 +480,11 @@ function SignTxBody({
             key={fee.label}
             className="flex items-baseline justify-between gap-3 border-t border-[var(--z-line)] pt-2.5"
           >
-            <span className="text-[12px] text-fg-dim">{fee.label}</span>
-            <span className="text-right text-[12.5px] text-fg">{fee.value}</span>
+            <span className="shrink-0 text-[12px] text-fg-dim">{fee.label}</span>
+            {/* A fee nothing names keeps its full denom, which must wrap, not spill. */}
+            <span className="min-w-0 text-right text-[12.5px] text-fg [overflow-wrap:anywhere]">
+              {fee.value}
+            </span>
           </div>
         ))}
         {feeChoice ? (
@@ -566,15 +596,18 @@ export function ApproveScreen({
   );
   const feeChoice = feeChoiceFrom(current);
   const feeTier = feeChoice && feePick !== "site" ? feePick : null;
+  // The fee coin named the way the worker named the site's fee: exact, and
+  // in its full spelling when nothing names it.
+  const feeChainId = current.chainIds[0] ?? summary?.chainId ?? "";
   const feeRows = (summary?.fees ?? []).map((row) =>
     row.label === "Fee" && feeChoice
       ? {
           ...row,
-          value: formatCoin(feeTier ? feeChoice.tiers[feeTier] : feeChoice.site, {
-            symbol: feeChoice.symbol,
-            decimals: feeChoice.decimals,
-            known: true,
-          }),
+          value: exactCoinText(
+            feeChainId,
+            feeTier ? feeChoice.tiers[feeTier] : feeChoice.site,
+            feeChoice.denom,
+          ),
         }
       : row,
   );
@@ -733,6 +766,7 @@ export function ApproveScreen({
       ) : signingTx && summary ? (
         <SignTxBody
           messages={summary.messages}
+          resolved={summary.resolved}
           accountName={active?.name ?? "No account"}
           address={
             active
@@ -833,6 +867,7 @@ export function ApproveScreen({
                   <span className="block text-[12.5px] leading-snug text-fg [overflow-wrap:anywhere]">
                     {message.summary}
                   </span>
+                  <ResolvedLines lines={summary.resolved?.[i]} className="mt-1 text-[11.5px]" />
                   {message.type ? (
                     <span className="mt-1 block truncate font-mono text-[9.5px] text-fg-dim">
                       {message.type}

@@ -16,10 +16,25 @@ import {
 } from "@zunialab/interchain";
 
 import { chainTicker, findCatalogEntry } from "./chain-catalog";
-import { hasLiveBalancePermission } from "./balances";
-import { coinDisplay, formatCoin, type CoinDisplay } from "./coin-display";
-import { shortAddress } from "./format";
+import { hasLiveBalancePermission, heldTokenIdentity, type TokenBalance } from "./balances";
+import { coinDisplay, type CoinDisplay } from "./coin-display";
+import { shortAddress, shortDenom } from "./format";
+import { IBC_CHANNEL_ROWS } from "./ibc-channels.generated";
 import { getSettings } from "./settings";
+import {
+  amountFieldText,
+  amountUnit,
+  formatTokenAmount,
+  type AmountIdentity,
+  type TokenAmountVariant,
+} from "./token-amount";
+import {
+  hydrateTokenIdentities,
+  ibcDenomFor,
+  identityOf,
+  type TokenIdentity,
+  type TokenProvenance,
+} from "./token-identity";
 
 export { baseDenomOf, coinDisplay, formatCoin, type CoinDisplay } from "./coin-display";
 
@@ -144,14 +159,31 @@ export interface ActivityItem {
   chainId: string;
   hash: string;
   kind: ActivityKind;
+  /** `Send USDC.n`, `Receive USDC.n over IBC`: named by the coin's identity. */
   title: string;
   subtitle: string;
   /** Signed base-unit delta for the account, when we can work it out. */
   amount?: string;
+  /**
+   * The exact bank denom on `chainId` that moved. For an IBC receipt it is the
+   * denom the receiving chain credited (`ibc/498A…` for Noble USDC arriving on
+   * Osmosis, `uusdc` for it coming home to Noble), never the packet's
+   * sender-side denom.
+   */
   denom?: string;
-  /** For `denom`: 0 and the raw denom when nothing names it. */
+  /** For `denom`: 0 when `decimalsKnown` is false, and `amount` is then base units. */
   decimals: number;
+  /** The identity's ticker (`USDC.n`, `IBC·498A`), the same word the title uses. */
   symbol: string;
+  /**
+   * False when nothing proves `decimals`: show `amount` in base units, never
+   * scaled. Set with `denom`; see {@link activityAmountIdentity}.
+   */
+  decimalsKnown?: boolean;
+  /** How the coin's identity was established; `unknown` when nothing names it. */
+  provenance?: TokenProvenance;
+  /** The coin's identity is proven: the only reason to show a seal. */
+  proven?: boolean;
   timestamp: number;
   success: boolean;
   from?: string;
@@ -581,13 +613,105 @@ function receivedPacket(message: Record<string, unknown>) {
   const raw = text(packet?.data);
   if (!packet || !raw) return null;
   let data: Ics20PacketData | null = null;
+  let tracedDenom = false;
   try {
-    data = parseIcs20PacketData(decodeBase64Utf8(raw));
+    const json = decodeBase64Utf8(raw);
+    data = parseIcs20PacketData(json);
+    // ICS20 v1 writes the whole trace into `denom`. A v2 packet nests the
+    // token and its trace, and the engine keeps only the base from it, which
+    // is not enough to say what the receiver was credited.
+    tracedDenom = typeof asRecord(JSON.parse(json) as unknown)?.denom === "string";
   } catch {
     return null;
   }
   if (!data) return null;
-  return { data, channel: text(packet.destination_channel) };
+  return {
+    data,
+    tracedDenom,
+    channel: text(packet.destination_channel),
+    ends: {
+      sourcePort: text(packet.source_port),
+      sourceChannel: text(packet.source_channel),
+      destinationPort: text(packet.destination_port),
+      destinationChannel: text(packet.destination_channel),
+    },
+  };
+}
+
+/** The two ends of a received ICS20 packet, as the chain's JSON spells them. */
+export interface PacketEnds {
+  readonly sourcePort?: string;
+  readonly sourceChannel?: string;
+  readonly destinationPort?: string;
+  readonly destinationChannel?: string;
+}
+
+let canonicalEnds: Map<string, string> | null = null;
+
+/**
+ * The channel id at the other end of `channelId` on `chainId`, from the
+ * registry's canonical channel table. A channel's counterparty is fixed when
+ * the channel opens, so this is a fact about the channel, not a guess about
+ * the packet.
+ */
+function canonicalCounterpartyChannel(chainId: string, channelId: string): string | null {
+  if (!canonicalEnds) {
+    canonicalEnds = new Map();
+    for (const [source, channel, , counterparty] of IBC_CHANNEL_ROWS) {
+      canonicalEnds.set(`${source}|${channel}`, counterparty);
+    }
+  }
+  return canonicalEnds.get(`${chainId}|${channelId}`) ?? null;
+}
+
+/**
+ * A hop's identifier, by ibc-go's rule: a channel id (`channel-750`), or since
+ * ibc-go v10 an IBC v2 client id (`08-wasm-1369`, `07-tendermint-0`;
+ * clienttypes.IsClientIDFormat). The Hub's Eureka tokens carry the second
+ * kind: `transfer/08-wasm-1369/0xc02a…` is ETH.eureka's trace.
+ */
+const HOP_ID = /^(?:channel-\d+|\w+(?:[\w-]+\w)?-\d{1,20})$/;
+
+/**
+ * `transfer/channel-0/uatom` and `transfer/08-wasm-1369/0xc02a…` are traces;
+ * `uatom` and `factory/osmo1…/x` are bank denoms (ibc-go's rule).
+ */
+function isTracedDenom(denom: string): boolean {
+  const parts = denom.split("/");
+  return parts.length > 2 && HOP_ID.test(parts[1] ?? "");
+}
+
+/**
+ * The bank denom a received ICS20 packet credits on `chainId`, by ibc-go's
+ * receive rule. The packet's `denom` is the sender's trace, so it is never the
+ * denom the receiver holds:
+ * - when it starts with the packet's own source `port/channel/`, the token is
+ *   going home: that prefix comes off, leaving the native denom (`uusdc` for
+ *   Noble USDC returning to Noble) or the voucher of the remaining trace;
+ * - otherwise the receiving chain mints the voucher of
+ *   `destPort/destChannel/denom` (`ibc/498A…` for `uusdc` arriving on Osmosis
+ *   over channel-750).
+ *
+ * A packet the chain's JSON lists without its source end is read through the
+ * registry's canonical table for its destination channel; `null` when that
+ * still leaves the source unknown, rather than a guess.
+ */
+export function receivedDenomOf(chainId: string, packetDenom: string, ends: PacketEnds): string | null {
+  const destinationChannel = ends.destinationChannel ?? "";
+  if (!packetDenom || !/^channel-\d+$/.test(destinationChannel)) return null;
+  const destinationPort = ends.destinationPort || "transfer";
+  const sourcePort = ends.sourcePort || "transfer";
+  const sourceChannel =
+    ends.sourceChannel ||
+    (destinationPort === "transfer" ? canonicalCounterpartyChannel(chainId, destinationChannel) : null);
+  if (!sourceChannel) return null;
+  const prefix = `${sourcePort}/${sourceChannel}/`;
+  if (packetDenom.startsWith(prefix)) {
+    const home = packetDenom.slice(prefix.length);
+    if (!home) return null;
+    return isTracedDenom(home) ? ibcDenomFor("", home) : home;
+  }
+  return ibcDenomFor(`${destinationPort}/${destinationChannel}`, packetDenom);
 }
 
 /** A relayer delivers a packet with client updates around it. */
@@ -618,6 +742,33 @@ export function pickMessage(
   );
 }
 
+/** What a history row needs from a coin's identity. */
+type CoinFacts = Pick<TokenIdentity, "decimals" | "decimalsKnown" | "ticker" | "provenance" | "proven">;
+
+/**
+ * A coin nothing names: base units, and its own spelling as the only word for
+ * it. Used for a receipt whose credited denom is unknown, so the packet's
+ * sender-side `uusdc` is never read as this chain's denom (it would name an
+ * unlisted local token) or as any issuer's.
+ */
+function unknownCoin(spelling: string): CoinFacts {
+  return { decimals: 0, decimalsKnown: false, ticker: shortDenom(spelling), provenance: "unknown", proven: false };
+}
+
+/**
+ * The unit after an amount: the ticker, or the short denom for a coin nothing
+ * names (`ibc/498A…6BA6E4` says which voucher; `IBC·498A` is the ticker the
+ * title uses for it). Without a denom, the ticker is all there is.
+ */
+function unitOf(facts: Pick<TokenIdentity, "ticker" | "provenance">, denom: string | undefined): string {
+  return facts.provenance === "unknown" && denom ? amountUnit({ ...facts, denom }) : facts.ticker;
+}
+
+/** `2.5 OSMO`, `12340000 base units ibc/498A…6BA6E4`: exact, for a sentence about one message. */
+function coinWords(amount: string, facts: CoinFacts & { denom: string }): string {
+  return `${formatTokenAmount(amount, facts, "confirm")} ${unitOf(facts, facts.denom || undefined)}`;
+}
+
 /** One message as the history row and the detail list describe it. */
 export interface DescribedMessage {
   kind: ActivityKind;
@@ -625,9 +776,14 @@ export interface DescribedMessage {
   subtitle: string;
   /** Signed base units for this account; negative when value left it. */
   amount?: string;
+  /** The exact bank denom on this chain, see {@link ActivityItem.denom}. */
   denom?: string;
   decimals: number;
+  /** The coin's ticker, or the chain's own when the message moves no coin. */
   symbol: string;
+  decimalsKnown?: boolean;
+  provenance?: TokenProvenance;
+  proven?: boolean;
   /** One sentence for the transaction detail. */
   summary: string;
   from?: string;
@@ -638,26 +794,36 @@ export interface DescribedMessage {
   vote?: string;
 }
 
-/** Read one message into words. Unknown messages keep their type name. */
+/**
+ * Read one message into words. Unknown messages keep their type name.
+ *
+ * Every coin is named by its {@link TokenIdentity} on `chainId`, so the title
+ * (`Send USDC.n`), the summary and the amount fields come from one identity
+ * and always agree. A coin nothing names keeps its short denom in prose and
+ * its amount in base units, never a guessed issuer or exponent.
+ */
 export function describeMessage(
   message: Record<string, unknown>,
   address: string,
   chainId: string,
 ): DescribedMessage {
   const type = typeUrlOf(message);
-  const native = coinDisplay(chainId, findCatalogEntry(chainId)?.coinMinimalDenom ?? "");
-  const plain = { decimals: native.decimals, symbol: native.symbol };
-  const withCoin = (coin: Coin | null, sign: "" | "-" = "") => {
-    if (!coin) return { ...plain, words: "" };
-    const display = coinDisplay(chainId, coin.denom);
-    return {
-      amount: `${sign}${coin.amount}`,
-      denom: coin.denom,
-      decimals: display.decimals,
-      symbol: display.symbol,
-      words: formatCoin(coin.amount, display),
-    };
-  };
+  const nativeDenom = findCatalogEntry(chainId)?.coinMinimalDenom ?? "";
+  const native = identityOf(chainId, nativeDenom);
+  const plain = { decimals: native.decimals, symbol: nativeDenom ? native.ticker : "" };
+  /** `denom` absent: the coin's denom on this chain is not known (see MsgRecvPacket). */
+  const coinOf = (amount: string, denom: string | undefined, facts: CoinFacts, sign: "" | "-") => ({
+    amount: `${sign}${amount}`,
+    ...(denom ? { denom } : {}),
+    decimals: facts.decimals,
+    symbol: facts.ticker,
+    decimalsKnown: facts.decimalsKnown,
+    provenance: facts.provenance,
+    proven: facts.proven,
+    words: coinWords(amount, { ...facts, denom: denom ?? "" }),
+  });
+  const withCoin = (coin: Coin | null, sign: "" | "-" = "") =>
+    coin ? coinOf(coin.amount, coin.denom, identityOf(chainId, coin.denom), sign) : { ...plain, words: "" };
 
   if (type.endsWith(".MsgSend")) {
     const from = text(message.from_address);
@@ -708,8 +874,16 @@ export function describeMessage(
   if (type.endsWith(".MsgRecvPacket")) {
     const packet = receivedPacket(message);
     const data = packet?.data;
-    if (data?.receiver === address && data.denom && data.amount) {
-      const { words, ...coin } = withCoin({ denom: data.denom, amount: data.amount });
+    const amount = data?.amount ?? "";
+    if (packet && data?.receiver === address && data.denom && /^\d+$/.test(amount)) {
+      // Named by what this chain credited, not by the sender's trace: the
+      // packet's `uusdc` is Noble USDC only once the channel says so. When the
+      // credited denom cannot be worked out, nothing is named after the
+      // packet's own spelling: the amount stays in base units.
+      const local = packet.tracedDenom ? receivedDenomOf(chainId, data.denom, packet.ends) : null;
+      const { words, ...coin } = local
+        ? coinOf(amount, local, identityOf(chainId, local), "")
+        : coinOf(amount, undefined, unknownCoin(data.denom), "");
       const sender = data.sender ?? "";
       return {
         kind: "ibc",
@@ -747,7 +921,7 @@ export function describeMessage(
     const { words, ...coin } = withCoin(firstCoin(message.token_in ?? message.token_in_maxs), "-");
     const routes = Array.isArray(message.routes) ? message.routes : [];
     const outDenom = text(asRecord(routes[routes.length - 1])?.token_out_denom);
-    const outSymbol = outDenom ? coinDisplay(chainId, outDenom).symbol : "";
+    const outSymbol = outDenom ? identityOf(chainId, outDenom).ticker : "";
     return {
       kind: "swap",
       title: humanType(type),
@@ -834,6 +1008,24 @@ export function describeMessage(
   return { kind: "other", title: humanType(type), subtitle: type, ...plain, summary: humanType(type) };
 }
 
+/** How long a history read waits for the stored token facts before naming coins without them. */
+const FACTS_WAIT_MS = 2_000;
+let factsLoading: Promise<void> | null = null;
+
+/**
+ * The proven traces other contexts stored (lib/token-identity.ts), loaded once
+ * per context, so a voucher the balance reader walked is named the same in the
+ * history. A storage read that never answers costs at most {@link FACTS_WAIT_MS}.
+ */
+function tokenFactsLoaded(): Promise<void> {
+  factsLoading ??= hydrateTokenIdentities().catch(() => undefined);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, FACTS_WAIT_MS);
+  });
+  return Promise.race([factsLoading, late]).finally(() => clearTimeout(timer));
+}
+
 /** Which spelling of the tx search each chain answered: SDK 0.50 `query`, older `events`. */
 const searchStyles = new Map<string, "query" | "events">();
 
@@ -886,11 +1078,14 @@ export async function fetchActivity(
   if (!rest) return [];
   const size = Math.min(Math.max(Math.floor(limit), 1), MAX_ACTIVITY_LIMIT);
 
-  const responses = await Promise.allSettled(
-    [`message.sender='${address}'`, `transfer.recipient='${address}'`].map((condition) =>
-      searchTxs(rest, chainId, condition, size),
+  const [responses] = await Promise.all([
+    Promise.allSettled(
+      [`message.sender='${address}'`, `transfer.recipient='${address}'`].map((condition) =>
+        searchTxs(rest, chainId, condition, size),
+      ),
     ),
-  );
+    tokenFactsLoaded(),
+  ]);
   if (responses.every((response) => response.status === "rejected")) {
     throw new Error(`${chainId}: transaction history unavailable`);
   }
@@ -928,6 +1123,164 @@ export async function fetchActivity(
   }
 
   return items.sort((a, b) => b.timestamp - a.timestamp).slice(0, size);
+}
+
+/* -------------------------------------------------------------------------- *
+ * Showing a history row's coin
+ * -------------------------------------------------------------------------- */
+
+/** A balance row, as far as showing an amount of its denom needs it. */
+type HeldRow = Pick<TokenBalance, "denom" | "decimals" | "decimalsKnown">;
+
+/** The balances a screen holds, by chain (`ChainBalance` fits). */
+export type HeldBalances = Readonly<Record<string, { readonly tokens: readonly HeldRow[] } | undefined>>;
+
+function heldRow(item: Pick<ActivityItem, "chainId" | "denom">, balances: HeldBalances | undefined): HeldRow | undefined {
+  return item.denom ? balances?.[item.chainId]?.tokens.find((row) => row.denom === item.denom) : undefined;
+}
+
+/**
+ * `-` when value left the account, `+` when it arrived (a receipt, an IBC
+ * delivery, claimed rewards), nothing for staking, which moves value between
+ * the account's own balances.
+ */
+export function activitySign(item: Pick<ActivityItem, "amount" | "kind">): "-" | "+" | "" {
+  if (item.amount?.startsWith("-")) return "-";
+  return item.kind === "received" || item.kind === "ibc" || item.kind === "claim" ? "+" : "";
+}
+
+/**
+ * The identity a history row's amount is written with. It is the identity the
+ * row's title was named with, carried on the row, so `Send USDC.n` and
+ * `-12.34 USDC.n` always agree. For a coin nothing names, the balance row's
+ * decimals count when the chain's metadata gave them (the rule of
+ * `heldTokenIdentity`), so a held coin reads on the same scale here as on Home;
+ * otherwise the amount is base units.
+ */
+export function activityAmountIdentity(
+  item: Pick<ActivityItem, "chainId" | "denom" | "symbol" | "decimals" | "decimalsKnown" | "provenance">,
+  balances?: HeldBalances,
+): AmountIdentity {
+  // Rows from before identities carried decimals 0 for "unknown".
+  const decimalsKnown = item.decimalsKnown ?? item.decimals > 0;
+  const own: AmountIdentity = {
+    ticker: item.symbol,
+    denom: item.denom ?? "",
+    decimals: decimalsKnown ? item.decimals : 0,
+    decimalsKnown,
+    provenance: item.provenance ?? (decimalsKnown ? "catalog" : "unknown"),
+  };
+  if (own.decimalsKnown || own.provenance !== "unknown") return own;
+  const held = heldRow(item, balances);
+  if (!held) return own;
+  const scaled = heldTokenIdentity(item.chainId, held);
+  return scaled.decimalsKnown ? { ...own, decimals: scaled.decimals, decimalsKnown: true } : own;
+}
+
+/** A history row's amount, in parts so a screen can keep the unit whole. */
+export interface ActivityAmount {
+  readonly sign: "-" | "+" | "";
+  /** `12.34`, `12340000 base units`, or `••••` when balances are hidden. */
+  readonly value: string;
+  /** `USDC.n`; the short denom for a coin nothing names; empty when hidden. */
+  readonly unit: string;
+  /** All of it on one line: `-12.34 USDC.n`. */
+  readonly text: string;
+}
+
+/**
+ * The amount a history row shows, by the shared policy (lib/token-amount.ts):
+ * `history` for lists and notices, `confirm` for a transaction's detail. A
+ * coin whose decimals are unknown reads `12340000 base units ibc/498A…6BA6E4`,
+ * never `12.34M`. `null` when the row moved nothing.
+ */
+export function activityAmount(
+  item: Pick<
+    ActivityItem,
+    "chainId" | "kind" | "amount" | "denom" | "symbol" | "decimals" | "decimalsKnown" | "provenance"
+  >,
+  variant: TokenAmountVariant,
+  options: { readonly balances?: HeldBalances; readonly hidden?: boolean } = {},
+): ActivityAmount | null {
+  const unsigned = item.amount?.replace(/^-/, "") ?? "";
+  if (!/^\d+$/.test(unsigned)) return null;
+  if (options.hidden) {
+    const masked = formatTokenAmount(unsigned, activityAmountIdentity(item), variant, { hidden: true });
+    return { sign: "", value: masked, unit: "", text: masked };
+  }
+  const identity = activityAmountIdentity(item, options.balances);
+  const sign = activitySign(item);
+  const value = formatTokenAmount(unsigned, identity, variant);
+  const unit = unitOf(identity, item.denom);
+  return { sign, value, unit, text: `${sign}${value}${unit ? ` ${unit}` : ""}` };
+}
+
+/** A history amount cut where a narrow column may wrap it. */
+export interface ActivityAmountPieces {
+  /** The signed figure: `-12.34`, `+12340000`, `••••`. */
+  readonly figure: string;
+  /** `base units` (or `base unit`) after a figure whose decimals are unknown; null otherwise. */
+  readonly words: string | null;
+  /** The unit, as {@link ActivityAmount.unit}. */
+  readonly unit: string;
+}
+
+const BASE_UNITS_WORDS = / (base units?)$/;
+
+/**
+ * The pieces a screen wraps a history amount at, each as a whole: the figure,
+ * the `base units` words, the unit. A coin nothing names reads in base units,
+ * and one token of an 18-decimal coin is already a 19-digit figure, so a
+ * screen must let these wrap (and the figure break inside its digits when it
+ * alone is wider than the column) instead of keeping them on one line that
+ * runs over the text beside it.
+ */
+export function activityAmountPieces(amount: ActivityAmount): ActivityAmountPieces {
+  const words = BASE_UNITS_WORDS.exec(amount.value);
+  return {
+    figure: `${amount.sign}${words ? amount.value.slice(0, words.index) : amount.value}`,
+    words: words?.[1] ?? null,
+    unit: amount.unit,
+  };
+}
+
+/**
+ * The exact words for a coin someone is about to pay or sign, such as a fee on
+ * an approval prompt: `0.005 OSMO`, every digit the coin has
+ * (`0.000123456789 INJ`, never cut to six decimals or rounded) when the
+ * denom's identity and decimals are known on `chainId`; otherwise the raw
+ * amount and the full denom, because the prompt is where the user checks
+ * exactly what leaves the account.
+ */
+export function exactCoinText(chainId: string, amount: string, denom: string): string {
+  const identity = identityOf(chainId, denom);
+  return identity.provenance !== "unknown" && identity.decimalsKnown && isBankSpelling(denom) && /^\d+$/.test(amount)
+    ? `${amountFieldText(amount, identity)} ${identity.ticker}`
+    : `${amount} ${denom}`;
+}
+
+/**
+ * Whether `denom` is spelled the way a bank holds it. IBC mints every voucher
+ * as `ibc/` + uppercase hex, while the identity lookup reads the hash in
+ * either case; a document a site wrote can carry `ibc/498a…`, which is not the
+ * voucher it names, so it is shown raw rather than named after one.
+ */
+export function isBankSpelling(denom: string): boolean {
+  return !denom.startsWith("ibc/") || denom === `ibc/${denom.slice(4).toUpperCase()}`;
+}
+
+/**
+ * The full identity of a history row's coin, for its logo, seal, words and
+ * details; a held coin through `heldTokenIdentity`. `null` when the row moved
+ * no coin, or its denom on this chain could not be worked out.
+ */
+export function activityTokenIdentity(
+  item: Pick<ActivityItem, "chainId" | "denom">,
+  balances?: HeldBalances,
+): TokenIdentity | null {
+  if (!item.denom) return null;
+  const held = heldRow(item, balances);
+  return held ? heldTokenIdentity(item.chainId, held) : identityOf(item.chainId, item.denom);
 }
 
 /* -------------------------------------------------------------------------- *
@@ -1043,7 +1396,10 @@ export async function fetchTxDetail(
   const rest = restOf(chainId);
   if (!rest) return null;
   try {
-    const body = await getJson(`${rest}/cosmos/tx/v1beta1/txs/${encodeURIComponent(hash)}`);
+    const [body] = await Promise.all([
+      getJson(`${rest}/cosmos/tx/v1beta1/txs/${encodeURIComponent(hash)}`),
+      tokenFactsLoaded(),
+    ]);
     return parseTxDetail(body, chainId, address);
   } catch (error) {
     if (error instanceof Error && error.message === "HTTP 404") return null;

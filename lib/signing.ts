@@ -2,19 +2,36 @@ import { STORAGE_KEYS } from "./storage-keys";
 import type { DecodedDirectTx, DecodedTxMessage } from "./kernel";
 import { loadKernel, bytesToHex, hexToBytes } from "./kernel";
 import { SECURITY_CONFIG } from "../config/security";
-import { coinDisplay, formatCoin } from "./coin-display";
+import { exactCoinText, isBankSpelling } from "./chain-queries";
 import { cosmWasmActionName, describeCw721Action } from "./nft";
 import { assertSameChain } from "./provider-guards";
 import { getSettings } from "./settings";
+import { amountFieldText } from "./token-amount";
+import { hydrateTokenIdentities, identityOf, type TokenIdentity } from "./token-identity";
 
 export interface SignSafetySummary {
   chainId: string;
+  /** The exact words of what is signed: the kernel's, or for Amino this module's. Never rewritten. */
   messages: Array<{ type: string; summary: string; unknown?: boolean }>;
   fees: Array<{ label: string; value: string }>;
   warnings: string[];
   /** True when approval requires blind-signing opt-in. */
   requiresBlindSigning: boolean;
   memo?: string;
+  /**
+   * Per message, same order as `messages`: each coin it moves, named by its
+   * proven identity (`= 12.34 USDC.n · Noble → on Osmosis · verified by
+   * channel`). An addition under the raw summary, never in place of it, and
+   * empty for a coin whose identity is not proven. Kept apart from `messages`
+   * so the transaction JSON a prompt shows stays the decoded transaction.
+   */
+  resolved?: string[][];
+}
+
+/** A coin a signed message moves, exactly as the document spells it. */
+export interface SignedCoin {
+  readonly amount: string;
+  readonly denom: string;
 }
 
 async function loadKnownRecipients(): Promise<Set<string>> {
@@ -87,6 +104,109 @@ function summarizeExecuteContract(
   };
 }
 
+/* -------------------------------------------------------------------------- *
+ * The resolved line under a raw summary
+ * -------------------------------------------------------------------------- */
+
+/** How a proven identity was proven, in the prompt's words. */
+function provenBy(identity: TokenIdentity): string {
+  return identity.provenance === "table" || identity.provenance === "channel-walk"
+    ? "verified by channel"
+    : "verified by registry";
+}
+
+/**
+ * One coin of a signed message in words, under the raw summary:
+ * `= 12.34 USDC.n · Noble → on Osmosis · verified by channel`, or
+ * `= 1.5 OSMO · native on Osmosis · verified by registry`. The amount is the
+ * raw amount scaled exactly, every digit kept (`= 1.234567890123456789 INJ`):
+ * the line says `=`, so it is never cut to six decimals or rounded.
+ *
+ * `null` unless the denom's identity on `chainId` is proven: the raw summary
+ * alone is shown for anything else, so a token someone named after a real one
+ * (an unlisted `factory/…/USDC`) never gets a reassuring line, and neither
+ * does a voucher hash in a spelling no bank holds (`ibc/498a…`, lowercase).
+ * Display only: nothing here is signed, and the raw amount and denom stay on
+ * screen.
+ */
+export function resolvedCoinLine(chainId: string, coin: SignedCoin): string | null {
+  if (!chainId || !/^\d+$/.test(coin.amount) || !coin.denom || !isBankSpelling(coin.denom)) return null;
+  const identity = identityOf(chainId, coin.denom);
+  if (!identity.proven) return null;
+  const amount = `${amountFieldText(coin.amount, identity)} ${identity.ticker}`;
+  const where =
+    identity.originChainId === identity.heldOnChainId
+      ? `native on ${identity.heldOnChainName}`
+      : `${identity.originChainName ?? "Unknown chain"} → on ${identity.heldOnChainName}`;
+  return `= ${amount} · ${where} · ${provenBy(identity)}`;
+}
+
+/** A coin as the kernel writes it: base units, a space, the denom (no spaces, no commas). */
+const COIN_TEXT = /^(\d+) ([A-Za-z][A-Za-z0-9/:._-]*)$/;
+
+/**
+ * The kernel's direct-sign summary formats that carry one coin
+ * (zunia-core crates/cosmos/src/msg.rs `summary`):
+ * - `Send {amount} {denom} to {address}`
+ * - `IBC transfer {amount} {denom} to {receiver} over {channel}`
+ * - `Delegate {amount} {denom} to {validator}`, `Undelegate … from …`,
+ *   `Redelegate {amount} {denom} from {validator} to {validator}`
+ * - `Execute "{action}" on {contract} sending {amount} {denom}`
+ */
+const SUMMARY_FORMATS: readonly RegExp[] = [
+  /^Send (.+) to [a-z0-9]+$/,
+  /^IBC transfer (\S+ \S+) to \S+ over \S+$/,
+  /^(?:Delegate|Undelegate) (\S+ \S+) (?:to|from) \S+$/,
+  /^Redelegate (\S+ \S+) from \S+ to \S+$/,
+  /^Execute ".*" on \S+ sending (.+)$/,
+];
+
+/**
+ * The coin a kernel summary names, read back from its text; `[]` when the
+ * text is not one of the formats above or does not hold exactly one coin.
+ * The kernel joins several coins with `, ` and a forged document can put a
+ * comma inside a denom, so a list of coins is never split and guessed at:
+ * those messages keep their raw summary alone.
+ */
+export function summaryCoins(summary: string): SignedCoin[] {
+  for (const format of SUMMARY_FORMATS) {
+    const coins = format.exec(summary)?.[1];
+    if (coins === undefined) continue;
+    const coin = COIN_TEXT.exec(coins);
+    return coin ? [{ amount: coin[1] ?? "", denom: coin[2] ?? "" }] : [];
+  }
+  return [];
+}
+
+/** A `{denom, amount}` object with a base-unit amount, or null. */
+function signedCoin(value: unknown): SignedCoin | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const { denom, amount } = value as { denom?: unknown; amount?: unknown };
+  return typeof denom === "string" && denom && typeof amount === "string" && /^\d+$/.test(amount)
+    ? { denom, amount }
+    : null;
+}
+
+/**
+ * The coins an Amino message moves, read from its value rather than from a
+ * summary: `amount` (MsgSend's list, a staking message's coin), `token`
+ * (MsgTransfer), `funds` or `sent_funds` (a contract call).
+ */
+export function aminoCoins(value: Record<string, unknown>): SignedCoin[] {
+  const out: SignedCoin[] = [];
+  for (const field of [value.amount, value.token, value.funds, value.sent_funds]) {
+    for (const item of Array.isArray(field) ? field : [field]) {
+      const coin = signedCoin(item);
+      if (coin) out.push(coin);
+    }
+  }
+  return out;
+}
+
+/* -------------------------------------------------------------------------- *
+ * Summaries
+ * -------------------------------------------------------------------------- */
+
 export function summarizeAminoMsgs(
   msgs: Array<{ type: string; value: Record<string, unknown> }>,
 ): DecodedTxMessage[] {
@@ -118,12 +238,34 @@ export function summarizeAminoMsgs(
   });
 }
 
+/** How long a prompt waits for the stored token facts before naming coins without them. */
+const FACTS_WAIT_MS = 1_500;
+
+/**
+ * Load the proven traces other contexts stored, so a voucher the balance
+ * reader walked is named here too. Never throws; a storage read that does not
+ * answer costs at most {@link FACTS_WAIT_MS}, and the coins it would have
+ * named are left with their raw summary alone.
+ */
+async function tokenFactsLoaded(): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, FACTS_WAIT_MS);
+  });
+  await Promise.race([hydrateTokenIdentities().catch(() => undefined), late]);
+  clearTimeout(timer);
+}
+
 export async function buildSignSafety(input: {
   expectedChainId: string;
   decoded: DecodedDirectTx | { chainId: string; messages: DecodedTxMessage[]; memo?: string; fee?: DecodedDirectTx["fee"] };
+  /**
+   * The coins each message moves, read from the document itself (Amino).
+   * Without it they are read back from the kernel's summaries.
+   */
+  coins?: ReadonlyArray<readonly SignedCoin[]>;
 }): Promise<SignSafetySummary> {
-  const settings = await getSettings();
-  const known = await loadKnownRecipients();
+  const [settings, known] = await Promise.all([getSettings(), loadKnownRecipients(), tokenFactsLoaded()]);
   const warnings: string[] = [];
   let requiresBlindSigning = false;
 
@@ -161,17 +303,20 @@ export async function buildSignSafety(input: {
   const fees: Array<{ label: string; value: string }> = [];
   if (input.decoded.fee) {
     const { amount, denom, gas } = input.decoded.fee;
-    const display = coinDisplay(input.expectedChainId, denom);
-    fees.push({
-      label: "Fee",
-      // A denom the catalog cannot name keeps its full spelling here: the
-      // prompt is where the user checks exactly what they pay.
-      value: display.known ? formatCoin(amount, display) : `${amount} ${denom}`,
-    });
+    fees.push({ label: "Fee", value: exactCoinText(input.expectedChainId, amount, denom) });
     fees.push({ label: "Gas", value: /^\d+$/.test(gas) ? Number(gas).toLocaleString("en-US") : gas });
   } else {
     fees.push({ label: "Fee", value: "Not specified" });
   }
+
+  // An undecoded message is shown as the kernel reported it and nothing more.
+  const resolved = input.decoded.messages.map((m, index) =>
+    m.unknown
+      ? []
+      : (input.coins?.[index] ?? summaryCoins(m.summary))
+          .map((coin) => resolvedCoinLine(input.expectedChainId, coin))
+          .filter((line): line is string => line !== null),
+  );
 
   return {
     chainId: input.decoded.chainId || input.expectedChainId,
@@ -180,6 +325,7 @@ export async function buildSignSafety(input: {
     warnings,
     requiresBlindSigning: requiresBlindSigning && !settings.blindSigning,
     memo: "memo" in input.decoded ? input.decoded.memo : undefined,
+    ...(resolved.some((lines) => lines.length > 0) ? { resolved } : {}),
   };
 }
 
@@ -211,6 +357,9 @@ export async function decodeAminoSignDoc(
   const feeAmount = amino.fee?.amount?.[0];
   return buildSignSafety({
     expectedChainId,
+    coins: (amino.msgs ?? []).map((msg) =>
+      msg?.value && typeof msg.value === "object" ? aminoCoins(msg.value) : [],
+    ),
     decoded: {
       chainId: amino.chain_id ?? expectedChainId,
       messages,

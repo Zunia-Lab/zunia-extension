@@ -15,35 +15,148 @@ import { explorerTxUrl } from "../../../config/interchain";
 import type { ChainBalance } from "../../../lib/balances";
 import { catalogIconFor, findCatalogEntry } from "../../../lib/chain-catalog";
 import {
-  formatCoin,
+  activityAmount,
+  activityAmountPieces,
+  activityTokenIdentity,
+  type ActivityAmount,
   type ActivityItem,
   type ActivityKind,
   type TxDetailInfo,
   type TxFeeCoin,
 } from "../../../lib/chain-queries";
-import { formatUnits, isBech32 } from "../../../lib/format";
+import { isBech32 } from "../../../lib/format";
 import type { PendingTransfer } from "../../../lib/pending-transfers";
+import { formatTokenAmount } from "../../../lib/token-amount";
+import { identityOf, tokenText, type TokenIdentity } from "../../../lib/token-identity";
 import { ActivityBadge } from "../components/ActivityBadge";
+import { TokenAvatar, TokenTicker, provenanceLabel } from "../components/TokenLabel";
 import { useTxDetail } from "../hooks/useChainQuery";
 import { usePrefs } from "../state/Prefs";
 import { useToast } from "../state/Toasts";
 import { IconCopy } from "./icons";
-import { TruncatedValue, usePacketWalk, useRouteTracking } from "./interchain-ui";
+import { usePacketWalk, useRouteTracking } from "./interchain-ui";
 
 function grouped(value: string): string {
   return /^\d+$/.test(value) ? Number(value).toLocaleString() : value;
 }
 
+/** `0.005 OSMO`, exact; a fee coin nothing names reads in base units with its short denom. */
 function feeLabel(
   coin: TxFeeCoin,
   chainId: string,
   balances: Record<string, ChainBalance>,
 ): string {
-  if (coin.known) return formatCoin(coin.amount, coin);
-  const token = balances[chainId]?.tokens.find((row) => row.denom === coin.denom);
-  return formatCoin(
-    coin.amount,
-    token ? { symbol: token.symbol, decimals: token.decimals, known: true } : coin,
+  const identity = activityTokenIdentity({ chainId, denom: coin.denom }, balances) ?? identityOf(chainId, coin.denom);
+  return formatTokenAmount(coin.amount, identity, "confirm", { unit: true });
+}
+
+function chainNameOf(chainId: string, identity: TokenIdentity): string {
+  const name = findCatalogEntry(chainId)?.chainName;
+  if (name) return name;
+  return chainId === identity.originChainId && identity.originChainName ? identity.originChainName : chainId;
+}
+
+/**
+ * The trace hop by hop, from the chain holding the coin: `channel-750 →
+ * Noble`. A hop whose far chain is unknown (a light-client hop off Cosmos)
+ * says so instead of guessing.
+ */
+function pathText(identity: TokenIdentity): string | null {
+  const parts = identity.path ? identity.path.split("/") : [];
+  const hops: string[] = [];
+  for (let at = 0; at + 1 < parts.length; at += 2) {
+    const next = identity.hopChainIds[at / 2];
+    hops.push(`${parts[at + 1]} → ${next ? chainNameOf(next, identity) : "another chain"}`);
+  }
+  return hops.length > 0 ? hops.join(" → ") : null;
+}
+
+/**
+ * What the coin is, checkable: its exact denom (one tap to copy), the IBC path
+ * it took and how Zunia proved its name. Shown for every coin but a chain's own
+ * staking or fee coin, which the chain name already says.
+ */
+function TokenFacts({
+  identity,
+  onCopy,
+}: {
+  identity: TokenIdentity;
+  onCopy: (value: string) => void;
+}) {
+  const path = pathText(identity);
+  const proof =
+    provenanceLabel(identity) ??
+    (identity.provenance === "unknown" ? "Not verified: no registry names this denom" : "Not verified");
+  return (
+    <div className="rounded-[14px] border border-[var(--z-line)] bg-[var(--z-glass)] px-3.5 py-2.5">
+      <div className="flex items-center justify-between gap-2">
+        <p className="font-mono text-[9px] uppercase tracking-[0.16em] text-fg-muted">Token denom</p>
+        <button
+          type="button"
+          aria-label="Copy token denom"
+          onClick={() => onCopy(identity.denom)}
+          className={cn(
+            "inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 font-mono text-[9.5px] text-accent",
+            "transition-colors duration-[var(--z-duration-base)] hover:bg-[var(--z-state-hover)]",
+            focusRing,
+          )}
+        >
+          <IconCopy width={11} height={11} />
+          Copy
+        </button>
+      </div>
+      <p className="mt-1.5 break-all font-mono text-[12px] leading-[1.55] text-fg">{identity.denom}</p>
+      {path ? (
+        <p className="mt-2 flex justify-between gap-3 font-mono text-[11px]">
+          <span className="shrink-0 text-fg-dim">Path</span>
+          <span className="min-w-0 text-right text-fg [overflow-wrap:anywhere]">{path}</span>
+        </p>
+      ) : null}
+      <p className="mt-1.5 flex justify-between gap-3 font-mono text-[11px]">
+        <span className="shrink-0 text-fg-dim">Identity</span>
+        <span
+          className={cn(
+            "min-w-0 text-right [overflow-wrap:anywhere]",
+            identity.proven ? "text-fg" : "text-[var(--z-warning-fg)]",
+          )}
+        >
+          {proof}
+        </span>
+      </p>
+    </div>
+  );
+}
+
+/**
+ * The amount a transaction moved, at the size of the screen's heading. The
+ * figure, the `base units` words and the ticker each wrap as a whole, and a
+ * figure wider than the card (raw base units of an 18-decimal token) breaks
+ * inside its digits instead of running out of it; the ticker's suffix is
+ * never cut.
+ *
+ * Read in one piece (`+12.34 USDC.n`): the boxes on screen would otherwise
+ * be read with a break inside the ticker (`USDC .n`).
+ */
+export function TxAmount({
+  amount,
+  family,
+  className,
+}: {
+  amount: ActivityAmount;
+  /** The ticker's family (`USDC` of `USDC.n`), where the ticker may give way first. */
+  family: string;
+  className?: string;
+}) {
+  const { figure, words, unit } = activityAmountPieces(amount);
+  return (
+    <p className={cn(amountInlineClass, "text-[26px] leading-tight tracking-[-0.04em]", className)}>
+      <span className="sr-only">{amount.text}</span>
+      <span aria-hidden="true" className="flex flex-wrap items-baseline gap-x-1.5">
+        <span className="min-w-0 max-w-full [overflow-wrap:anywhere]">{figure}</span>
+        {words ? <span className="whitespace-nowrap">{words}</span> : null}
+        {unit ? <TokenTicker identity={{ ticker: unit, family }} className="max-w-full" /> : null}
+      </span>
+    </p>
   );
 }
 
@@ -74,6 +187,8 @@ function CopyBlock({
         </p>
         <button
           type="button"
+          // Several Copy buttons on one screen: each says what it copies.
+          aria-label={`Copy ${label.toLowerCase()}${label === "From" || label === "To" ? " address" : ""}`}
           onClick={() => onCopy(value)}
           className={cn(
             "inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 font-mono text-[9.5px] text-accent",
@@ -209,22 +324,10 @@ export function TxDetailScreen({
       ? `${chain.rest.replace(/\/$/, "")}/cosmos/tx/v1beta1/txs/${encodeURIComponent(item.hash)}`
       : null);
 
-  const token = item.denom
-    ? balances[item.chainId]?.tokens.find((row) => row.denom === item.denom)
-    : undefined;
-  const symbol = token?.symbol ?? item.symbol;
-  const decimals = token?.decimals ?? item.decimals;
-  const unsigned = item.amount?.replace(/^-/, "");
-  const outgoing = item.amount?.startsWith("-") ?? false;
-  const sign =
-    outgoing
-      ? "-"
-      : item.kind === "received" || item.kind === "ibc" || item.kind === "claim"
-        ? "+"
-        : "";
-  const amount = unsigned
-    ? `${sign}${formatUnits(unsigned, decimals, 3)} ${symbol}`
-    : null;
+  // One identity for the logo, the words and the amount; the amount itself is
+  // written with the facts the title was named with, so the two agree.
+  const identity = activityTokenIdentity(item, balances);
+  const amount = activityAmount(item, "confirm", { balances });
   const amountClass = activityAmountClass(item.kind, item.success, item.amount);
 
   const primary =
@@ -301,19 +404,27 @@ export function TxDetailScreen({
       <div className="flex flex-col gap-3 pt-1">
         <section className="rounded-[16px] border border-[var(--z-line)] bg-[var(--z-glass)] px-3.5 py-3.5">
           <div className="flex items-center gap-3">
-            <TokenLogo
-              src={token?.iconUrl ?? (chain ? catalogIconFor(chain) : undefined)}
-              symbol={symbol || chain?.chainName || item.chainId}
-              size={40}
-              verified={chain?.inCosmosRegistry}
-              verifiedLabel="Listed in the Cosmos chain registry"
-            />
+            {identity ? (
+              // The token's own logo, its chain as a badge when it sits away
+              // from its origin, and a seal only for a proven identity.
+              <TokenAvatar identity={identity} size={40} />
+            ) : (
+              // No coin moved: the chain the transaction ran on, with no seal,
+              // since a seal here would speak for a token.
+              <span aria-hidden="true" className="inline-flex shrink-0">
+                <TokenLogo
+                  src={chain ? catalogIconFor(chain) : undefined}
+                  symbol={chain?.chainName || item.chainId}
+                  size={40}
+                />
+              </span>
+            )}
             <span className="min-w-0 flex-1">
-              <span className="block truncate text-[13.5px] font-semibold tracking-tight text-fg">
+              <span className="block text-[13.5px] font-semibold leading-snug tracking-tight text-fg [overflow-wrap:anywhere]">
                 {primary?.title ?? item.title}
               </span>
-              <span className="mt-0.5 block truncate font-mono text-[10px] text-fg-dim">
-                {chain?.chainName ?? item.chainId}
+              <span className="mt-0.5 block font-mono text-[10px] leading-snug text-fg-dim [overflow-wrap:anywhere]">
+                {identity ? tokenText(identity, "row") : (chain?.chainName ?? item.chainId)}
               </span>
             </span>
             <Pill tone={statusTone} className="shrink-0">
@@ -322,9 +433,11 @@ export function TxDetailScreen({
           </div>
 
           {amount ? (
-            <p className={cn(amountInlineClass, "mt-3 text-[26px] tracking-[-0.04em]", amountClass)}>
-              {amount}
-            </p>
+            <TxAmount
+              amount={amount}
+              family={identity?.ticker === amount.unit ? identity.family : ""}
+              className={cn("mt-3", amountClass)}
+            />
           ) : (
             <p className="mt-3 text-[14px] font-medium text-fg">{item.subtitle}</p>
           )}
@@ -390,6 +503,10 @@ export function TxDetailScreen({
           onCopy={(value) => void copy(value, "Hash copied")}
         />
 
+        {identity && identity.kind !== "native" ? (
+          <TokenFacts identity={identity} onCopy={(value) => void copy(value, "Denom copied")} />
+        ) : null}
+
         {detail ? (
           <div className="rounded-[14px] border border-[var(--z-line)] px-3.5 py-3">
             {detail.height ? (
@@ -417,9 +534,11 @@ export function TxDetailScreen({
               </p>
             ) : null}
             {detail.memo ? (
-              <p className="mt-1.5 font-mono text-[11px]">
-                <span className="text-fg-dim">Memo </span>
-                <TruncatedValue>{detail.memo}</TruncatedValue>
+              // Whole: a memo can name the token or carry a reference the
+              // user is checking, and this is the screen for the details.
+              <p className="mt-1.5 flex justify-between gap-3 font-mono text-[11px]">
+                <span className="shrink-0 text-fg-dim">Memo</span>
+                <span className="min-w-0 text-right text-fg [overflow-wrap:anywhere]">{detail.memo}</span>
               </p>
             ) : null}
             {extraMessages.length > 0 ? (

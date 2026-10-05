@@ -13,8 +13,16 @@ import {
 } from "@zunialab/ui";
 import type { ChainBalance } from "../../../lib/balances";
 import { chainTicker, findCatalogEntry } from "../../../lib/chain-catalog";
-import { ACTIVITY_PAGE_SIZE, MAX_ACTIVITY_LIMIT, type ActivityItem } from "../../../lib/chain-queries";
-import { formatUnits } from "../../../lib/format";
+import {
+  ACTIVITY_PAGE_SIZE,
+  MAX_ACTIVITY_LIMIT,
+  activityAmount,
+  activityAmountPieces,
+  activityTokenIdentity,
+  type ActivityAmount,
+  type ActivityItem,
+} from "../../../lib/chain-queries";
+import { shortAddress } from "../../../lib/format";
 import { routeOutcome, type RouteOutcome, type TrackedRoute } from "../../../lib/packet-tracking";
 import {
   listPendingTransfers,
@@ -23,9 +31,11 @@ import {
 } from "../../../lib/pending-transfers";
 import { searchItems } from "../../../lib/picker";
 import { STORAGE_KEYS } from "../../../lib/storage-keys";
+import { tokenKeywords } from "../../../lib/token-identity";
 import { ActivityBadge } from "../components/ActivityBadge";
 import { ListSkeleton } from "../components/ListSkeleton";
 import { PickerSheet, type PickerItem } from "../components/PickerSheet";
+import { TokenTicker } from "../components/TokenLabel";
 import type { ChainAccountView } from "../hooks/useChainAccounts";
 import { useActivityFeed, useLiveRefresh } from "../hooks/useChainQuery";
 import { usePrefs } from "../state/Prefs";
@@ -88,49 +98,52 @@ function clockLabel(timestamp: number): string {
   });
 }
 
-/**
- * Ticker and decimals for a row. The history names the chain's own coins;
- * an IBC voucher the wallet holds is named from its balances.
- */
-function tokenMeta(
-  item: ActivityItem,
-  balances: Record<string, ChainBalance>,
-): { symbol: string; decimals: number } {
-  const token = item.denom
-    ? balances[item.chainId]?.tokens.find((row) => row.denom === item.denom)
-    : undefined;
-  return token
-    ? { symbol: token.symbol, decimals: token.decimals }
-    : { symbol: item.symbol, decimals: item.decimals };
-}
-
 function sameHash(a: string, b: string): boolean {
   return a.toUpperCase() === b.toUpperCase();
 }
 
+/** A bech32 address in a subtitle (`to osmo1…`), shown short so the time after it stays in view. */
+const ADDRESS_WORD = /\b[a-z][a-z0-9]*1[02-9ac-hj-np-z]{20,}\b/g;
+
+function rowSubtitle(item: ActivityItem): string {
+  return item.subtitle.replace(ADDRESS_WORD, (address) => shortAddress(address));
+}
+
+/**
+ * A history amount whose unit is never cut short. The figure, the `base
+ * units` words and the ticker each wrap as a whole, right-aligned; a figure
+ * wider than the column (an 18-decimal token nothing names, read in base
+ * units) breaks inside its digits rather than running over the title. A
+ * ticker wider than the whole column gives up its family part first, so the
+ * variant suffix (`.axl.polygon`, `·498A`) stays in view.
+ *
+ * Assistive tech reads the amount in one piece (`+12.34 USDC.n`): the pieces
+ * on screen are separate boxes, which a screen reader would otherwise read
+ * with a break inside the ticker (`USDC .n`).
+ */
+export function HistoryAmountText({ amount, className }: { amount: ActivityAmount; className?: string }) {
+  const { figure, words, unit } = activityAmountPieces(amount);
+  return (
+    <span className={cn("block min-w-0 max-w-full", className)}>
+      <span className="sr-only">{amount.text}</span>
+      <span aria-hidden="true" className="flex min-w-0 max-w-full flex-wrap items-baseline justify-end gap-x-1">
+        <span className="min-w-0 max-w-full [overflow-wrap:anywhere]">{figure}</span>
+        {words ? <span className="whitespace-nowrap">{words}</span> : null}
+        {unit ? <TokenTicker identity={{ ticker: unit, family: "" }} className="max-w-full" /> : null}
+      </span>
+    </span>
+  );
+}
+
 function Row({
   item,
-  meta,
-  hidden,
+  amount,
   onOpen,
 }: {
   item: ActivityItem;
-  meta: { symbol: string; decimals: number };
-  hidden: boolean;
+  amount: ActivityAmount | null;
   onOpen: (item: ActivityItem) => void;
 }) {
-  const unsigned = item.amount?.replace(/^-/, "");
-  // Staking moves value between the account's own balances, so it has no sign.
-  const sign = isOutgoing(item)
-    ? "-"
-    : item.kind === "received" || item.kind === "ibc" || item.kind === "claim"
-      ? "+"
-      : "";
-  const amount = unsigned
-    ? hidden
-      ? "••••"
-      : `${sign}${formatUnits(unsigned, meta.decimals, 3)} ${meta.symbol}`
-    : null;
   const amountClass = activityAmountClass(item.kind, item.success, item.amount);
 
   return (
@@ -145,19 +158,17 @@ function Row({
     >
       <ActivityBadge kind={item.kind} messageType={item.messageType} success={item.success} />
       <span className="min-w-0 flex-1">
-        <span className="block truncate text-[12.5px] font-medium text-fg">
+        {/* Three lines before a cut, so a long ticker in the title stays whole
+            beside a two-line amount (`Send` / `USDC.axl.polygon` / `over IBC`). */}
+        <span className="line-clamp-3 text-[12.5px] font-medium leading-snug text-fg [overflow-wrap:anywhere]">
           {item.title}
         </span>
-        <span className="mt-0.5 block truncate font-mono text-[9.5px] text-fg-dim">
-          {item.subtitle} · {clockLabel(item.timestamp)}
+        <span className="mt-0.5 block truncate font-mono text-[9.5px] text-fg-dim" title={item.subtitle}>
+          {rowSubtitle(item)} · {clockLabel(item.timestamp)}
         </span>
       </span>
-      <span className="max-w-[46%] shrink-0 text-right">
-        {amount ? (
-          <span className={cn(amountInlineClass, "block truncate", amountClass)}>
-            {amount}
-          </span>
-        ) : null}
+      <span className="flex max-w-[46%] shrink-0 flex-col items-end text-right">
+        {amount ? <HistoryAmountText amount={amount} className={cn(amountInlineClass, amountClass)} /> : null}
         <span
           className={cn(
             "mt-[3px] block font-mono text-[9px]",
@@ -442,17 +453,22 @@ export function ActivityScreen({
     const chainNames = new Map(chains.map((c) => [c.chainId, c.entry.chainName]));
     const byKey = new Map(kept.map((r) => [`${r.chainId}:${r.hash}`, r]));
     return searchItems(
-      kept.map((r) => ({
-        id: `${r.chainId}:${r.hash}`,
-        label: r.title,
-        sublabel: r.subtitle,
-        keywords: [
-          tokenMeta(r, balances).symbol,
-          r.hash,
-          r.chainId,
-          chainNames.get(r.chainId) ?? "",
-        ],
-      })),
+      kept.map((r) => {
+        // The coin's every name: `usdc noble` finds USDC.n rows, `ibc/498a`
+        // the exact voucher.
+        const identity = activityTokenIdentity(r, balances);
+        return {
+          id: `${r.chainId}:${r.hash}`,
+          label: r.title,
+          sublabel: r.subtitle,
+          keywords: [
+            ...(identity ? tokenKeywords(identity) : [r.symbol]),
+            r.hash,
+            r.chainId,
+            chainNames.get(r.chainId) ?? "",
+          ],
+        };
+      }),
       query,
     )
       .flatMap((item) => byKey.get(item.id) ?? [])
@@ -577,8 +593,7 @@ export function ActivityScreen({
                     <li key={`${item.chainId}:${item.hash}`}>
                       <Row
                         item={item}
-                        meta={tokenMeta(item, balances)}
-                        hidden={hidden}
+                        amount={activityAmount(item, "history", { balances, hidden })}
                         onOpen={onOpenTx}
                       />
                     </li>
