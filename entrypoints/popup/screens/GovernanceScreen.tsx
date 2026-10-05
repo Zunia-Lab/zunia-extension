@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import {
   Button,
   TokenLogo,
@@ -344,7 +344,7 @@ export function GovernanceScreen({
   const [network, setNetwork] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
-  const [visible, setVisible] = useState(PAGE_SIZE);
+  const [page, setPage] = useState({ key: "", count: PAGE_SIZE });
   const [openedKey, setOpenedKey] = useState<string | null>(null);
   const [ballot, setBallot] = useState<Ballot | null>(null);
   const [voted, setVoted] = useState<Record<string, VoteOption>>({});
@@ -360,6 +360,11 @@ export function GovernanceScreen({
     [chains],
   );
   const networkFilter = network && chainIds.includes(network) ? network : null;
+  // Pagination belongs to one set of filters: a page count kept with the
+  // filters it was counted for resets itself when they change, with no effect
+  // writing state after the render that changed them.
+  const filterKey = `${networkFilter ?? ""}|${statusFilter}|${query}`;
+  const visible = page.key === filterKey ? page.count : PAGE_SIZE;
   const sorted = useMemo(() => {
     const scoped = rows.filter((proposal) => {
       if (networkFilter && proposal.chainId !== networkFilter) return false;
@@ -391,9 +396,6 @@ export function GovernanceScreen({
       query,
     ).map((item) => item.proposal);
   }, [rows, networkFilter, statusFilter, query, names, denoms]);
-  useEffect(() => {
-    setVisible(PAGE_SIZE);
-  }, [networkFilter, statusFilter, query]);
   const shown = sorted.slice(0, visible);
   const hasMore = visible < sorted.length;
   const searching = query.trim().length > 0 || statusFilter !== "all";
@@ -741,7 +743,7 @@ export function GovernanceScreen({
               <Button
                 variant="secondary"
                 size="sm"
-                onClick={() => setVisible((n) => n + PAGE_SIZE)}
+                onClick={() => setPage({ key: filterKey, count: visible + PAGE_SIZE })}
               >
                 Load more
               </Button>

@@ -178,7 +178,7 @@ export function CreateWalletScreen({
 
   useEffect(() => {
     onStepChange?.(STEPS.indexOf(step));
-  }, [step, onStepChange]);
+  }, [STEPS, step, onStepChange]);
 
   async function handleCopy() {
     if (!mnemonic) return;

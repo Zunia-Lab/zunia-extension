@@ -8,8 +8,6 @@ import {
   DialogTitle,
   Input,
   SheetContent,
-  cn,
-  focusRing,
 } from "@zunialab/ui";
 import {
   MAX_LABEL_LENGTH,
@@ -204,7 +202,7 @@ export function ContactSheet({
                         size={24}
                         verified={
                           network?.entry.inCosmosRegistry ??
-                          findCatalogEntry(chainId)?.inCosmosRegistry
+                          (chainId ? findCatalogEntry(chainId)?.inCosmosRegistry : undefined)
                         }
                         verifiedLabel="Listed in the Cosmos chain registry"
                       />

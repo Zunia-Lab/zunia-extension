@@ -78,7 +78,7 @@ export function ImportWalletScreen({
 
   useEffect(() => {
     onStepChange?.(STEPS.indexOf(step));
-  }, [step, onStepChange]);
+  }, [STEPS, step, onStepChange]);
 
   function goBack() {
     setError(null);
