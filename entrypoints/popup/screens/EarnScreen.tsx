@@ -544,7 +544,7 @@ export function EarnScreen({
           chainId: chain.chainId,
           signerAddress: chain.address,
           msgs,
-          memo: resolveTxMemo("", msgs),
+          memo: resolveTxMemo("", msgs, chain.chainId),
           fee: estimateFee({
             gasLimit,
             gasPrice: chain.entry.gasPriceStep?.average ?? 0.025,
@@ -822,12 +822,16 @@ export function EarnScreen({
           <KeyValueRow label="Network" value={chain.entry.chainName} />
           <KeyValueRow
             label="Memo"
-            value={resolveTxMemo("", [
-              {
-                type: "cosmos-sdk/MsgDelegate",
-                value: { amount: { denom: chain.entry.coinMinimalDenom } },
-              },
-            ])}
+            value={resolveTxMemo(
+              "",
+              [
+                {
+                  type: "cosmos-sdk/MsgDelegate",
+                  value: { amount: { denom: chain.entry.coinMinimalDenom } },
+                },
+              ],
+              chain.chainId,
+            )}
           />
           <Input
             label={`Amount (${symbol})`}
@@ -1093,12 +1097,16 @@ export function EarnScreen({
           />
           <KeyValueRow
             label="Memo"
-            value={resolveTxMemo("", [
-              {
-                type: "cosmos-sdk/MsgUndelegate",
-                value: { amount: { denom: chain.entry.coinMinimalDenom } },
-              },
-            ])}
+            value={resolveTxMemo(
+              "",
+              [
+                {
+                  type: "cosmos-sdk/MsgUndelegate",
+                  value: { amount: { denom: chain.entry.coinMinimalDenom } },
+                },
+              ],
+              chain.chainId,
+            )}
           />
           <Input
             label={`Amount (${symbol})`}
@@ -1178,9 +1186,11 @@ export function EarnScreen({
           </Callout>
           <KeyValueRow
             label="Memo"
-            value={resolveTxMemo("", [
-              { type: "cosmos-sdk/MsgWithdrawDelegationReward", value: {} },
-            ])}
+            value={resolveTxMemo(
+              "",
+              [{ type: "cosmos-sdk/MsgWithdrawDelegationReward", value: {} }],
+              chain.chainId,
+            )}
           />
           <section className="rounded-[12px] border border-[var(--z-line)] px-2.5 py-2">
             <GasFeePrefs

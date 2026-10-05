@@ -620,12 +620,26 @@ export function sameChainMsgs(fromAddress: string, toAddress: string, reviewed: 
  * come back without one, the same default is passed explicitly, so the kernel
  * never writes a memo other than the one shown.
  */
-function transferMemo(
+export function transferMemo(
   preview: TxPreview | null,
   msgs: readonly BuiltMsg[] | null,
   chainId: string,
 ): string {
   return preview?.preview.memo || resolveTxMemo("", msgs ?? [], chainId);
+}
+
+/**
+ * The memo a same-chain send is shown and signed with: the user's text, or
+ * the default naming the coin as the reviewed chain holds it (`Send USDC.n ·
+ * by Zunia-wallet` for Noble USDC, on Noble and on Osmosis alike).
+ */
+export function sameChainMemo(
+  userMemo: string,
+  fromAddress: string,
+  toAddress: string,
+  reviewed: ReviewedSend,
+): string {
+  return resolveTxMemo(userMemo, sameChainMsgs(fromAddress, toAddress, reviewed), reviewed.chainId);
 }
 
 export function SendScreen({
@@ -1140,7 +1154,12 @@ export function SendScreen({
     }
   }
 
-  async function confirmAndBroadcast() {
+  /**
+   * Sign what the confirm screen shows. `shownMemo` is the memo it displayed,
+   * handed over as it is rather than worked out again here, so the memo on
+   * chain is the one the user read.
+   */
+  async function confirmAndBroadcast(shownMemo: string) {
     if (!chain || !reviewed) return;
     // The review is bound to the chain it was made on. Should the network list
     // change under it (a chain removed in another window), the screen falls
@@ -1160,7 +1179,7 @@ export function SendScreen({
             chainId: chain.chainId,
             signerAddress: chain.address,
             msgs: pendingMsgs,
-            memo: transferMemo(preview, pendingMsgs, chain.chainId),
+            memo: shownMemo,
             fee: preview.fee,
             accountNumber: preview.accountNumber,
             sequence: preview.sequence,
@@ -1202,7 +1221,7 @@ export function SendScreen({
             chainId: chain.chainId,
             signerAddress: chain.address,
             msgs,
-            memo: resolveTxMemo(memo, msgs, chain.chainId),
+            memo: shownMemo,
             fee: localFee,
             gasLimit: 200_000,
           },
@@ -1480,9 +1499,10 @@ export function SendScreen({
     const sent = reviewed.identity;
     const sentAmount = amountParts(reviewed.units, sent);
     const tag = networkTag(sent);
+    // Shown below and handed to the signature as it is (the sign button).
     const shownMemo = cross
       ? transferMemo(preview, pendingMsgs, chain.chainId)
-      : resolveTxMemo(memo, sameChainMsgs(chain.address, toAddress, reviewed), chain.chainId);
+      : sameChainMemo(memo, chain.address, toAddress, reviewed);
     // What the recipient holds afterwards, from the plan that is signed.
     const arrival =
       cross && signedPlan
@@ -1519,7 +1539,7 @@ export function SendScreen({
             <Button
               className="flex-1"
               disabled={busy}
-              onClick={() => void confirmAndBroadcast()}
+              onClick={() => void confirmAndBroadcast(shownMemo)}
             >
               {busy ? "Signing…" : signLabel}
             </Button>

@@ -20,6 +20,9 @@ import { Pill, TokenLogo, cn, focusRing } from "@zunialab/ui";
 import { catalogIconFor, findCatalogEntry } from "../../../lib/chain-catalog";
 import { formatTokenAmount } from "../../../lib/token-amount";
 import {
+  UNLISTED_TOKEN,
+  isUnlistedLocal,
+  isUserAddedChain,
   shortDenom,
   tokenKeywords,
   tokenText,
@@ -60,13 +63,15 @@ export function tickerParts(identity: Pick<TokenIdentity, "ticker" | "family">):
 
 /**
  * The tag for a token held where nothing is issued for real: `Testnet` on a
- * testnet, `Custom` on a chain the user added. Null on a registry mainnet.
+ * registry testnet, `Custom` on a chain the user added. Null on a registry
+ * mainnet. A user-added chain is stored with `network: "testnet"` whatever it
+ * is (lib/custom-chains.ts), so the user's own list decides, not that field.
  */
 export function networkTag(
   identity: Pick<TokenIdentity, "testnet" | "heldOnChainId">,
 ): "Testnet" | "Custom" | null {
   if (!identity.testnet) return null;
-  return findCatalogEntry(identity.heldOnChainId)?.network === "testnet" ? "Testnet" : "Custom";
+  return isUserAddedChain(identity.heldOnChainId) ? "Custom" : "Testnet";
 }
 
 /** `on Osmosis`, `Delivered on Osmosis` or `Held on Osmosis`. */
@@ -79,7 +84,8 @@ export function tokenLocationText(identity: TokenIdentity, location: TokenLocati
  * A row's subtitle. `on` is the identity's own row text (`Noble USDC · on
  * Osmosis`, `Native on Injective`); the other wordings name the token and say
  * where it goes (`Injective USDC · delivered on Injective`). An unknown token
- * keeps its short denom, the only thing that identifies it.
+ * keeps its short denom, the only thing that identifies it, and a local token
+ * nothing lists says so (`Unlisted token · held on Osmosis`).
  */
 export function tokenSubtitle(identity: TokenIdentity, location: TokenLocation = "on"): string {
   if (location === "on") return tokenText(identity, "row");
@@ -87,7 +93,27 @@ export function tokenSubtitle(identity: TokenIdentity, location: TokenLocation =
   if (identity.provenance === "unknown") {
     return `Unknown origin · ${where} · ${shortDenom(identity.denom)}`;
   }
+  if (isUnlistedLocal(identity)) return `${UNLISTED_TOKEN} · ${where}`;
   return `${identity.name} · ${where}`;
+}
+
+/**
+ * {@link tokenSubtitle} in the two pieces a row lays out: `lead` may be cut
+ * at its end, `tail` never is. The tail is an unknown token's short denom
+ * (`ibc/0123…ABCDEF`), the one thing that tells two unknown tokens apart, so
+ * a row moves it to a line of its own rather than lose its hash; `null` for
+ * every other token. `${lead} · ${tail}` is the subtitle.
+ */
+export function subtitleParts(
+  identity: TokenIdentity,
+  location: TokenLocation = "on",
+): { lead: string; tail: string | null } {
+  const text = tokenSubtitle(identity, location);
+  if (identity.provenance !== "unknown") return { lead: text, tail: null };
+  const tail = shortDenom(identity.denom);
+  return text.endsWith(` · ${tail}`)
+    ? { lead: text.slice(0, -(tail.length + 3)), tail }
+    : { lead: text, tail: null };
 }
 
 /** A tooltip's full text: `USDC.axl.polygon · Axelar USDC from Polygon · on Osmosis`. */
@@ -108,7 +134,8 @@ export function tokenTooltip(identity: TokenIdentity, location: TokenLocation = 
  * name (`Axelar USDC from Polygon`), at every location, since "USDC from
  * Axelar" fits USDC.axl, USDC.axl.polygon and USDC.axl.avax alike, on Osmosis
  * and delivered on Axelar. A testnet or user-added chain says so when its
- * name does not.
+ * name does not. A token nothing lists says that, wherever it sits, and is
+ * never "native" (`USDC.n·EE7A, unlisted token, held on Osmosis`).
  */
 export function tokenA11yName(identity: TokenIdentity, location: TokenLocation = "on"): string {
   const where = location === "on" ? `on ${identity.heldOnChainName}` : `${location} on ${identity.heldOnChainName}`;
@@ -116,6 +143,11 @@ export function tokenA11yName(identity: TokenIdentity, location: TokenLocation =
   let words: string;
   if (identity.provenance === "unknown") {
     words = `Unknown token ${shortDenom(identity.denom)}, ${where}`;
+  } else if (isUnlistedLocal(identity)) {
+    words = `${UNLISTED_TOKEN.toLowerCase()}, ${where}`;
+  } else if (!identity.listed) {
+    // A walked voucher nothing names: `Unlisted Neutron token, on Osmosis`.
+    words = `${identity.name}, ${where}`;
   } else if (location === "on" && home) {
     words = tokenText(identity, "a11y");
   } else if (identity.alloyed || identity.sourceNetwork !== null) {
@@ -268,6 +300,11 @@ export function TokenAvatar({
  * not shrink. Only a suffix longer than the whole line (free text someone
  * minted) is cut, from its start, so its `·hash` mark stays in view.
  *
+ * The two parts are separate boxes, which assistive tech reads as two words
+ * (`USDC .n`), so they are drawn for the eye only and the ticker is said
+ * whole from a visually hidden copy. That copy is not selectable, so copying
+ * the row still gives the ticker once.
+ *
  * Exported for any surface that shows a ticker alone, a picker label
  * included: a plain `truncate` cuts the end, which is where the mark is.
  */
@@ -281,12 +318,15 @@ export function TokenTicker({
   const { head, tail } = tickerParts(identity);
   return (
     <span className={cn("flex min-w-0 whitespace-nowrap", className)}>
-      <span className="min-w-0 truncate">{head}</span>
+      <span aria-hidden="true" className="min-w-0 truncate">
+        {head}
+      </span>
       {tail ? (
-        <span dir="rtl" className="max-w-full shrink-0 overflow-hidden text-ellipsis">
+        <span aria-hidden="true" dir="rtl" className="max-w-full shrink-0 overflow-hidden text-ellipsis">
           <bdi dir="ltr">{tail}</bdi>
         </span>
       ) : null}
+      <span className="sr-only select-none">{identity.ticker}</span>
     </span>
   );
 }
@@ -305,7 +345,11 @@ function NetworkTagPill({ tag }: { tag: string }) {
 /**
  * The ticker with the identity's subtitle, and a Testnet (or Custom) tag when
  * the token sits on a testnet or a chain the user added.
- * - `row`: two lines, `USDC.n` over `Noble USDC · on Osmosis`.
+ * - `row`: two lines, `USDC.n` over `Noble USDC · on Osmosis`. An unknown
+ *   token's short denom is never cut: when the line cannot hold it whole it
+ *   moves under the rest (`Unknown origin · on Osmosis ·` over
+ *   `ibc/0123…ABCDEF`), and only the words before it may be cut, at their
+ *   end, when they alone are wider than the row.
  * - `inline`: one line, the subtitle muted after the ticker; it truncates
  *   before the ticker does, and a ticker wider than the line (free text
  *   someone minted) truncates by the ticker rule instead of spilling out.
@@ -343,15 +387,26 @@ export function TokenLabel({
     );
   }
 
+  const { lead, tail } = subtitleParts(identity, location);
   return (
     <span className={cn("block min-w-0", className)}>
       <span className="flex min-w-0 items-center gap-1.5">
         <TokenTicker identity={identity} className={tickerClass} />
         {tag ? <NetworkTagPill tag={tag} /> : null}
       </span>
-      <span className="mt-0.5 block truncate text-[11px] text-fg-muted" title={subtitle}>
-        {subtitle}
-      </span>
+      {tail ? (
+        <span
+          className="mt-0.5 flex min-w-0 flex-wrap gap-x-1 text-[11px] text-fg-muted"
+          title={subtitle}
+        >
+          <span className="min-w-0 max-w-full truncate">{lead} ·</span>
+          <span className="min-w-0 max-w-full [overflow-wrap:anywhere]">{tail}</span>
+        </span>
+      ) : (
+        <span className="mt-0.5 block truncate text-[11px] text-fg-muted" title={subtitle}>
+          {subtitle}
+        </span>
+      )}
     </span>
   );
 }
@@ -369,6 +424,13 @@ export function TokenLabel({
  * A longer ticker gives up its family part first, never the suffix. The
  * tooltip has the full text; the accessible name is the ticker, then origin
  * and location in words ({@link tokenA11yName}).
+ *
+ * The location stays on one line and a long chain name is cut at its end, so
+ * its start stays readable (`on Warden Protocol…`); the tooltip and the
+ * accessible name carry the whole name, and so do the Swap cards' footers
+ * and Send's network picker. Two lines would make the pill taller for a
+ * handful of chains only, so the Swap cards and the Send row would change
+ * height with the token picked.
  *
  * The second line names the chain, so the 22px logo carries no location
  * badge by default and the seal keeps its usual corner; a badge and a seal
@@ -458,9 +520,9 @@ export interface TokenPickerItemOptions {
   readonly hidden?: boolean;
   /**
    * Why the row cannot be picked. Set, the row is disabled, and PickerSheet
-   * shows `On Osmosis · <reason>` in place of the subtitle: the location stays,
-   * since USDC.inj on Injective and on Osmosis share one reason and would
-   * otherwise differ only by a 10px badge, and not at all to a screen reader.
+   * shows the reason as given on its own line under the subtitle, which keeps
+   * the location (USDC.inj on Injective and on Osmosis share one reason), so
+   * the reason carries no `On Osmosis ·` of its own.
    */
   readonly disabledReason?: string | null;
   /** List the row only in search results, never in Favorites, Recent or All. */
@@ -478,11 +540,24 @@ function hasBalance(amount: string | bigint | null | undefined): amount is strin
 }
 
 /**
+ * The widest a picker row's balance may be. 19 digits fit on one line (the
+ * `5000000000000000000` of allSHIB in base units); a longer figure and the
+ * `base units` words wrap under it, so the label column keeps its room and
+ * the ticker is never squeezed to `I…`.
+ */
+const BALANCE_COLUMN = "max-w-[112px]";
+
+/**
  * One picker row for `identity`: the ticker, the identity's subtitle
  * (`Injective USDC · on Osmosis`, `Native on Injective`), the token logo with
  * its chain badge, and every word a search should match (aliases such as
  * `USDC.noble`, the origin and location chains, the exact denoms). The id is
  * the identity key, `${chainId}:${denom}`, the same id picker memory keeps.
+ *
+ * The label is drawn by {@link TokenTicker} (`labelNode`), so the suffix and
+ * any `·hash` stay in view and assistive tech hears the ticker as one word;
+ * `label` stays the text a search matches. The proven seal, which the logo
+ * only shows, is said as `srNote`. The balance wraps inside its own column.
  */
 export function tokenPickerItem(
   identity: TokenIdentity,
@@ -491,9 +566,11 @@ export function tokenPickerItem(
   const { amount, hidden = false, disabledReason, searchOnly = false, locationChain = false } = options;
   const tag = networkTag(identity);
   const subtitle = tokenText(identity, "row");
+  const seal = provenanceLabel(identity);
   const item: TokenPickerItem = {
     id: identity.key,
     label: identity.ticker,
+    labelNode: <TokenTicker identity={identity} />,
     sublabel:
       tag && !subtitle.toLowerCase().includes(tag.toLowerCase())
         ? `${subtitle} · ${tag === "Custom" ? "Custom chain" : tag}`
@@ -507,15 +584,20 @@ export function tokenPickerItem(
       />
     ),
     trailing: hasBalance(amount) ? (
-      <span className="font-mono text-[9.5px] tabular-nums text-fg-dim">
+      <span
+        className={cn(
+          "block font-mono text-[9.5px] leading-snug tabular-nums text-fg-dim [overflow-wrap:anywhere]",
+          BALANCE_COLUMN,
+        )}
+      >
         {formatTokenAmount(amount, identity, "picker", { hidden })}
       </span>
     ) : null,
   };
+  if (seal) item.srNote = seal;
   if (disabledReason) {
-    const where = tokenText(identity, "pill");
     item.disabled = true;
-    item.disabledReason = `${where.charAt(0).toUpperCase()}${where.slice(1)} · ${disabledReason}`;
+    item.disabledReason = disabledReason;
   }
   if (searchOnly) item.searchOnly = true;
   return item;

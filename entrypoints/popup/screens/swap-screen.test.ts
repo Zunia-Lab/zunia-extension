@@ -1,6 +1,9 @@
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { OsmosisSwapQuote } from "@zunialab/interchain";
+import { encodeBase64Utf8, type BuiltMsg, type OsmosisSwapQuote } from "@zunialab/interchain";
 
+import { QUOTE_TTL_MS } from "../../../config/interchain";
 import { clearInterchainCaches } from "../../../lib/interchain";
 import { osmosisSwapAssets, parseOsmosisTokenMetadata } from "../../../lib/osmosis-assets";
 import {
@@ -19,6 +22,7 @@ import {
   type SwapChain,
 } from "../../../lib/swap-assets";
 import { MAX_ONLY_NOTE, amountFieldText, canTypeAmount } from "../../../lib/token-amount";
+import { resolveTxMemo } from "../../../lib/tx-memo";
 import { noRouteReason, parseRouterState, type XcsRouteTable } from "../../../lib/xcs-routes";
 import sqs from "../../../lib/__tests__/fixtures/swap/sqs-tokens-metadata.json";
 import wallet from "../../../lib/__tests__/fixtures/swap/wallet.json";
@@ -26,13 +30,27 @@ import live from "../../../lib/__tests__/fixtures/swap/xcs-route-table.json";
 import { buyListCopy, swapPickerItem } from "../components/SwapPair";
 import { pendingRouteLabel, swapRouteLabel } from "./interchain-ui";
 import {
+  PRICE_EXPIRED,
+  SwapTerms,
+  UNREADABLE_SWAP,
   amountUnitsOf,
+  boughtIdentity,
   deliveryLine,
+  minimumTerms,
+  ownerOf,
   pickTo,
+  priceExpired,
   quoteBlockText,
+  readSwapMessage,
+  reviewDrift,
   scaleOf,
+  swapPlanKey,
   swapPlanRequest,
   swapQuoteView,
+  swapSignBlock,
+  swapTermsProblems,
+  type LiveSwap,
+  type ReviewedSwap,
 } from "./SwapScreen";
 
 /**
@@ -45,6 +63,11 @@ import {
  * screen say, the request the screen builds signs exactly the bytes 0.1.2
  * signed for the same pair and amount. It fails if a signed denom, amount,
  * channel or memo changes.
+ *
+ * The last two blocks are the confirm screen: what it says the swap contract
+ * will do, read out of the message that is signed (a contract call from funds
+ * on Osmosis, and a transfer whose memo calls it), and the review it freezes
+ * when it opens, which stops standing once the form would sign anything else.
  */
 
 /* -------------------------------------------------------------------------- *
@@ -606,10 +629,40 @@ describe("the quote as shown", () => {
     expect(view.route).toEqual([{ poolId: "678", tokenOutSymbol: "USDC.axl" }]);
   });
 
-  it("says where the token arrives and its floor, ticker once", () => {
-    const view = swapQuoteView(quote(), osmo, usdcAxl);
-    expect(deliveryLine(usdcAxl, view)).toBe("Delivered on Axelar · at least 35.561021 USDC.axl");
-    expect(deliveryLine(usdcAxl, null)).toBe("Delivered on Axelar");
+  it("says where the token arrives, and a floor only when the message sets one", () => {
+    // `min_output_amount` is a number the contract is held to: said as "at least".
+    const exact = minimumTerms(
+      { slippage: { kind: "min_output_amount", minOutputAmount: "35561021" }, outputDenom: USDC_AXL_ON_OSMOSIS },
+      usdcAxl.identity,
+      quote(),
+    );
+    expect(exact).toEqual({ rule: "35.561021 USDC.axl", estimate: null, exact: "35.561021 USDC.axl" });
+    expect(deliveryLine(usdcAxl, exact.exact)).toBe("Delivered on Axelar · at least 35.561021 USDC.axl");
+    // A TWAP tolerance is a rule: the quote's floor is an estimate, never "at least".
+    const twap = minimumTerms(
+      {
+        slippage: { kind: "twap", slippagePercentage: "1", windowSeconds: 10 },
+        outputDenom: USDC_AXL_ON_OSMOSIS,
+      },
+      usdcAxl.identity,
+      quote(),
+    );
+    // Worked out from the message's own 1% off the quoted 35.921234, not
+    // taken from the quote's floor.
+    expect(twap).toEqual({
+      rule: "The 10-second average price, less 1%",
+      estimate: "About 35.562021 USDC.axl at the quoted price",
+      exact: null,
+    });
+    expect(deliveryLine(usdcAxl, twap.exact)).toBe("Delivered on Axelar");
+    // A quote for another output estimates nothing.
+    expect(
+      minimumTerms(
+        { slippage: { kind: "twap", slippagePercentage: "1", windowSeconds: 10 }, outputDenom: "uosmo" },
+        usdcAxl.identity,
+        quote(),
+      ).estimate,
+    ).toBeNull();
   });
 
   it("reads unknown decimals in base units, with no rate", () => {
@@ -686,5 +739,569 @@ describe("the To side", () => {
     expect(quoteBlockText("venue-denom-mismatch", "x", osmo, usdcInj, sellsOsmo)).toBe(
       "Zunia would trade a different USDC variant than the USDC.inj you picked, so the swap stays unsigned.",
     );
+  });
+});
+
+/* -------------------------------------------------------------------------- *
+ * The confirm screen: what the message that is signed will do
+ * -------------------------------------------------------------------------- */
+
+const decodeEntities = (text: string) =>
+  text
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#x27;/g, "'");
+
+/** The pieces of text assistive tech reads: what is drawn only for the eye (aria-hidden) left out. */
+function spokenPieces(html: string): string[] {
+  return html
+    .replace(/<span aria-hidden="true"[^>]*>(?:(?!<\/span>).)*<\/span>/g, "")
+    .split(/<[^>]+>/)
+    .map((piece) => decodeEntities(piece).trim())
+    .filter(Boolean);
+}
+
+/** The text on screen: what only assistive tech hears (sr-only) left out. */
+function shownText(html: string): string {
+  return decodeEntities(html.replace(/<span class="sr-only[^"]*">[^<]*<\/span>/g, "").replace(/<[^>]+>/g, ""));
+}
+
+/** Each row of the terms panel: its label, and the pieces it says. */
+function termRows(html: string): Record<string, string[]> {
+  const rows: Record<string, string[]> = {};
+  for (const chunk of html.split('<div class="flex min-w-0 items-baseline justify-between').slice(1)) {
+    const label = /<span class="shrink-0 text-fg-muted">([^<]*)<\/span>/.exec(chunk)?.[1] ?? "?";
+    const value = chunk.slice(chunk.indexOf("</span>") + "</span>".length).split("</div></div>")[0] ?? "";
+    rows[label] = spokenPieces(value);
+  }
+  return rows;
+}
+
+const OTHER_HUB = "cosmos1someoneelse00000000000000000000000000";
+const OTHER_OSMO = "osmo1someoneelse000000000000000000000000000";
+const NOBLE_ADDRESS = "noble1sender00000000000000000000000000000";
+
+/** The contract call's ExecuteMsg, decoded, for building a message that says something else. */
+function executeBody(message: BuiltMsg): Record<string, Record<string, unknown>> {
+  const raw = (message.value as { msg: string }).msg;
+  return JSON.parse(Buffer.from(raw, "base64").toString("utf8")) as Record<string, Record<string, unknown>>;
+}
+
+/** The same contract call with its `osmosis_swap` fields changed, encoded the way the planner encodes it. */
+function withSwap(message: BuiltMsg, change: Record<string, unknown>): BuiltMsg {
+  const body = executeBody(message);
+  const swap = { ...body.osmosis_swap, ...change };
+  return { ...message, value: { ...message.value, msg: encodeBase64Utf8(JSON.stringify({ osmosis_swap: swap })) } };
+}
+
+describe("the confirm screen's terms, read from the message that is signed", () => {
+  beforeEach(() => {
+    install();
+    clearInterchainCaches();
+    resetChannelChecks();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-05T12:00:00Z"));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+    clearInterchainCaches();
+    resetChannelChecks();
+  });
+
+  /**
+   * The review the screen captures when its confirm screen opens, for the
+   * real plan: the rows, the typed amount, the plan, a price for it, and the
+   * addresses the plan was asked for.
+   */
+  async function reviewOf(fromKey: string, toKey: string, text: string, price: OsmosisSwapQuote) {
+    const from = row(sell, fromKey);
+    const to = row(buy(from), toKey);
+    const amountUnits = typed(from, text);
+    const input = request(from, to, amountUnits);
+    const { view, msg } = await signedBytes(input);
+    const review: ReviewedSwap = {
+      id: 1,
+      from,
+      to,
+      amountUnits,
+      plan: view,
+      planKey: swapPlanKey({ from, to, amountUnits, slippage: 1, manual: [], contract: XCS, retryToken: 0 }),
+      requote: {
+        venueChainId: "osmosis-1",
+        venueContract: XCS,
+        venueInputDenom: price.inputDenom,
+        venueOutputDenom: price.outputDenom,
+        amountBaseUnits: amountUnits.toString(),
+        slippagePercent: 1,
+      },
+      price: { quote: price, error: null, code: null, at: Date.now() },
+      recipient: input.recipient,
+      recoveryAddress: RECOVERY,
+      contract: XCS,
+      contractLabel: "CrossChainSwaps v1.2",
+      ownAddresses: {},
+    };
+    return { review, message: JSON.parse(msg) as BuiltMsg, msg };
+  }
+
+  /** What the confirm screen reads out of `message` for `review`, and draws. */
+  function confirmTerms(message: BuiltMsg, review: ReviewedSwap) {
+    const facts = readSwapMessage(message);
+    const problems = swapTermsProblems(facts, review, { chainId: review.from.chainId, msgCount: 1 });
+    const html = renderToStaticMarkup(
+      createElement(SwapTerms, { facts, review, problems, onCopy: () => undefined }),
+    );
+    return { facts, problems, html, rows: termRows(html) };
+  }
+
+  const osmoToAtom = () =>
+    reviewOf(
+      "osmosis-1:uosmo",
+      "cosmoshub-4:uatom",
+      "63",
+      quote({
+        inputAmount: "63000000",
+        outputDenom: ATOM_ON_OSMOSIS,
+        outputAmount: "15750000",
+        minReceived: "15592500",
+        route: [{ poolId: "1", tokenOutDenom: ATOM_ON_OSMOSIS }],
+      }),
+    );
+
+  it("a swap from funds already on Osmosis: one contract call, each fact read out of it", async () => {
+    const { review, message, msg } = await osmoToAtom();
+    // What is read is what is signed: the 0.1.2-planned contract call, byte for byte.
+    expect(msg).toBe(OSMO_TO_ATOM_MSG);
+    const { facts, problems, html, rows } = confirmTerms(message, review);
+    expect(facts).toEqual({
+      via: "contract-call",
+      sold: { denom: "uosmo", amount: "63000000" },
+      contract: XCS,
+      transferReceiver: null,
+      forwardsIn: [],
+      swap: {
+        contract: XCS,
+        outputDenom: ATOM_ON_OSMOSIS,
+        receiver: HUB_ADDRESS,
+        slippage: { kind: "twap", slippagePercentage: "1", windowSeconds: 10 },
+        onFailedDelivery: { kind: "local_recovery_addr", address: RECOVERY },
+        hasNextMemo: false,
+      },
+      forwardsOut: null,
+      warnings: [],
+    });
+    expect(problems).toEqual([]);
+
+    // In plain words, before signing, with nothing about a packet arriving.
+    const text = shownText(html);
+    expect(text).toContain("What the contract call does");
+    expect(text).toContain(
+      "One call to the swap contract on Osmosis, paid from your balance there. Nothing is transferred before the swap.",
+    );
+    expect(text).not.toMatch(/On arrival|IBC transfer|memo/);
+    expect(rows).toEqual({
+      Sells: ["63 OSMO", "Held on Osmosis"],
+      Buys: ["ATOM", "Cosmos Hub ATOM · delivered on Cosmos Hub", "ibc/2739…1E5EB2 on Osmosis"],
+      "Pays out to": [HUB_ADDRESS, "Your address on Cosmos Hub"],
+      "Minimum received": ["The 10-second average price, less 1%", "About 15.5925 ATOM at the quoted price"],
+      "If delivery fails": ["Kept for", RECOVERY, "Your address on Osmosis, which can claim the output back"],
+      Contract: [XCS, "The swap contract Zunia verified on Osmosis (CrossChainSwaps v1.2)"],
+    });
+    // The tx-body memo the kernel previews and signs for this call names the
+    // pair, not "Contract call" (lib/tx-memo.ts).
+    expect(resolveTxMemo("", [message], "osmosis-1")).toBe("Swap OSMO to ATOM · by Zunia-wallet");
+    // The exact output denom, whole, to copy; short on screen.
+    expect(html).toContain(`title="${ATOM_ON_OSMOSIS}"`);
+    expect(html).toContain(`aria-label="Copy the exact denom on Osmosis: ${ATOM_ON_OSMOSIS}"`);
+    // Addresses are short on screen and whole in their tooltip.
+    expect(text).toContain("cosmos1sen…00000000");
+    expect(html).toContain(`title="${HUB_ADDRESS}"`);
+    expect(html).toContain(`title="${RECOVERY}"`);
+  });
+
+  it("a swap from another chain: an IBC transfer whose memo calls the contract when it arrives", async () => {
+    const { review, message, msg } = await reviewOf(
+      "cosmoshub-4:uatom",
+      "osmosis-1:uosmo",
+      "1",
+      quote({
+        inputDenom: ATOM_ON_OSMOSIS,
+        inputAmount: "1000000",
+        outputDenom: "uosmo",
+        outputAmount: "4000000",
+        minReceived: "3960000",
+        route: [{ poolId: "1", tokenOutDenom: "uosmo" }],
+      }),
+    );
+    expect(msg).toBe(ATOM_TO_OSMO_MSG);
+    const { facts, problems, html, rows } = confirmTerms(message, review);
+    expect(facts).toMatchObject({
+      via: "transfer",
+      sold: { denom: "uatom", amount: "1000000" },
+      contract: XCS,
+      transferReceiver: XCS,
+      forwardsIn: [],
+      forwardsOut: null,
+      swap: { outputDenom: "uosmo", receiver: OSMO_ADDRESS },
+    });
+    expect(problems).toEqual([]);
+    const text = shownText(html);
+    expect(text).toContain("What the memo will do");
+    expect(text).toContain("An IBC transfer to Osmosis. When it arrives, its memo calls the swap contract.");
+    expect(rows).toEqual({
+      Sells: ["1 ATOM", "Held on Cosmos Hub"],
+      Buys: ["OSMO", "Osmosis OSMO · delivered on Osmosis", "uosmo on Osmosis"],
+      "Pays out to": [OSMO_ADDRESS, "Your address on Osmosis"],
+      "Minimum received": ["The 10-second average price, less 1%", "About 3.96 OSMO at the quoted price"],
+      "If delivery fails": ["Kept for", RECOVERY, "Your address on Osmosis, which can claim the output back"],
+      Contract: [XCS, "The swap contract Zunia verified on Osmosis (CrossChainSwaps v1.2)"],
+    });
+  });
+
+  it("refuses an address that is not this wallet's, wherever the message names it", async () => {
+    const { review, message } = await osmoToAtom();
+    // Pays someone else.
+    const payee = confirmTerms(message, { ...review, recipient: OTHER_HUB });
+    expect(payee.problems).toEqual([
+      "The swap would pay cosmos1sen…00000000, which is not your address on Cosmos Hub.",
+    ]);
+    expect(payee.rows["Pays out to"]).toEqual([HUB_ADDRESS, "Not one of your addresses"]);
+    expect(payee.html).toContain('role="alert"');
+    // Keeps failed output for someone else.
+    const recovery = confirmTerms(message, { ...review, recoveryAddress: OTHER_OSMO });
+    expect(recovery.problems).toEqual([
+      "The recovery address osmo1recov…00000000 is not your address on Osmosis.",
+    ]);
+    expect(recovery.rows["If delivery fails"]).toEqual(["Kept for", RECOVERY, "Not one of your addresses"]);
+    // Keeps it for nobody.
+    const nobody = confirmTerms(withSwap(message, { on_failed_delivery: "do_nothing" }), review);
+    expect(nobody.problems).toEqual([
+      "The swap sets no recovery address, so output stranded by a failed delivery could never be claimed back.",
+    ]);
+    expect(nobody.rows["If delivery fails"]).toEqual(["No recovery address", "The output could never be claimed back"]);
+    // The engine's own warning is shown as well.
+    expect(nobody.facts?.warnings.join(" ")).toMatch(/do_nothing/);
+    // Each refuses the signature, in the panel's words.
+    for (const { problems } of [payee, recovery, nobody]) {
+      expect(
+        swapSignBlock({
+          problem: problems[0] ?? null,
+          drift: null,
+          price: review.price,
+          priceError: null,
+          refreshing: false,
+          feeShort: false,
+          now: Date.now(),
+        }),
+      ).toEqual({ label: "Cannot sign", reason: problems[0] });
+    }
+  });
+
+  it("refuses a message that sells, buys or calls anything but what was reviewed", async () => {
+    const { review, message } = await osmoToAtom();
+    expect(confirmTerms(message, { ...review, amountUnits: 62_000_000n }).problems).toEqual([
+      "The message spends 63 OSMO, not the 62 OSMO you reviewed.",
+    ]);
+    expect(confirmTerms(message, { ...review, from: row(sell, `osmosis-1:${USDC_N_ON_OSMOSIS}`) }).problems).toEqual([
+      "The message spends uosmo, not the USDC.n on Osmosis you reviewed.",
+    ]);
+    const unverified = confirmTerms(message, { ...review, contract: ROUTER });
+    expect(unverified.problems).toEqual([
+      "The message calls osmo1uwk8x…3sqxwvxs, not the swap contract Zunia verified on Osmosis.",
+    ]);
+    expect(unverified.rows.Contract).toEqual([XCS, "Not the swap contract Zunia verified"]);
+    // The memo buys another token than the To: named for what it is, and refused.
+    const other = confirmTerms(withSwap(message, { output_denom: STATOM_ON_OSMOSIS }), review);
+    expect(other.problems).toEqual(["The contract would buy stATOM, not the ATOM you picked."]);
+    expect(other.rows.Buys).toEqual(["stATOM", "Stride stATOM · on Osmosis", "ibc/C140…F17901 on Osmosis"]);
+  });
+
+  it("describes nothing it cannot read whole, and refuses to sign it", async () => {
+    const { review, message } = await osmoToAtom();
+    const raw = (message.value as { msg: string }).msg;
+    const body = Buffer.from(raw, "base64").toString("utf8");
+    const unreadable: BuiltMsg[] = [
+      // Base64 a stricter decoder could read differently: unpadded, url-safe.
+      { ...message, value: { ...message.value, msg: raw.replace(/=+$/, "") } },
+      { ...message, value: { ...message.value, msg: Buffer.from(`${body.slice(0, -1)} }`).toString("base64") } },
+      // A key twice: parsers disagree on which one counts.
+      {
+        ...message,
+        value: {
+          ...message.value,
+          msg: encodeBase64Utf8(body.replace('"receiver":', `"receiver":"${OTHER_HUB}","receiver":`)),
+        },
+      },
+      // Two coins: the contract takes one.
+      { ...message, value: { ...message.value, funds: [{ denom: "uosmo", amount: "1" }, { denom: "uion", amount: "1" }] } },
+      // A field the panel would not show, which could pick the pools itself.
+      withSwap(message, { route: [{ pool_id: "1", token_out_denom: ATOM_ON_OSMOSIS }] }),
+      withSwap(message, {
+        slippage: { twap: { slippage_percentage: "1", window_seconds: 10, fallback: "spot" } },
+      }),
+      // Another call on the contract, and a message of another kind.
+      { ...message, value: { ...message.value, msg: encodeBase64Utf8('{"recover":{}}') } },
+      { typeUrl: "/cosmos.bank.v1beta1.MsgSend", value: { amount: [{ denom: "uosmo", amount: "1" }] } },
+    ];
+    for (const tampered of unreadable) {
+      const { facts, problems, html, rows } = confirmTerms(tampered, review);
+      expect(facts).toBeNull();
+      expect(problems).toEqual([UNREADABLE_SWAP]);
+      expect(rows).toEqual({});
+      expect(shownText(html)).toContain(UNREADABLE_SWAP);
+    }
+    // A transfer whose memo is not exactly what serializing it gives back.
+    const transfer = JSON.parse(ATOM_TO_OSMO_MSG) as BuiltMsg;
+    const spaced = { ...transfer, value: { ...transfer.value, memo: `${ATOM_TO_OSMO_MEMO} ` } };
+    expect(readSwapMessage(spaced)).toBeNull();
+    expect(readSwapMessage(transfer)).not.toBeNull();
+    // A message that is more than the one swap.
+    expect(swapTermsProblems(readSwapMessage(message), review, { chainId: "osmosis-1", msgCount: 2 })).toEqual([
+      UNREADABLE_SWAP,
+    ]);
+  });
+
+  it("refuses a transfer the contract would not receive: the swap would never run", async () => {
+    const { review, message } = await reviewOf(
+      "cosmoshub-4:uatom",
+      "osmosis-1:uosmo",
+      "1",
+      quote({ inputDenom: ATOM_ON_OSMOSIS, inputAmount: "1000000", outputDenom: "uosmo", outputAmount: "4000000" }),
+    );
+    const elsewhere = { ...message, value: { ...message.value, receiver: OSMO_ADDRESS } };
+    const { facts, problems } = confirmTerms(elsewhere, review);
+    expect(facts?.transferReceiver).toBe(OSMO_ADDRESS);
+    expect(problems).toEqual([
+      "The transfer is not addressed to the swap contract, so the swap would not run and the tokens would land somewhere else.",
+    ]);
+  });
+
+  it("follows forwards before and after the swap, and every address on the way is this wallet's", async () => {
+    const { review, message } = await osmoToAtom();
+    // After: the contract pays this wallet on Noble, and `next_memo` forwards it to the Hub.
+    const after = withSwap(message, {
+      receiver: NOBLE_ADDRESS,
+      next_memo: { forward: { receiver: HUB_ADDRESS, port: "transfer", channel: "channel-4" } },
+    });
+    const own = { ...review, ownAddresses: { "noble-1": NOBLE_ADDRESS } };
+    const forwarded = confirmTerms(after, own);
+    expect(forwarded.problems).toEqual([]);
+    expect(forwarded.facts?.forwardsOut?.finalReceiver).toBe(HUB_ADDRESS);
+    expect(forwarded.rows["Pays out to"]).toEqual([NOBLE_ADDRESS, "Your address on Noble"]);
+    expect(forwarded.rows.Then).toEqual(["Forwarded over channel-4 to", HUB_ADDRESS, "Your address on Cosmos Hub"]);
+    expect(ownerOf(NOBLE_ADDRESS, own)).toBe("noble-1");
+    expect(ownerOf(OTHER_HUB, own)).toBeNull();
+    // The same, through an address this wallet does not hold.
+    expect(confirmTerms(after, review).problems).toEqual([
+      "On the way, the swap would pay noble1send…00000000, which is not one of this wallet's addresses.",
+    ]);
+    // A forward that does not end at this wallet.
+    const away = withSwap(message, {
+      receiver: NOBLE_ADDRESS,
+      next_memo: { forward: { receiver: OTHER_HUB, port: "transfer", channel: "channel-4" } },
+    });
+    expect(confirmTerms(away, own).problems).toEqual([
+      "The swap would pay cosmos1som…00000000, which is not your address on Cosmos Hub.",
+    ]);
+
+    // Before: a transfer forwarded over the Hub's channel to the contract on Osmosis.
+    const transfer = JSON.parse(ATOM_TO_OSMO_MSG) as BuiltMsg;
+    const hooked = JSON.parse(ATOM_TO_OSMO_MEMO) as Record<string, unknown>;
+    const viaHub = (receiver: string): BuiltMsg => ({
+      ...transfer,
+      value: {
+        ...transfer.value,
+        receiver: "cosmos1pfmintermediate000000000000000000000",
+        memo: JSON.stringify({ forward: { receiver, port: "transfer", channel: "channel-141", next: hooked } }),
+      },
+    });
+    const inbound = await reviewOf(
+      "cosmoshub-4:uatom",
+      "osmosis-1:uosmo",
+      "1",
+      quote({ inputDenom: ATOM_ON_OSMOSIS, inputAmount: "1000000", outputDenom: "uosmo", outputAmount: "4000000" }),
+    );
+    const pfm = confirmTerms(viaHub(XCS), inbound.review);
+    expect(pfm.problems).toEqual([]);
+    expect(pfm.facts?.forwardsIn.map((hop) => hop.channelId)).toEqual(["channel-141"]);
+    expect(shownText(pfm.html)).toContain(
+      "An IBC transfer, forwarded over channel-141, to Osmosis. When it arrives, its memo calls the swap contract.",
+    );
+    expect(confirmTerms(viaHub(OSMO_ADDRESS), inbound.review).problems).toEqual([
+      "The transfer is not addressed to the swap contract, so the swap would not run and the tokens would land somewhere else.",
+    ]);
+  });
+
+  it("says a minimum the message sets as a number, and a TWAP as its rule", async () => {
+    const { review, message } = await osmoToAtom();
+    const floor = withSwap(message, { slippage: { min_output_amount: "15000000" } });
+    const { facts, problems, rows } = confirmTerms(floor, review);
+    expect(problems).toEqual([]);
+    expect(rows["Minimum received"]).toEqual(["15 ATOM"]);
+    const minimum = minimumTerms(facts!.swap, boughtIdentity(facts!.swap.outputDenom, review.to), review.price.quote);
+    expect(deliveryLine(review.to, minimum.exact)).toBe("Delivered on Cosmos Hub · at least 15 ATOM");
+    // Without a price, the rule alone.
+    const unpriced = { ...review, price: { ...review.price, quote: null } };
+    expect(confirmTerms(message, unpriced).rows["Minimum received"]).toEqual(["The 10-second average price, less 1%"]);
+  });
+});
+
+/* -------------------------------------------------------------------------- *
+ * The confirm screen: the review it shows is the review it signs
+ * -------------------------------------------------------------------------- */
+
+describe("the review the confirm screen signs", () => {
+  beforeEach(() => {
+    install();
+    clearInterchainCaches();
+    resetChannelChecks();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-05T12:00:00Z"));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+    clearInterchainCaches();
+    resetChannelChecks();
+  });
+
+  const keyOf = (from: AssetOption, to: AssetOption, amountUnits: bigint, slippage = 1) =>
+    swapPlanKey({ from, to, amountUnits, slippage, manual: [], contract: XCS, retryToken: 0 });
+
+  /** A review made once the route table loaded, with the To nobody picked. */
+  async function reviewWithAutoTo() {
+    const from = row(sell, "cosmoshub-4:uatom");
+    const to = pickTo(buy(from), null);
+    if (!to) throw new Error("no To to review");
+    const amountUnits = typed(from, "1");
+    const { view, msg } = await signedBytes(request(from, to, amountUnits));
+    const review = { from, to, amountUnits, plan: view, planKey: keyOf(from, to, amountUnits) };
+    const live: LiveSwap = {
+      from,
+      to,
+      amountUnits,
+      planKey: review.planKey,
+      plan: view,
+      planning: false,
+      blockedReason: null,
+    };
+    return { review, live, msg };
+  }
+
+  it("keeps the reviewed To when the list behind it picks another", async () => {
+    const { review, live } = await reviewWithAutoTo();
+    expect(review.to.key).toBe("osmosis-1:uosmo");
+    expect(reviewDrift(review, live)).toBeNull();
+
+    // The route table is read again and cannot be: an unpicked To would now
+    // be the first row the bare list offers.
+    const unread = buyOptions(chains, balances, { from: review.from, osmosis, routes: null });
+    const repicked = pickTo(unread, null);
+    expect(repicked?.key).toBe("safrochain-1:usaf");
+    expect(
+      reviewDrift(review, {
+        ...live,
+        to: repicked,
+        planKey: keyOf(review.from, repicked!, review.amountUnits),
+        plan: null,
+        planning: true,
+      }),
+    ).toBe("The swap form no longer buys OSMO on Osmosis.");
+
+    // Opening the review pins the pair it shows: the same list keeps the reviewed row.
+    const pinned = pickTo(unread, review.to.key);
+    expect(pinned?.key).toBe(review.to.key);
+    expect(pinned).not.toBe(review.to);
+    expect(reviewDrift(review, { ...live, to: pinned, planKey: keyOf(review.from, pinned!, review.amountUnits) })).toBeNull();
+  });
+
+  it("keeps standing through a balance refresh, and not through a change to what would be signed", async () => {
+    const { review, live } = await reviewWithAutoTo();
+    // A refresh rebuilds every row; the same key, amount and plan still stand.
+    const refreshed = sellOptions(chains, { ...balances, "cosmoshub-4": { tokens: [{ denom: "uatom", amount: "2600000" }] } }, osmosis);
+    const from = row(refreshed, review.from.key);
+    expect(from).not.toBe(review.from);
+    expect(reviewDrift(review, { ...live, from, planKey: keyOf(from, review.to, review.amountUnits) })).toBeNull();
+
+    // The From is gone from the list, and another row stands in.
+    expect(reviewDrift(review, { ...live, from: row(sell, "osmosis-1:uosmo") })).toBe(
+      "The swap form no longer sells ATOM on Cosmos Hub.",
+    );
+    // The typed amount now reads as another number (its decimals turned unknown).
+    expect(reviewDrift(review, { ...live, amountUnits: null })).toBe(
+      "The amount on the swap form is no longer 1 ATOM.",
+    );
+    // The balance fell below the amount: the form cannot plan, and says why.
+    expect(
+      reviewDrift(review, { ...live, planKey: "", plan: null, blockedReason: "More than the ATOM left after the network fee." }),
+    ).toBe("More than the ATOM left after the network fee.");
+    // The slippage changed somewhere else.
+    expect(reviewDrift(review, { ...live, planKey: keyOf(review.from, review.to, review.amountUnits, 2) })).toBe(
+      "The swap's settings changed after this review.",
+    );
+    // The same inputs, planned again: the same route still stands, another does not.
+    const again = { ...review.plan };
+    expect(reviewDrift(review, { ...live, plan: again })).toBeNull();
+    const rerouted = { ...review.plan, plan: { ...review.plan.plan, hops: review.plan.plan.hops.map((hop) => ({ ...hop, channelId: "channel-9" })) } };
+    expect(reviewDrift(review, { ...live, plan: rerouted })).toBe(
+      "Zunia planned the route again, and it is not the one you reviewed.",
+    );
+    expect(reviewDrift(review, { ...live, plan: null, planning: true })).toBe("Zunia is checking the route again.");
+    expect(reviewDrift(review, { ...live, plan: { ...review.plan, blockedReason: "A channel failed its check." } })).toBe(
+      "A channel failed its check.",
+    );
+  });
+
+  it("signs only while the review stands and its price is fresh", () => {
+    const price = { quote: quote(), error: null, code: null, at: Date.now() };
+    const base = { problem: null, drift: null, price, priceError: null, refreshing: false, feeShort: false, now: Date.now() };
+    expect(swapSignBlock(base)).toBeNull();
+    expect(swapSignBlock({ ...base, drift: "The swap form no longer buys OSMO on Osmosis." })).toEqual({
+      label: "Out of date",
+      reason: "The swap form no longer buys OSMO on Osmosis. Go back and review the swap again.",
+    });
+    // What the message does that the review did not say comes first.
+    expect(swapSignBlock({ ...base, problem: UNREADABLE_SWAP, drift: "x" })?.label).toBe("Cannot sign");
+    expect(swapSignBlock({ ...base, refreshing: true })?.label).toBe("Updating the price…");
+    expect(swapSignBlock({ ...base, price: { ...price, quote: null }, priceError: "No route." })).toEqual({
+      label: "No price",
+      reason: "No route.",
+    });
+    const stale = { ...base, now: price.at + QUOTE_TTL_MS };
+    expect(priceExpired(price, stale.now)).toBe(true);
+    expect(priceExpired(price, price.at + QUOTE_TTL_MS - 1)).toBe(false);
+    expect(swapSignBlock(stale)).toEqual({ label: "Price expired", reason: PRICE_EXPIRED });
+    expect(swapSignBlock({ ...base, feeShort: true })?.label).toBe("Need fee room");
+  });
+
+  it("describes and signs the reviewed message, whatever the form plans next", async () => {
+    // Reviewed: 63 OSMO into ATOM, built once from the reviewed plan.
+    const from = row(sell, "osmosis-1:uosmo");
+    const to = row(buy(from), "cosmoshub-4:uatom");
+    const amountUnits = typed(from, "63");
+    const reviewed = await signedBytes(request(from, to, amountUnits));
+    const review = { from, to, amountUnits, plan: reviewed.view, planKey: keyOf(from, to, amountUnits) };
+    // The form moves on to 64 OSMO and plans that.
+    resetChannelChecks();
+    const next = await signedBytes(request(from, to, typed(from, "64")));
+    expect(next.msg).not.toBe(reviewed.msg);
+    const drift = reviewDrift(review, {
+      from,
+      to,
+      amountUnits: typed(from, "64"),
+      planKey: keyOf(from, to, typed(from, "64")),
+      plan: next.view,
+      planning: false,
+      blockedReason: null,
+    });
+    expect(drift).toBe("The amount on the swap form is no longer 63 OSMO.");
+    // The confirm screen still reads, and would sign, the message it opened with.
+    expect(readSwapMessage(JSON.parse(reviewed.msg) as BuiltMsg)?.sold).toEqual({ denom: "uosmo", amount: "63000000" });
+    expect(reviewed.msg).toBe(OSMO_TO_ATOM_MSG);
   });
 });

@@ -191,6 +191,10 @@ function AppBody({ state }: { state: ExtensionState }) {
     // `setHostGranted(false)` was a synchronous setState inside the effect that
     // re-rendered every screen a second time on each lock and unlock. The check
     // re-runs on unlock and writes the real answer, false included.
+    //
+    // It also re-runs on every saved setting, not only when `liveBalances`
+    // flips: on a fresh install the setting is already on without the host
+    // access, so Preferences asks for the access and saves `true` over `true`.
     if (!unlocked) return;
     let cancelled = false;
     void hasLiveBalancePermission().then((granted) => {
@@ -199,7 +203,10 @@ function AppBody({ state }: { state: ExtensionState }) {
     return () => {
       cancelled = true;
     };
-  }, [unlocked, settings?.liveBalances]);
+  }, [unlocked, settings]);
+  // Whether chain reads may run: the setting and the host access it needs.
+  // Home and Notifications say "on" or "off" from this, not from the setting,
+  // which is on by default before any access is granted.
   const liveReads =
     unlocked && Boolean(settings?.liveBalances) && hostGranted;
   const {
@@ -641,6 +648,7 @@ function AppBody({ state }: { state: ExtensionState }) {
           approvals={approvals}
           chains={chains}
           balances={balances}
+          readsLive={liveReads}
           onBack={back}
           onNavigate={(next, chainId) => go(next, chainId)}
         />
@@ -775,10 +783,10 @@ export default function App() {
       defaultTheme={state.settings?.theme ?? "dark"}
       storageKey="zunia.theme"
     >
-      <PrefsProvider
-        settings={state.settings}
-        onChanged={() => void state.refresh()}
-      >
+      {/* A saved preference applies in place. `refresh` would route through
+          the boot view, which unmounts the open screen and scrolls it back to
+          the top, for a change that leaves the user where they are. */}
+      <PrefsProvider settings={state.settings} onChanged={state.settingsSaved}>
         <SigningPasswordProvider
           required={Boolean(state.settings?.requirePasswordOnSign)}
         >

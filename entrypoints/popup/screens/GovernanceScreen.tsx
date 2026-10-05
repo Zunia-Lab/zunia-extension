@@ -449,7 +449,7 @@ export function GovernanceScreen({
           chainId: proposal.chainId,
           signerAddress: voterChain.address,
           msgs,
-          memo: resolveTxMemo("", msgs),
+          memo: resolveTxMemo("", msgs, proposal.chainId),
           fee,
           gasLimit: VOTE_GAS,
         },
@@ -502,13 +502,17 @@ export function GovernanceScreen({
                   <p className="break-words font-mono text-[9.5px] text-fg-dim [overflow-wrap:anywhere]">
                     Vote {VOTE_LABELS[choice]}
                     {" · "}
-                    {resolveTxMemo("", [
-                      msgVote({
-                        proposalId: opened.id,
-                        voter: voterChain?.address ?? "",
-                        option: choice,
-                      }),
-                    ])}
+                    {resolveTxMemo(
+                      "",
+                      [
+                        msgVote({
+                          proposalId: opened.id,
+                          voter: voterChain?.address ?? "",
+                          option: choice,
+                        }),
+                      ],
+                      opened.chainId,
+                    )}
                   </p>
                 </>
               )}

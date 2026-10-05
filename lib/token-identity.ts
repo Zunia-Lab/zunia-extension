@@ -150,6 +150,16 @@ export interface TokenIdentity {
    * channel walk. The only reason a seal or a "verified" line may be shown.
    */
   readonly proven: boolean;
+  /**
+   * Something names the token: a chain's own coin (a chain the user added
+   * included), a currency its catalog row lists, a table row, or a known
+   * bridge contract. False for a voucher nothing traces, and for a denom
+   * nobody lists wherever it sits, which anyone can mint
+   * (`factory/<self>/USDC.n`): such a token reads "Unlisted" (`Unlisted
+   * token`, or `Unlisted Neutron token` once a walk finds its chain), never
+   * "Native". Display only, like every other field.
+   */
+  readonly listed: boolean;
   /** Held on a testnet or a chain the user added; never an issuer, shown with a pill. */
   readonly testnet: boolean;
 }
@@ -374,9 +384,18 @@ function homeIssuerOf(family: string): string | undefined {
   return homeIssuers.get(family);
 }
 
+/**
+ * A chain the user typed in (lib/custom-chains.ts). Its catalog row says
+ * `network: "testnet"` whatever the chain is, so that field cannot tell a
+ * user-added chain from a registry testnet: only the user's own list can.
+ */
+export function isUserAddedChain(chainId: string): boolean {
+  return getCustomCatalogEntries().some((entry) => entry.chainId === chainId);
+}
+
 /** A testnet or a chain the user added: never an issuer, never renames anyone. */
 function isNeverIssuer(chainId: string): boolean {
-  if (getCustomCatalogEntries().some((entry) => entry.chainId === chainId)) return true;
+  if (isUserAddedChain(chainId)) return true;
   return findCatalogEntry(chainId)?.network === "testnet";
 }
 
@@ -1492,10 +1511,9 @@ function finalize(draft: Draft): TokenIdentity {
   const originName = draft.originChainId ? chainNameOf(draft.originChainId) : null;
   const guarded = draft.provenance === "unknown" ? undefined : guardFor(draft.heldOnChainId).get(denomKey(draft.denom));
   const ticker = guarded ?? baseTicker(draft);
-  const custom = getCustomCatalogEntries();
   const userAdded =
-    custom.some((entry) => entry.chainId === draft.heldOnChainId) ||
-    (draft.originChainId !== null && custom.some((entry) => entry.chainId === draft.originChainId));
+    isUserAddedChain(draft.heldOnChainId) ||
+    (draft.originChainId !== null && isUserAddedChain(draft.originChainId));
   // No channel joins a testnet to a mainnet issuer: such a walk is forged.
   const crossesNetworks = testnet && draft.originChainId !== null && !isNeverIssuer(draft.originChainId);
   const aliasSet = new Set<string>();
@@ -1540,6 +1558,7 @@ function finalize(draft: Draft): TokenIdentity {
       !userAdded &&
       !crossesNetworks &&
       (draft.provenance !== "channel-walk" || draft.walkCanonical === true),
+    listed: draft.named,
     testnet,
   };
 }
@@ -1601,6 +1620,7 @@ export function identityOf(chainId: string, denom: string): TokenIdentity {
       aliases: [],
       provenance: "unknown",
       proven: false,
+      listed: false,
       testnet: false,
     };
   }
@@ -1611,33 +1631,63 @@ export function identityOf(chainId: string, denom: string): TokenIdentity {
  * -------------------------------------------------------------------------- */
 
 /**
+ * A token minted on the chain that holds it that nothing lists: anyone's
+ * `factory/<self>/USDC.n`. Its origin is known (only `ibc/` denoms travel),
+ * but no registry, table row or known contract vouches for it, so it is
+ * never called native.
+ */
+export function isUnlistedLocal(
+  identity: Pick<TokenIdentity, "provenance" | "listed" | "originChainId" | "heldOnChainId">,
+): boolean {
+  return (
+    identity.provenance !== "unknown" && !identity.listed && identity.originChainId === identity.heldOnChainId
+  );
+}
+
+/** The words an unlisted local token gets where a listed one reads "Native". */
+export const UNLISTED_TOKEN = "Unlisted token";
+
+/**
  * The words for one identity, so no screen builds token text itself.
  * - `pill`: `on Osmosis` (line 2; line 1 is the ticker).
  * - `row`: `Native on Injective`, `Noble USDC · on Osmosis`,
  *   `Alloyed USDC · Osmosis only` (`Alloyed USDC · on Neutron` for a voucher
- *   of it), or `Unknown origin · on Osmosis · ibc/498A…6BA6E4`.
- * - `sentence`: `USDC.n (Noble USDC) on Osmosis`, `ATOM on Cosmos Hub`.
- * - `a11y`: `USDC from Noble, on Osmosis`, `ATOM, native on Cosmos Hub`.
+ *   of it), `Unlisted token · on Osmosis` for a local token nothing lists,
+ *   or `Unknown origin · on Osmosis · ibc/498A…6BA6E4`.
+ * - `sentence`: `USDC.n (Noble USDC) on Osmosis`, `ATOM on Cosmos Hub`,
+ *   `USDC.n·EE7A (unlisted token) on Osmosis`.
+ * - `a11y`: `USDC from Noble, on Osmosis`, `ATOM, native on Cosmos Hub`,
+ *   `USDC.n·EE7A, unlisted token, on Osmosis`.
+ *
+ * "Native" means the chain's own coin or a local token a registry lists, and
+ * nothing else: an unlisted local token (an impostor `factory/…/USDC.n`
+ * included) reads "Unlisted token", the way a voucher nothing proves reads
+ * "Unknown origin".
  */
 export function tokenText(identity: TokenIdentity, variant: TokenTextVariant): string {
   const held = identity.heldOnChainName;
   const unknown = identity.provenance === "unknown";
   const home = !unknown && identity.originChainId === identity.heldOnChainId;
+  const unlisted = isUnlistedLocal(identity);
   switch (variant) {
     case "pill":
       return `on ${held}`;
     case "row":
       if (unknown) return `Unknown origin · on ${held} · ${shortDenom(identity.denom)}`;
+      if (unlisted) return `${UNLISTED_TOKEN} · on ${held}`;
       // An alloy exists only where it was minted; a voucher of one elsewhere
       // reads like any other voucher ("Alloyed USDC · on Neutron").
       if (identity.alloyed && home) return `${identity.name} · ${held} only`;
       return home ? `Native on ${held}` : `${identity.name} · on ${held}`;
     case "sentence":
       if (unknown) return `unknown token ${shortDenom(identity.denom)} on ${held}`;
+      if (unlisted) return `${identity.ticker} (unlisted token) on ${held}`;
       return home ? `${identity.ticker} on ${held}` : `${identity.ticker} (${identity.name}) on ${held}`;
     case "a11y":
       if (unknown) return `Unknown token ${shortDenom(identity.denom)}, on ${held}`;
-      if (identity.alloyed) return `${identity.name}, on ${held}`;
+      if (unlisted) return `${identity.ticker}, unlisted token, on ${held}`;
+      // A walked voucher nothing names: its name says so ("Unlisted Neutron token").
+      if (identity.alloyed || !identity.listed) return `${identity.name}, on ${held}`;
       return home
         ? `${identity.ticker}, native on ${held}`
         : `${identity.family} from ${identity.originChainName ?? "an unknown chain"}, on ${held}`;

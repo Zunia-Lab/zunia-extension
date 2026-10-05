@@ -33,7 +33,12 @@ export function PrefsProvider({
   children,
 }: {
   settings: ExtensionSettings | null;
-  onChanged: () => void;
+  /**
+   * After a save, with the settings the worker stored. The popup applies them
+   * in place (`useExtensionState().settingsSaved`): a full refresh would show
+   * the boot view and remount the screen the user is changing them on.
+   */
+  onChanged: (saved: ExtensionSettings) => void;
   children: ReactNode;
 }) {
   const resolved = settings ?? DEFAULT_SETTINGS;
@@ -47,9 +52,9 @@ export function PrefsProvider({
 
   const update = useCallback(
     async (patch: Partial<ExtensionSettings>) => {
-      await sendToBackground<ExtensionSettings>("SET_SETTINGS", patch);
+      const saved = await sendToBackground<ExtensionSettings>("SET_SETTINGS", patch);
       if (patch.theme) setTheme(patch.theme === "system" ? "system" : patch.theme);
-      onChanged();
+      onChanged(saved);
     },
     [onChanged, setTheme],
   );

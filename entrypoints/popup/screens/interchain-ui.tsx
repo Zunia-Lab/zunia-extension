@@ -838,13 +838,19 @@ function HopChannelRow({
   const to = hop.counterpartyChainId ?? "";
   const channelId = pinned?.channelId ?? hop.channelId;
   const status = hopStatus(hop, pinned);
+  const channel = channelId || "no channel";
   return (
     <li className="rounded-[11px] border border-[var(--z-line)] px-2.5 py-2">
       <div className="flex items-start gap-2">
         <span className="min-w-0 flex-1">
-          <span className="block truncate font-mono text-[10.5px] text-fg">
+          {/* The chain by name (`channel-750 to Noble`); the ids it was read
+              from stay in the title, for matching against an explorer. */}
+          <span
+            className="block font-mono text-[10.5px] leading-snug text-fg [overflow-wrap:anywhere]"
+            title={`${channel} on ${hop.chainId} to ${to}`}
+          >
             {numbered ? `Hop ${hop.index + 1}: ` : ""}
-            {channelId || "no channel"} to {to}{" "}
+            {channel} to {chainLabel(to)}{" "}
             <span className="text-fg-dim">({pinned ? "manual" : "auto"})</span>
           </span>
           <span className={cn("mt-0.5 block text-[9.5px] leading-snug", status.tone)}>

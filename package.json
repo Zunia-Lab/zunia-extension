@@ -28,6 +28,7 @@
     "lint:firefox": "pnpm dlx web-ext@10.7.0 lint --source-dir .output/firefox-mv3",
     "chains:generate": "node scripts/generate-chain-catalog.mjs",
     "channels:generate": "node scripts/generate-ibc-channels.mjs",
+    "tokens:generate": "node scripts/generate-token-registry.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint",
     "test": "vitest run",

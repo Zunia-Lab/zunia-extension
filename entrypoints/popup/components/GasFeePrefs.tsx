@@ -16,10 +16,34 @@ import {
   focusRing,
 } from "@zunialab/ui";
 
-import { formatUnits } from "../../../lib/format";
 import { FEE_SPEEDS } from "../../../lib/fee-prefs";
 import type { FeeSpeedPref } from "../../../lib/settings";
+import { formatTokenAmount } from "../../../lib/token-amount";
 import { usePrefs } from "../state/Prefs";
+
+/**
+ * The collapsed row's text: `Tx Fee: 0.004012 OSMO`. The fee is what the
+ * transaction pays, so it goes through the confirm screens' amount policy
+ * (lib/token-amount.ts `confirm`): every digit up to six decimals, cut and
+ * never rounded up, and `<0.000001` rather than 0 for a fee too small to
+ * show. The compact list format read 0.004012 OSMO as `0.00`.
+ *
+ * `feeAmount` is in base units and `feeDecimals` is the fee coin's exponent
+ * from its chain's catalog row; with no fee yet the amount reads `—`.
+ */
+export function feeLabelText(
+  feeAmount: string | undefined,
+  feeDecimals: number,
+  feeSymbol: string,
+): string {
+  if (feeAmount === undefined) return `Tx Fee: — ${feeSymbol}`;
+  const amount = formatTokenAmount(
+    feeAmount,
+    { decimals: feeDecimals, decimalsKnown: true, ticker: feeSymbol, denom: "", provenance: "native" },
+    "confirm",
+  );
+  return `Tx Fee: ${amount} ${feeSymbol}`;
+}
 
 export function GasFeePrefs({
   feeAmount,
@@ -38,10 +62,7 @@ export function GasFeePrefs({
   const [speed, setSpeed] = useState<FeeSpeedPref>(settings.feeSpeed);
   const [adjustment, setAdjustment] = useState(settings.gasAdjustment);
 
-  const feeLabel =
-    feeAmount !== undefined
-      ? `Tx Fee: ${formatUnits(feeAmount, feeDecimals)} ${feeSymbol}`
-      : `Tx Fee: — ${feeSymbol}`;
+  const feeLabel = feeLabelText(feeAmount, feeDecimals, feeSymbol);
 
   function openSheet() {
     setSpeed(settings.feeSpeed);

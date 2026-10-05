@@ -84,6 +84,8 @@ function phraseForOne(msg: MemoSourceMsg, chainId: string | undefined): string {
       return labeled("IBC forward", symbol);
     case "swap":
       return labeled("Swap", symbol);
+    case "swap-call":
+      return swapCallPhrase(value, chainId);
     case "stake":
       return labeled("Stake", symbol);
     case "unstake":
@@ -111,11 +113,45 @@ function labeled(action: string, symbol: string | null): string {
   return symbol ? `${action} ${symbol}` : action;
 }
 
+/**
+ * A swap signed as one `MsgExecuteContract` on the chain holding the funds
+ * (Swap's venue-origin path, `{"osmosis_swap":{…}}` on Osmosis): `Swap OSMO
+ * to ATOM`. Both tokens are named as the signing chain names them, the coin
+ * in `funds` and the contract's `output_denom` alike, and only when both are
+ * proven: one the memo cannot name leaves the generic `Contract call`, never
+ * half a pair or a ticker someone chose.
+ */
+function swapCallPhrase(value: Record<string, unknown>, chainId: string | undefined): string {
+  const swap = swapCallOf(value);
+  if (!swap) return "Contract call";
+  const sold = tokenSymbol(swap.soldDenom, chainId, "swap-call");
+  const bought = tokenSymbol(swap.outputDenom, chainId, "swap-call");
+  return sold && bought ? `Swap ${sold} to ${bought}` : "Contract call";
+}
+
+/**
+ * The two denoms of a crosschain-swaps call: the one coin it pays with and
+ * the `output_denom` it asks for. `null` for any other shape, which the
+ * contract would refuse anyway (it takes exactly one coin).
+ */
+function swapCallOf(value: Record<string, unknown>): { soldDenom: string; outputDenom: string } | null {
+  const msg = decodeWasmMsg(value.msg);
+  if (!msg || Object.keys(msg).length !== 1) return null;
+  const swap = msg.osmosis_swap;
+  if (!swap || typeof swap !== "object" || Array.isArray(swap)) return null;
+  const outputDenom = (swap as { output_denom?: unknown }).output_denom;
+  const funds = value.funds;
+  if (typeof outputDenom !== "string" || !outputDenom) return null;
+  if (!Array.isArray(funds) || funds.length !== 1 || !isCoin(funds[0])) return null;
+  return { soldDenom: funds[0].denom, outputDenom };
+}
+
 type MemoKind =
   | "send"
   | "ibc"
   | "ibc-forward"
   | "swap"
+  | "swap-call"
   | "stake"
   | "unstake"
   | "redelegate"
@@ -150,6 +186,7 @@ function messageKind(msg: MemoSourceMsg): MemoKind {
     if (action === "recover" || action === "recover_failed" || action === "retrieve") {
       return "recover";
     }
+    if (action === "osmosis_swap") return "swap-call";
     return "contract";
   }
   return "other";

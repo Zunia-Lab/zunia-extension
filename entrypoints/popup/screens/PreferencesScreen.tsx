@@ -28,6 +28,10 @@ export function PreferencesScreen({ onBack }: { onBack: () => void }) {
   const alerts = useBrowserAlerts();
   const [granted, setGranted] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // What the Live balances switch shows. The setting alone is on by default
+  // before any host access is granted, so the artwork switch below reads this
+  // too, or it would sit enabled under a Live balances switch that is off.
+  const liveOn = settings.liveBalances && granted;
 
   useEffect(() => {
     void hasLiveBalancePermission().then(setGranted);
@@ -106,16 +110,14 @@ export function PreferencesScreen({ onBack }: { onBack: () => void }) {
           <SettingsToggle
             title="Live balances"
             description="Read balances from each chain's public endpoint, once you allow the wallet to reach them."
-            checked={settings.liveBalances && granted}
+            checked={liveOn}
             onCheckedChange={(next) => void toggleLiveBalances(next)}
           />
           <SettingsToggle
             title="Load artwork and off-chain details"
-            description={
-              settings.liveBalances ? undefined : "Turn on live balances first."
-            }
-            checked={settings.nftMedia && settings.liveBalances}
-            disabled={!settings.liveBalances}
+            description={liveOn ? undefined : "Turn on live balances first."}
+            checked={settings.nftMedia && liveOn}
+            disabled={!liveOn}
             onCheckedChange={(nftMedia) => void update({ nftMedia })}
           />
           <SettingsToggle

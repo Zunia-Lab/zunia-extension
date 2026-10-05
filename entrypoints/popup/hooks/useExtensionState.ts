@@ -21,6 +21,9 @@ const NO_GRANTS: OriginGrant[] = [];
 export function useExtensionState(options: { grants?: boolean } = {}) {
   const withGrants = options.grants ?? true;
   const [attempt, setAttempt] = useState(0);
+  // Bumped by `settingsSaved`: the snapshot is read again, but under the same
+  // attempt, so `loading` stays false while it is in flight.
+  const [revision, setRevision] = useState(0);
   const [snapshot, setSnapshot] = useState<ExtensionSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -56,10 +59,24 @@ export function useExtensionState(options: { grants?: boolean } = {}) {
     return () => {
       cancelled = true;
     };
-  }, [attempt, withGrants]);
+  }, [attempt, revision, withGrants]);
 
   const refresh = useCallback(() => {
     setAttempt((n) => n + 1);
+  }, []);
+
+  /**
+   * A preference was saved. The settings the worker stored apply at once, and
+   * the rest of the snapshot is read again in place: `status.autoLockMs`
+   * follows a setting. Unlike `refresh`, this never sets `loading`, because
+   * the popup shows its boot view while loading, which unmounts the open
+   * screen and loses its scroll position for a change that moves nobody.
+   */
+  const settingsSaved = useCallback((saved?: ExtensionSettings) => {
+    if (saved) {
+      setSnapshot((prev) => (prev ? { ...prev, settings: saved } : prev));
+    }
+    setRevision((n) => n + 1);
   }, []);
 
   // Live updates: a dApp request arriving, or the wallet locking or unlocking
@@ -112,6 +129,7 @@ export function useExtensionState(options: { grants?: boolean } = {}) {
     error,
     loading,
     refresh,
+    settingsSaved,
     setError,
   };
 }

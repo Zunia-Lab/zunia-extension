@@ -5,20 +5,33 @@
  *
  * Identities come from the real identityOf on the bundled table, so these
  * strings are what the popup shows. Components are checked through their
- * pure helpers and element props; only TokenLabel is rendered, since it uses
- * no hooks (the UI package's TokenLogo does, and resolves its own React copy
- * outside the popup's bundler aliases).
+ * pure helpers, element props and static markup. The UI package's TokenLogo
+ * keeps image state in a hook that resolves the package's own React copy
+ * (outside the popup's bundler aliases), so it is replaced by a plain stand-in
+ * here; everything else renders as in the popup.
  */
 
 import { createElement, isValidElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("@zunialab/ui", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@zunialab/ui")>();
+  const react = await import("react");
+  return {
+    ...actual,
+    TokenLogo: ({ symbol }: { symbol: string }) => react.createElement("span", { "data-logo": symbol }),
+  };
+});
 
 import {
   TokenLabel,
+  TokenPill,
+  TokenTicker,
   networkTag,
   provenanceLabel,
   showsLocationBadge,
+  subtitleParts,
   tickerParts,
   tokenA11yName,
   tokenLocationText,
@@ -32,6 +45,7 @@ import {
   setCustomCatalogEntries,
   type CatalogEntry,
 } from "../chain-catalog";
+import { saveCustomChain } from "../custom-chains";
 import { formatUnits } from "../format";
 import { searchItems } from "../picker";
 import {
@@ -70,16 +84,54 @@ const COMPACT = /\d(?:k|M|Bn)\b/;
 
 afterEach(() => {
   setCustomCatalogEntries([]);
+  vi.unstubAllGlobals();
 });
 
-/** A chain the user added, as custom-chains.ts stores it. */
+/** An impostor anyone can mint: the review's `USDC.n·EE7A · Native on Osmosis`. */
+const IMPOSTOR = "factory/osmo1qyqszqgpqyqszqgpqyqszqgpqyqszqgpjnp7du/USDC.n";
+const impostor = () => identityOf("osmosis-1", IMPOSTOR);
+
+/**
+ * What assistive tech reads from static markup: the text outside every
+ * `aria-hidden` subtree, in document order. The popup's markup here has no
+ * void elements, and React escapes only `& < > " '`.
+ */
+function spokenText(html: string): string {
+  const hidden: boolean[] = [];
+  let out = "";
+  for (const match of html.matchAll(/<(\/?)([a-zA-Z][\w-]*)([^>]*)>|([^<]+)/g)) {
+    const [, closing, , attributes, text] = match;
+    if (text !== undefined) {
+      if (!hidden.includes(true)) out += text;
+    } else if (closing) {
+      hidden.pop();
+    } else if (!(attributes ?? "").trimEnd().endsWith("/")) {
+      hidden.push(/\saria-hidden="true"/.test(attributes ?? ""));
+    }
+  }
+  return out
+    .replace(/&#x27;/g, "'")
+    .replace(/&quot;/g, '"')
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&");
+}
+
+/** One element's opening tag in `html`, found by an attribute it carries. */
+function tagWith(html: string, attribute: string): string {
+  const at = html.indexOf(attribute);
+  if (at < 0) return "";
+  return html.slice(html.lastIndexOf("<", at), html.indexOf(">", at) + 1);
+}
+
+/** A chain the user added, as custom-chains.ts stores it: always `network: "testnet"`. */
 function customChain(overrides: Partial<CatalogEntry>): CatalogEntry {
   return {
     chainId: "mine-1",
     chainName: "Mine",
     bech32Prefix: "mine",
     coinType: 118,
-    network: "mainnet",
+    network: "testnet",
     coinDenom: "MINE",
     coinMinimalDenom: "umine",
     coinDecimals: 6,
@@ -311,11 +363,23 @@ describe("ticker layout", () => {
 
   it("renders the suffix outside the truncating span", () => {
     const html = renderToStaticMarkup(createElement(TokenLabel, { identity: usdcAxlPolygon() }));
-    expect(html).toContain('<span class="min-w-0 truncate">USDC</span>');
-    const tail = /<span dir="rtl" class="([^"]*)"><bdi dir="ltr">\.axl\.polygon<\/bdi><\/span>/.exec(html);
+    expect(html).toContain('<span aria-hidden="true" class="min-w-0 truncate">USDC</span>');
+    const tail = /<span aria-hidden="true" dir="rtl" class="([^"]*)"><bdi dir="ltr">\.axl\.polygon<\/bdi><\/span>/.exec(html);
     expect(tail?.[1]).toContain("shrink-0");
     expect(tail?.[1]).not.toContain("truncate");
     expect(html).toContain("Axelar USDC from Polygon · on Osmosis");
+  });
+
+  it("gives assistive tech the ticker as one word, and the eye its two parts", () => {
+    // Read whole, the two boxes were `USDC .n` and `USDC .axl.polygon` (WP-F/WP-H reviews).
+    for (const identity of [usdcN(), usdcAxlPolygon(), unknown(), impostor(), identityOf("osmosis-1", ALL_USDC)]) {
+      const html = renderToStaticMarkup(createElement(TokenTicker, { identity }));
+      expect(spokenText(html), identity.key).toBe(identity.ticker);
+      // The hidden copy is not selectable, so copying the row gives the ticker once.
+      expect(html).toContain(`<span class="sr-only select-none">${identity.ticker}</span>`);
+    }
+    const row = spokenText(renderToStaticMarkup(createElement(TokenLabel, { identity: usdcN() })));
+    expect(row).toBe("USDC.nNoble USDC · on Osmosis");
   });
 
   it("keeps an inline ticker wider than its line inside the line", () => {
@@ -327,6 +391,43 @@ describe("ticker layout", () => {
     // label beside it ("Buys" on the swap confirm screen).
     const ticker = /^<span class="[^"]*"><span class="([^"]*)">/.exec(html)?.[1] ?? "";
     expect(ticker.split(" ")).toEqual(expect.arrayContaining(["shrink-0", "max-w-full", "min-w-0"]));
+  });
+
+  it("keeps an unknown token's short denom whole in a row: it moves under the words, which give way first", () => {
+    // Home's row cut `Unknown origin · on Osmosis · ibc/012…`, losing the hash that tells it apart.
+    expect(subtitleParts(unknown())).toEqual({ lead: "Unknown origin · on Osmosis", tail: "ibc/0123…ABCDEF" });
+    expect(subtitleParts(unknown(), "delivered")).toEqual({
+      lead: "Unknown origin · delivered on Osmosis",
+      tail: "ibc/0123…ABCDEF",
+    });
+    expect(subtitleParts(usdcN())).toEqual({ lead: "Noble USDC · on Osmosis", tail: null });
+    expect(subtitleParts(impostor())).toEqual({ lead: "Unlisted token · on Osmosis", tail: null });
+
+    const html = renderToStaticMarkup(createElement(TokenLabel, { identity: unknown() }));
+    // One wrapping line box, with the whole subtitle as its tooltip.
+    const line = tagWith(html, 'title="Unknown origin · on Osmosis · ibc/0123…ABCDEF"');
+    expect(line).toContain("flex-wrap");
+    expect(line).not.toContain("truncate");
+    // The words may be cut at their end, only when they alone are wider than the row.
+    expect(html).toMatch(/<span class="[^"]*\btruncate\b[^"]*">Unknown origin · on Osmosis ·<\/span>/);
+    // The short denom is never truncated; it breaks only if it alone is wider than the row.
+    const tail = /<span class="([^"]*)">ibc\/0123…ABCDEF<\/span>/.exec(html)?.[1] ?? "";
+    expect(tail).toContain("[overflow-wrap:anywhere]");
+    expect(tail).not.toContain("truncate");
+    expect(tail).not.toContain("overflow-hidden");
+
+    // A long chain name gives way before the hash does.
+    const long = identityOf("buenavista-1", UNLISTED);
+    expect(long.heldOnChainName).toBe("Warden Protocol Buenavista");
+    expect(renderToStaticMarkup(createElement(TokenLabel, { identity: long }))).toMatch(
+      /<span class="[^"]*\btruncate\b[^"]*">Unknown origin · on Warden Protocol Buenavista ·<\/span><span class="[^"]*">ibc\/0123…ABCDEF<\/span>/,
+    );
+
+    // Every other token keeps its one-line subtitle, as before.
+    const known = renderToStaticMarkup(createElement(TokenLabel, { identity: usdcN() }));
+    expect(known).toContain(
+      '<span class="mt-0.5 block truncate text-[11px] text-fg-muted" title="Noble USDC · on Osmosis">Noble USDC · on Osmosis</span>',
+    );
   });
 
   it("tags a testnet and a user-added chain, and nothing on a mainnet", () => {
@@ -401,6 +502,28 @@ describe("token words", () => {
     expect(tokenA11yName(secondRoute)).toBe("USDC.n·0123, USDC from Noble, on Osmosis");
   });
 
+  it("never call a token nothing lists native, wherever it sits", () => {
+    const fake = impostor();
+    expect(fake.ticker).toMatch(/^USDC\.n·[0-9A-F]{4}$/);
+    expect(tokenSubtitle(fake)).toBe("Unlisted token · on Osmosis");
+    expect(tokenSubtitle(fake, "held")).toBe("Unlisted token · held on Osmosis");
+    expect(tokenSubtitle(fake, "delivered")).toBe("Unlisted token · delivered on Osmosis");
+    expect(tokenA11yName(fake)).toBe(`${fake.ticker}, unlisted token, on Osmosis`);
+    expect(tokenA11yName(fake, "held")).toBe(`${fake.ticker}, unlisted token, held on Osmosis`);
+    expect(tokenTooltip(fake)).toBe(`${fake.ticker} · Unlisted token · on Osmosis`);
+    expect(tokenPickerItem(fake).sublabel).toBe("Unlisted token · on Osmosis");
+    for (const location of ["on", "held", "delivered"] as const) {
+      expect(tokenSubtitle(fake, location)).not.toMatch(/native/i);
+      expect(tokenA11yName(fake, location)).not.toMatch(/native/i);
+    }
+    // On a chain the user added, its own coin is native and an unlisted token is not.
+    setCustomCatalogEntries([customChain({})]);
+    expect(tokenSubtitle(identityOf("mine-1", "umine"))).toBe("Native on Mine");
+    const minted = identityOf("mine-1", "factory/mine1creator/ufoo");
+    expect(tokenSubtitle(minted)).toBe("Unlisted token · on Mine");
+    expect(tokenA11yName(minted)).toBe("ufoo, unlisted token, on Mine, custom chain");
+  });
+
   it("say testnet or custom chain when the chain name does not", () => {
     expect(tokenA11yName(identityOf("osmo-test-5", "uosmo"))).toBe("OSMO, native on Osmosis Testnet");
     setCustomCatalogEntries([customChain({})]);
@@ -440,8 +563,47 @@ describe("token words", () => {
   it("tag only testnets and user-added chains", () => {
     expect(networkTag(usdcN())).toBeNull();
     expect(networkTag(identityOf("osmo-test-5", "uosmo"))).toBe("Testnet");
+    // A user-added chain is stored with network "testnet" whatever it is, which
+    // used to make every one read TESTNET: the user's list decides, not that field.
     setCustomCatalogEntries([customChain({ chainId: "mine-test-1", network: "testnet" })]);
-    expect(networkTag(identityOf("mine-test-1", "umine"))).toBe("Testnet");
+    expect(networkTag(identityOf("mine-test-1", "umine"))).toBe("Custom");
+    setCustomCatalogEntries([customChain({ chainId: "mine-1", network: "mainnet" })]);
+    expect(networkTag(identityOf("mine-1", "umine"))).toBe("Custom");
+  });
+
+  it("tag a chain saved through custom-chains.ts Custom, in the tag, the row and the words", async () => {
+    const store = new Map<string, unknown>();
+    vi.stubGlobal("browser", {
+      storage: {
+        local: {
+          get: async (key: string) => (store.has(key) ? { [key]: store.get(key) } : {}),
+          set: async (patch: Record<string, unknown>) => {
+            for (const [key, value] of Object.entries(patch)) store.set(key, value);
+          },
+        },
+      },
+    });
+    const saved = await saveCustomChain({
+      chainName: "Mine",
+      chainId: "mine-1",
+      rpc: "https://rpc.mine.example",
+      rest: "https://rest.mine.example",
+      bech32Prefix: "mine",
+      coinType: 118,
+      coinDenom: "MINE",
+      coinMinimalDenom: "umine",
+      coinDecimals: 6,
+      gasPrice: 0.025,
+    });
+    // The stored row is what made the old check read Testnet.
+    expect(saved.find((entry) => entry.chainId === "mine-1")?.network).toBe("testnet");
+    const coin = identityOf("mine-1", "umine");
+    expect(networkTag(coin)).toBe("Custom");
+    expect(renderToStaticMarkup(createElement(TokenLabel, { identity: coin }))).toContain(">Custom</span>");
+    expect(tokenA11yName(coin)).toBe("MINE, native on Mine, custom chain");
+    expect(tokenPickerItem(coin).sublabel).toBe("Native on Mine · Custom chain");
+    // A registry testnet keeps its own tag.
+    expect(networkTag(identityOf("osmo-test-5", "uosmo"))).toBe("Testnet");
   });
 });
 
@@ -494,16 +656,54 @@ describe("tokenPickerItem", () => {
     expect(searchItems(items, "axlusdc").map((item) => item.label)).toEqual(["USDC.axl"]);
   });
 
-  it("disables a row with its reason and marks search-only rows", () => {
+  it("disables a row with its reason as given, under the subtitle that keeps the location", () => {
     const reason = "Zunia's Osmosis swap contract has no route from OSMO to USDC.inj yet.";
     const disabled = tokenPickerItem(usdcInjOnOsmosis(), { disabledReason: reason, searchOnly: true });
     expect(disabled.disabled).toBe(true);
-    // PickerSheet shows the reason in place of the subtitle, so the location leads it:
-    // USDC.inj on Injective and on Osmosis share this reason.
-    expect(disabled.disabledReason).toBe(`On Osmosis · ${reason}`);
-    expect(tokenPickerItem(usdcInjHome(), { disabledReason: reason }).disabledReason).toBe(`On Injective · ${reason}`);
+    // PickerSheet keeps the sublabel over the reason, so USDC.inj on Injective and
+    // on Osmosis, which share this reason, still differ by their location line, and
+    // the reason no longer repeats it (`On Osmosis · …` under `… · on Osmosis`).
+    expect(disabled.disabledReason).toBe(reason);
+    expect(disabled.sublabel).toBe("Injective USDC · on Osmosis");
+    const home = tokenPickerItem(usdcInjHome(), { disabledReason: reason });
+    expect(home.disabledReason).toBe(reason);
+    expect(home.sublabel).toBe("Native on Injective");
     expect(disabled.searchOnly).toBe(true);
     expect(tokenPickerItem(usdcInjOnOsmosis(), { disabledReason: null }).disabled).toBeUndefined();
+  });
+
+  it("draws its label with the ticker rule, says it as one word, and says the seal", () => {
+    const item = tokenPickerItem(usdcN(), { locationChain: true });
+    // `label` stays the search text; the drawn label keeps `.n` and is read whole.
+    expect(item.label).toBe("USDC.n");
+    const html = renderToStaticMarkup(createElement("span", null, item.labelNode));
+    expect(spokenText(html)).toBe("USDC.n");
+    expect(html).toContain(">.n</bdi>");
+    expect(item.srNote).toBe("Verified: IBC path matches the registry");
+    expect(spokenText(renderToStaticMarkup(createElement("span", null, tokenPickerItem(impostor()).labelNode)))).toBe(
+      impostor().ticker,
+    );
+    // No seal, no words for one.
+    expect(tokenPickerItem(impostor()).srNote).toBeUndefined();
+    expect(tokenPickerItem(unknown()).srNote).toBeUndefined();
+  });
+
+  it("keeps a balance in base units to a capped column that wraps, so the label keeps its room", () => {
+    const shib = identityOf("osmosis-1", tokenTableRows("osmosis-1").find((row) => row.alloyed && row.family === "SHIB")!.denom);
+    for (const [identity, amount, text] of [
+      [shib, "5000000000000000000", "5000000000000000000 base units"],
+      [unknown(), "1234567890123456789012345", "1234567890123456789012345 base units"],
+      [usdcN(), "12340000", "12.34"],
+    ] as const) {
+      const trailing = tokenPickerItem(identity, { amount }).trailing;
+      const html = renderToStaticMarkup(createElement("span", null, trailing));
+      // Every digit stays, inside at most 112px, wrapped rather than squeezing the
+      // ticker to `I…` and the location line to a word per line (WP-H review).
+      expect(html).toContain(`>${text}<`);
+      const classes = /<span class="([^"]*)">/.exec(html.slice("<span>".length))?.[1].split(" ") ?? [];
+      expect(classes).toEqual(expect.arrayContaining(["block", "max-w-[112px]", "[overflow-wrap:anywhere]"]));
+      expect(classes).not.toContain("truncate");
+    }
   });
 
   it("shows a balance only when there is one, masked when balances are hidden", () => {
@@ -524,5 +724,50 @@ describe("tokenPickerItem", () => {
     expect(item.sublabel).toMatch(/ · Custom chain$/);
     expect(item.keywords).toContain("Custom");
     expect(tokenPickerItem(identityOf("osmo-test-5", "uosmo")).sublabel).toBe("Native on Osmosis Testnet");
+  });
+});
+
+describe("TokenPill", () => {
+  const pill = (identity: TokenIdentity, props: Record<string, unknown> = {}) =>
+    renderToStaticMarkup(createElement(TokenPill, { identity, ...props }));
+
+  it("keeps a long chain name's start on one line, cut at its end, and the whole name in its title and its name", () => {
+    // Long names from the catalog, the first three among those the wave-3 reviews
+    // measured; the line holds about 110px.
+    for (const [chainId, name] of [
+      ["buenavista-1", "Warden Protocol Buenavista"],
+      ["bcx_323-1", "BuyCex Infinity Chain"],
+      ["cysicmint_4399-1", "Cysic Network Mainnet"],
+      ["kima_testnet", "Kima Sardis Network (Testnet)"],
+    ] as const) {
+      const coin = identityOf(chainId, findCatalogEntry(chainId)!.coinMinimalDenom);
+      expect(coin.heldOnChainName).toBe(name);
+      const html = pill(coin);
+      // One line that keeps its start: an end ellipsis, never a right-to-left cut.
+      const line = /<span class="([^"]*)">on ([^<]*)<\/span>/.exec(html);
+      expect(line?.[2]).toBe(name);
+      const classes = line?.[1].split(" ") ?? [];
+      expect(classes).toContain("truncate");
+      expect(classes).not.toContain("line-clamp-2");
+      expect(tagWith(html, `>on ${name}<`)).not.toContain('dir="rtl"');
+      // Hovering the pill shows the whole name; assistive tech hears it.
+      const button = tagWith(html, "<button");
+      expect(button).toContain(`title="${coin.ticker} · Native on ${name}"`);
+      expect(button).toContain(`aria-label="${coin.ticker}, native on ${name}`);
+    }
+  });
+
+  it("keeps the whole location in the title Swap gives it, for the side it shows", () => {
+    const coin = identityOf("buenavista-1", "uward");
+    const html = pill(coin, { title: tokenTooltip(coin, "held"), labelPrefix: "From asset" });
+    expect(tagWith(html, "<button")).toContain("held on Warden Protocol Buenavista");
+    expect(tagWith(html, "<button")).toContain('aria-label="From asset: WARD, native on Warden Protocol Buenavista"');
+  });
+
+  it("says the ticker once and whole, with no seal words where nothing is proven", () => {
+    const html = pill(impostor());
+    expect(tagWith(html, "<button")).toContain(`aria-label="${impostor().ticker}, unlisted token, on Osmosis"`);
+    // The drawn ticker keeps its hash mark, which the eye uses to tell it from USDC.n.
+    expect(html).toMatch(/<bdi dir="ltr">\.n·[0-9A-F]{4}<\/bdi>/);
   });
 });

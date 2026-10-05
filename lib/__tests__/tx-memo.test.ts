@@ -309,6 +309,104 @@ describe("the packet memo inside MsgTransfer", () => {
   });
 });
 
+/** ATOM on Osmosis (`transfer/channel-0/uatom`). */
+const ATOM_ON_OSMOSIS = "ibc/27394FB092D2ECCD56123C74F36E4C1F926001CEADA9CA97EA622B25F41E5EB2";
+const XCS = "osmo1uwk8xc6q0s6t5qcpr6rht3sczu6du83xq8pwxjua0hfj5hzcnh3sqxwvxs";
+
+/**
+ * A crosschain-swaps call from funds already on Osmosis (Swap's venue-origin
+ * path), shaped as the planner builds it: the ExecuteMsg in base64, one coin.
+ */
+const swapCall = (
+  sold: string,
+  bought: string,
+  value: Record<string, unknown> = {},
+): MemoSourceMsg & { value: Record<string, unknown> } => ({
+  typeUrl: "/cosmwasm.wasm.v1.MsgExecuteContract",
+  value: {
+    sender: "osmo1sender00000000000000000000000000000000",
+    contract: XCS,
+    msg: Buffer.from(
+      JSON.stringify({
+        osmosis_swap: {
+          output_denom: bought,
+          slippage: { twap: { slippage_percentage: "1", window_seconds: 10 } },
+          receiver: "cosmos1sender0000000000000000000000000000000",
+          on_failed_delivery: { local_recovery_addr: "osmo1recovery000000000000000000000000000000" },
+          next_memo: null,
+        },
+      }),
+    ).toString("base64"),
+    funds: [{ denom: sold, amount: "63000000" }],
+    ...value,
+  },
+});
+
+describe("a swap signed as one contract call on Osmosis", () => {
+  it("names both tokens as Osmosis holds them: 'Swap OSMO to ATOM'", () => {
+    expect(resolveTxMemo("", [swapCall("uosmo", ATOM_ON_OSMOSIS)], "osmosis-1")).toBe(
+      `Swap OSMO to ATOM · ${ZUNIA_WALLET_TAG}`,
+    );
+    expect(resolveTxMemo("", [swapCall(USDC_N_ON_OSMOSIS, "uosmo")], "osmosis-1")).toBe(
+      `Swap USDC.n to OSMO · ${ZUNIA_WALLET_TAG}`,
+    );
+    // A memo the user wrote is kept.
+    expect(resolveTxMemo(" mine ", [swapCall("uosmo", ATOM_ON_OSMOSIS)], "osmosis-1")).toBe("mine");
+  });
+
+  it("keeps the generic text unless both tokens are proven", () => {
+    const generic = `Contract call · ${ZUNIA_WALLET_TAG}`;
+    // Either side a voucher nothing names, or anyone's factory/<self>/USDC.n.
+    expect(resolveTxMemo("", [swapCall("uosmo", UNLISTED)], "osmosis-1")).toBe(generic);
+    expect(resolveTxMemo("", [swapCall(UNLISTED, ATOM_ON_OSMOSIS)], "osmosis-1")).toBe(generic);
+    expect(
+      resolveTxMemo(
+        "",
+        [swapCall("factory/osmo1qyqszqgpqyqszqgpqyqszqgpqyqszqgpjnp7du/USDC.n", "uosmo")],
+        "osmosis-1",
+      ),
+    ).toBe(generic);
+    // Without the signing chain a voucher names nothing, so neither half is said.
+    expect(resolveTxMemo("", [swapCall("uosmo", ATOM_ON_OSMOSIS)])).toBe(generic);
+    // Not one coin: the contract refuses it, and the memo names nothing.
+    expect(resolveTxMemo("", [swapCall("uosmo", ATOM_ON_OSMOSIS, { funds: [] })], "osmosis-1")).toBe(generic);
+    expect(
+      resolveTxMemo(
+        "",
+        [
+          swapCall("uosmo", ATOM_ON_OSMOSIS, {
+            funds: [
+              { denom: "uosmo", amount: "1" },
+              { denom: USDC_N_ON_OSMOSIS, amount: "1" },
+            ],
+          }),
+        ],
+        "osmosis-1",
+      ),
+    ).toBe(generic);
+    // Another call on the same contract keeps its words.
+    const call = (msg: unknown): MemoSourceMsg => ({
+      typeUrl: "/cosmwasm.wasm.v1.MsgExecuteContract",
+      value: { contract: XCS, msg: Buffer.from(JSON.stringify(msg)).toString("base64"), funds: [] },
+    });
+    expect(resolveTxMemo("", [call({ recover: {} })], "osmosis-1")).toBe(`Recover funds · ${ZUNIA_WALLET_TAG}`);
+    expect(resolveTxMemo("", [call({ osmosis_swap: {}, recover: {} })], "osmosis-1")).toBe(generic);
+    expect(resolveTxMemo("", [call({ set_route: {} })], "osmosis-1")).toBe(generic);
+  });
+
+  it("reads the call and writes nothing to it", () => {
+    const msg = deepFreeze(swapCall("uosmo", ATOM_ON_OSMOSIS));
+    const before = JSON.stringify(msg);
+    expect(resolveTxMemo("", [msg], "osmosis-1")).toBe(`Swap OSMO to ATOM · ${ZUNIA_WALLET_TAG}`);
+    expect(JSON.stringify(msg)).toBe(before);
+  });
+
+  it("leaves the packet memo path as it was: a swap over IBC names what leaves", () => {
+    const msg = JSON.parse(XCS_TRANSFER) as MemoSourceMsg;
+    expect(resolveTxMemo("", [msg], "cosmoshub-4")).toBe(`Swap ATOM · ${ZUNIA_WALLET_TAG}`);
+  });
+});
+
 describe("Earn memos without a chain", () => {
   const stake = (denom: string): MemoSourceMsg => ({ type: "cosmos-sdk/MsgDelegate", value: { amount: { denom } } });
 

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import {
   Button,
   TokenLogo,
@@ -262,6 +262,27 @@ function inFlightStatus(
     : { label: "In flight", detail: `${step}, ${source} to ${dest}`, tone: "info" };
 }
 
+/** The arrow between a route label's two sides (`swapRouteLabel`, `transferLabel`). */
+const ROUTE_ARROW = " → ";
+
+/**
+ * A route's stored label, laid out to break between its sides rather than
+ * inside one: `10 OSMO (Osmosis)` / `→ USDC.axl (Axelar)`, never
+ * `10 OSMO (Osmosis) → USDC.axl` / `(Axelar)`. Each side is one box that
+ * stays whole on a line when it fits and wraps within itself only when it
+ * alone is wider than the column, so nothing is cut. The text, and so what a
+ * screen reader reads, is the label as stored.
+ */
+export function RouteLabel({ label }: { label: string }) {
+  const sides = label.split(ROUTE_ARROW);
+  return sides.map((side, index) => (
+    <Fragment key={index}>
+      {index > 0 ? " " : null}
+      <span className="inline-block max-w-full">{index > 0 ? `${ROUTE_ARROW.trimStart()}${side}` : side}</span>
+    </Fragment>
+  ));
+}
+
 const TONE_CLASS: Record<InFlightStatus["tone"], string> = {
   info: "text-fg",
   success: "text-[var(--z-success)]",
@@ -270,7 +291,7 @@ const TONE_CLASS: Record<InFlightStatus["tone"], string> = {
   muted: "text-fg-dim",
 };
 
-function InFlightRow({
+export function InFlightRow({
   record,
   onOpen,
 }: {
@@ -307,8 +328,15 @@ function InFlightRow({
         decorative
       />
       <span className="min-w-0 flex-1">
-        <span className="block truncate text-[12.5px] font-medium text-fg">{record.label}</span>
-        <span className="mt-0.5 block truncate font-mono text-[9.5px] text-fg-dim">
+        {/* Two lines for a swap's two sides (`10 OSMO (Osmosis)` / `→
+            USDC.axl (Axelar)`), so neither token nor chain is cut. */}
+        <span className="block text-[12.5px] font-medium leading-snug text-fg [overflow-wrap:anywhere]">
+          <RouteLabel label={record.label} />
+        </span>
+        <span
+          className="mt-0.5 block truncate font-mono text-[9.5px] text-fg-dim"
+          title={`${status.detail} · ${clockLabel(record.startedAt)}`}
+        >
           {status.detail} · {clockLabel(record.startedAt)}
         </span>
       </span>

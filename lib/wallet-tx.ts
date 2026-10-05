@@ -105,6 +105,10 @@ export async function signAndBroadcast(
 
   const ethKeyType = chainUsesEthKeySign(input.chainId);
   const ethPubKeyTypeUrl = ethPubKeyTypeUrlFor(input.chainId);
+  // The screens pass the memo they showed, which is kept as it is. A blank
+  // one gets the default that names the token as this chain holds it, worked
+  // out once, so a retry after a sequence mismatch signs the same text.
+  const memo = resolveTxMemo(input.memo, input.msgs, input.chainId);
 
   let lastError: unknown;
   let forcedSequence: string | null = null;
@@ -121,7 +125,7 @@ export async function signAndBroadcast(
       sequence,
       fee,
       msgs: input.msgs,
-      memo: resolveTxMemo(input.memo, input.msgs),
+      memo,
     });
     const signatureHex = kernel.signCosmos(
       mnemonic,

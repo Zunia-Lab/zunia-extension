@@ -22,6 +22,8 @@ import {
   familyOf,
   ibcDenomFor,
   identityOf,
+  isUnlistedLocal,
+  isUserAddedChain,
   osmosisDenomOf,
   shortDenom,
   tickerFor,
@@ -558,6 +560,117 @@ describe("unknown and unproven identities", () => {
   });
 });
 
+describe("unlisted local tokens", () => {
+  /** Anyone's factory/<self>/USDC.n: the impostor the wave-3 review found reading "Native on Osmosis". */
+  const IMPOSTOR = "factory/osmo1qyqszqgpqyqszqgpqyqszqgpqyqszqgpjnp7du/USDC.n";
+
+  it("never call a token nothing lists native, in any wording", () => {
+    const cases: [chainId: string, denom: string][] = [
+      ["osmosis-1", IMPOSTOR],
+      ["osmosis-1", "factory/osmo1creator/uflower"],
+      ["injective-1", "factory/inj1qyqszqgpqyqszqgpqyqszqgpqyqszqgpvk3zns/USDC.inj"],
+      ["injective-1", "erc20:0x0000000000000000000000000000000000000001"],
+      ["cosmoshub-4", "uunlisted"],
+      ["cosmoshub-4", "cw20:cosmos1xyz"],
+      ["osmo-test-5", "factory/osmo1creator/utest"],
+    ];
+    for (const [chainId, denom] of cases) {
+      const identity = identityOf(chainId, denom);
+      // Minted where it is held, so the origin is known; nothing names it.
+      expect(identity, denom).toMatchObject({ originChainId: chainId, listed: false, proven: false });
+      expect(identity.provenance, denom).not.toBe("unknown");
+      const held = identity.heldOnChainName;
+      expect(tokenText(identity, "row"), denom).toBe(`Unlisted token · on ${held}`);
+      expect(tokenText(identity, "a11y"), denom).toBe(`${identity.ticker}, unlisted token, on ${held}`);
+      expect(tokenText(identity, "sentence"), denom).toBe(`${identity.ticker} (unlisted token) on ${held}`);
+      for (const variant of ["row", "a11y", "sentence"] as const) {
+        expect(tokenText(identity, variant), `${denom} ${variant}`).not.toMatch(/native/i);
+      }
+      expect(isUnlistedLocal(identity), denom).toBe(true);
+    }
+    const impostor = identityOf("osmosis-1", IMPOSTOR);
+    expect(impostor.ticker).toMatch(/^USDC\.n·[0-9A-F]{4}$/);
+    expect(tokenText(impostor, "row")).toBe("Unlisted token · on Osmosis");
+  });
+
+  it("keep Native for a chain's own coin and the local tokens a registry or a known contract names", () => {
+    const listed: [chainId: string, denom: string, row: string][] = [
+      ["osmosis-1", "uosmo", "Native on Osmosis"],
+      ["injective-1", USDC_INJ_ERC20, "Native on Injective"],
+      // The Ethereum contract the denom embeds, on the chain whose bridge mints it.
+      ["injective-1", "peggy0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", "Native on Injective"],
+      // Issuer denoms only the hash-verified table names.
+      ["cosmoshub-4", HUB_EUREKA_ETH, "Native on Cosmos Hub"],
+      ["axelar-dojo-1", "polygon-uusdt", "Native on Axelar"],
+      ["osmo-test-5", "uosmo", "Native on Osmosis Testnet"],
+    ];
+    for (const [chainId, denom, row] of listed) {
+      const identity = identityOf(chainId, denom);
+      expect(identity.listed, denom).toBe(true);
+      expect(isUnlistedLocal(identity), denom).toBe(false);
+      expect(tokenText(identity, "row"), denom).toBe(row);
+    }
+    // The same contract on a testnet's bridge proves nothing: unlisted there.
+    expect(tokenText(identityOf("injective-888", "peggy0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"), "row")).toBe(
+      "Unlisted token · on Injective (Testnet)",
+    );
+    // An unknown voucher stays unknown, not unlisted: its origin is not known.
+    const unknown = identityOf("osmosis-1", UNLISTED);
+    expect(unknown.listed).toBe(false);
+    expect(isUnlistedLocal(unknown)).toBe(false);
+    expect(tokenText(unknown, "row")).toBe("Unknown origin · on Osmosis · ibc/0123…ABCDEF");
+  });
+
+  it("name every registry, table and catalog token as listed, so none of them reads Unlisted", () => {
+    const seen = new Set<string>();
+    const unlisted: string[] = [];
+    const check = (chainId: string, denom: string) => {
+      const key = `${chainId}:${denom}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      const identity = identityOf(chainId, denom);
+      if (identity.listed) {
+        expect(tokenText(identity, "row"), key).not.toMatch(/Unlisted/);
+      } else if (identity.provenance !== "unknown") {
+        unlisted.push(key);
+      }
+    };
+    for (const row of tokenTableRows()) {
+      check(row.heldOnChainId, row.denom);
+      check(row.originChainId, row.originDenom);
+    }
+    for (const entry of allCatalogEntries()) {
+      check(entry.chainId, entry.coinMinimalDenom);
+      for (const currency of entry.currencies ?? []) check(entry.chainId, currency.coinMinimalDenom);
+    }
+    expect(seen.size).toBeGreaterThan(1400);
+    // The one exception: Migaloo's own OPHIR, which the table knows only from a
+    // two-hop Hub voucher (Hub → Osmosis → Migaloo), so the issuer side is not
+    // proven and keeps the impostor-style ticker; its words agree with that.
+    expect(unlisted).toEqual(["migaloo-1:factory/migaloo1t862qdu9mj5hr3j727247acypym3ej47axu22rrapm4tqlcpuseqltxwq5/ophir"]);
+  });
+
+  it("call a user-added chain's own coin native, and a token minted there that nothing lists unlisted", () => {
+    setCustomCatalogEntries([customChain({ chainId: "mine-1", chainName: "Mine", coinDenom: "MINE", coinMinimalDenom: "umine" })]);
+    const coin = identityOf("mine-1", "umine");
+    expect(coin).toMatchObject({ listed: true, proven: false, testnet: true });
+    expect(tokenText(coin, "row")).toBe("Native on Mine");
+    const minted = identityOf("mine-1", "factory/mine1creator/ufoo");
+    expect(minted).toMatchObject({ listed: false, proven: false });
+    expect(tokenText(minted, "row")).toBe("Unlisted token · on Mine");
+  });
+
+  it("tell a user-added chain from a registry testnet by the user's list, not by its network field", () => {
+    // custom-chains.ts stores every chain the user adds with network "testnet".
+    setCustomCatalogEntries([customChain({ chainId: "mine-1", network: "testnet" })]);
+    expect(isUserAddedChain("mine-1")).toBe(true);
+    expect(isUserAddedChain("osmo-test-5")).toBe(false);
+    expect(isUserAddedChain("osmosis-1")).toBe(false);
+    setCustomCatalogEntries([]);
+    expect(isUserAddedChain("mine-1")).toBe(false);
+  });
+});
+
 describe("logos", () => {
   it("never use a chain icon for a token that is not that chain's coin", () => {
     const icons = new Set(
@@ -956,6 +1069,10 @@ describe("identifyHeld", () => {
     expect(walked.proven).toBe(false);
     expect(walked.ticker).toMatch(/^USDC\.n·[0-9A-F]{4}$/);
     expect(walked.name).toBe("Unlisted Neutron token");
+    // Its words say so in every place, the accessible name included.
+    expect(walked.listed).toBe(false);
+    expect(identity.tokenText(walked, "row")).toBe("Unlisted Neutron token · on Osmosis");
+    expect(identity.tokenText(walked, "a11y")).toBe("Unlisted Neutron token, on Osmosis");
     expect(identity.identityOf("osmosis-1", USDC_N_ON_OSMOSIS).ticker).toBe("USDC.n");
   });
 

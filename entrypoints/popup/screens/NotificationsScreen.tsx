@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import {
+  Button,
   EmptyState,
   ScreenScaffold,
   Segmented,
@@ -136,18 +137,26 @@ export function NotificationsScreen({
   approvals,
   chains,
   balances,
+  readsLive,
   onBack,
   onNavigate,
 }: {
   approvals: ApprovalRequest[];
   chains: ChainAccountView[];
   balances: Record<string, ChainBalance>;
+  /**
+   * Whether chain reads may run: the live balances setting and the host access
+   * it needs, the flag Home and the balance reads use. The setting alone is on
+   * by default before any access is granted, so on a fresh install it made
+   * this screen wait for reads that could never run.
+   */
+  readsLive: boolean;
   onBack: () => void;
   onNavigate: (route: PopupRoute, chainId?: string) => void;
 }) {
   const { settings, update } = usePrefs();
   const alerts = useBrowserAlerts();
-  const live = settings.liveBalances;
+  const live = readsLive;
   const prefs = settings.notify;
   const setPrefs = (patch: Partial<NotifyPrefs>) => void update({ notify: { ...prefs, ...patch } });
   const chainIds = useMemo(() => chains.map((c) => c.chainId), [chains]);
@@ -243,7 +252,14 @@ export function NotificationsScreen({
             description={
               live
                 ? "Approvals, claimable rewards and governance deadlines land here."
-                : "Turn on on-chain reads in Preferences to be told about rewards, transfers and votes."
+                : "Turn on live balances in Preferences to be told about rewards, transfers and votes."
+            }
+            action={
+              live ? undefined : (
+                <Button size="sm" variant="secondary" onClick={() => onNavigate("preferences")}>
+                  Open Preferences
+                </Button>
+              )
             }
           />
         ) : visible.length === 0 ? (

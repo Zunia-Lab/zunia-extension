@@ -103,7 +103,12 @@ export interface TxRequest {
   readonly chainId: string;
   readonly signerAddress: string;
   readonly msgs: readonly BuiltMsg[];
-  /** Transaction memo. Empty becomes a type-specific Zunia default. ICS20/PFM memos stay on the message. */
+  /**
+   * Transaction memo. Empty becomes a type-specific Zunia default that names
+   * the token as `chainId` holds it. ICS20/PFM memos stay on the message.
+   * When signing, pass the previewed `preview.memo` back, so the memo signed
+   * is the memo shown.
+   */
   readonly memo?: string;
   readonly feeSpeed?: FeeSpeed;
   readonly gasAdjustment?: number;
@@ -181,6 +186,17 @@ function higherUint(a?: string, b?: string): string {
   return String(left >= right ? left : right);
 }
 
+/**
+ * The tx-body memo for a request: the caller's text, or the Zunia default
+ * naming the token as the signing chain holds it (`IBC transfer USDC.n` for
+ * Noble USDC on Osmosis). The preview and the signature both get it here, so
+ * a default cannot read one way on the screen and another in the signed
+ * bytes: the sign-bytes hash check would refuse that.
+ */
+function txMemo(request: Pick<TxRequest, "chainId" | "msgs" | "memo">): string {
+  return resolveTxMemo(request.memo, request.msgs, request.chainId);
+}
+
 function packetMemoOf(msgs: readonly BuiltMsg[]): MemoInspection | null {
   const first = msgs[0];
   if (!first || first.typeUrl !== "/ibc.applications.transfer.v1.MsgTransfer") {
@@ -230,7 +246,7 @@ export async function previewTx(request: TxRequest): Promise<TxPreview> {
   const gasFloor = erc20TransferGasFloor(request.msgs);
 
   const msgsJson = JSON.stringify(request.msgs);
-  const memo = resolveTxMemo(request.memo, request.msgs);
+  const memo = txMemo(request);
 
   let fee: KernelFeeJson;
   let feeNote: string | null = null;
@@ -356,7 +372,7 @@ export async function signAndBroadcastTx(
 
   const msgsJson = JSON.stringify(request.msgs);
   const feeJson = JSON.stringify(request.fee);
-  const memo = resolveTxMemo(request.memo, request.msgs);
+  const memo = txMemo(request);
   const ethKeyType = chainUsesEthKeySign(request.chainId);
   const ethPubKeyTypeUrl = ethPubKeyTypeUrlFor(request.chainId);
 

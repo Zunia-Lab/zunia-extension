@@ -67,7 +67,6 @@ import {
   useNftMediaGate,
 } from "./nft-ui";
 import { GasFeePrefs } from "../components/GasFeePrefs";
-import { usePrefs } from "../state/Prefs";
 import { signingError, useSignedSend } from "../state/SigningPassword";
 
 type Phase = "view" | "transfer" | "confirm" | "sent";
@@ -101,7 +100,6 @@ export function NftDetailScreen({
   onBack: () => void;
 }) {
   const signedSend = useSignedSend();
-  const { settings } = usePrefs();
   const media = useNftMediaGate();
   const kernel = useKernelSigning();
   const { supported } = useNftChains(chains);
@@ -404,12 +402,12 @@ export function NftDetailScreen({
               tokenId,
               recipient: recipient.trim(),
             });
+      // No fee preferences here: the worker reads the saved ones, so a fee
+      // changed on the confirm screen re-previews at the new speed.
       const built = await sendToBackground<TxPreview>("BUILD_TX_PREVIEW", {
         chainId,
         signerAddress: owner,
         msgs: [msg],
-        feeSpeed: settings.feeSpeed,
-        gasAdjustment: settings.gasAdjustment,
       });
       setPending({
         msg,
