@@ -1,0 +1,1050 @@
+{
+ "factory/osmo1279xudevmf5cw83vkhglct7jededp86k90k2le/RAPTR": {
+  "name": "RAPTR",
+  "symbol": "RAPTR",
+  "coinMinimalDenom": "factory/osmo1279xudevmf5cw83vkhglct7jededp86k90k2le/RAPTR",
+  "decimals": 6,
+  "preview": true,
+  "coingeckoId": ""
+ },
+ "factory/osmo147h5x9pcj7lm0cttlaefx6sqq5vdfnmwfcqxkmjd7exqm9gc7grqhr75m0/alloyed/allUSDC": {
+  "name": "USDC",
+  "symbol": "USDC",
+  "coinMinimalDenom": "factory/osmo147h5x9pcj7lm0cttlaefx6sqq5vdfnmwfcqxkmjd7exqm9gc7grqhr75m0/alloyed/allUSDC",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": "usd-coin"
+ },
+ "factory/osmo17fel472lgzs87ekt9dvk0zqyh5gl80sqp4sk4n/LAB": {
+  "name": "LAB",
+  "symbol": "LAB",
+  "coinMinimalDenom": "factory/osmo17fel472lgzs87ekt9dvk0zqyh5gl80sqp4sk4n/LAB",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": ""
+ },
+ "factory/osmo18zdw5yvs6gfp95rp74qqwug9yduw2fyr8kplk2xgs726s9axc5usa2vpgw/alloyed/allLINK": {
+  "name": "Chainlink",
+  "symbol": "LINK",
+  "coinMinimalDenom": "factory/osmo18zdw5yvs6gfp95rp74qqwug9yduw2fyr8kplk2xgs726s9axc5usa2vpgw/alloyed/allLINK",
+  "decimals": 12,
+  "preview": false,
+  "coingeckoId": "chainlink"
+ },
+ "factory/osmo1em6xs47hd82806f5cxgyufguxrrc7l0aqx7nzzptjuqgswczk8csavdxek/alloyed/allUSDT": {
+  "name": "Tether USD",
+  "symbol": "USDT",
+  "coinMinimalDenom": "factory/osmo1em6xs47hd82806f5cxgyufguxrrc7l0aqx7nzzptjuqgswczk8csavdxek/alloyed/allUSDT",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": "tether"
+ },
+ "factory/osmo1f5vfcph2dvfeqcqkhetwv75fda69z7e5c2dldm3kvgj23crkv6wqcn47a0/umilkTIA": {
+  "name": "milkTIA",
+  "symbol": "milkTIA",
+  "coinMinimalDenom": "factory/osmo1f5vfcph2dvfeqcqkhetwv75fda69z7e5c2dldm3kvgj23crkv6wqcn47a0/umilkTIA",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": "milkyway-staked-tia"
+ },
+ "factory/osmo1g8qypve6l95xmhgc0fddaecerffymsl7kn9muw/sqbtc": {
+  "name": "BTC Squared",
+  "symbol": "sqBTC",
+  "coinMinimalDenom": "factory/osmo1g8qypve6l95xmhgc0fddaecerffymsl7kn9muw/sqbtc",
+  "decimals": 6,
+  "preview": true,
+  "coingeckoId": ""
+ },
+ "factory/osmo1k6c8jln7ejuqwtqmay3yvzrg3kueaczl96pk067ldg8u835w0yhsw27twm/alloyed/allETH": {
+  "name": "Ethereum",
+  "symbol": "ETH",
+  "coinMinimalDenom": "factory/osmo1k6c8jln7ejuqwtqmay3yvzrg3kueaczl96pk067ldg8u835w0yhsw27twm/alloyed/allETH",
+  "decimals": 18,
+  "preview": false,
+  "coingeckoId": "ethereum"
+ },
+ "factory/osmo1kqdw6pvn0xww6tyfv2sqvkkencdz0qw406x54r/IBC": {
+  "name": "IBC",
+  "symbol": "IBC",
+  "coinMinimalDenom": "factory/osmo1kqdw6pvn0xww6tyfv2sqvkkencdz0qw406x54r/IBC",
+  "decimals": 6,
+  "preview": true,
+  "coingeckoId": ""
+ },
+ "factory/osmo1n3n75av8awcnw4jl62n3l48e6e4sxqmaf97w5ua6ddu4s475q5qq9udvx4/alloyed/allSOL": {
+  "name": "Solana",
+  "symbol": "SOL",
+  "coinMinimalDenom": "factory/osmo1n3n75av8awcnw4jl62n3l48e6e4sxqmaf97w5ua6ddu4s475q5qq9udvx4/alloyed/allSOL",
+  "decimals": 9,
+  "preview": false,
+  "coingeckoId": "solana"
+ },
+ "factory/osmo1n6asrjy9754q8y9jsxqf557zmsv3s3xa5m9eg5/uspice": {
+  "name": "Spice",
+  "symbol": "SPICE",
+  "coinMinimalDenom": "factory/osmo1n6asrjy9754q8y9jsxqf557zmsv3s3xa5m9eg5/uspice",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": "spice-2"
+ },
+ "factory/osmo1q77cw0mmlluxu0wr29fcdd0tdnh78gzhkvhe4n6ulal9qvrtu43qtd0nh8/t7s": {
+  "name": "The Sevens",
+  "symbol": "T7S",
+  "coinMinimalDenom": "factory/osmo1q77cw0mmlluxu0wr29fcdd0tdnh78gzhkvhe4n6ulal9qvrtu43qtd0nh8/t7s",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": ""
+ },
+ "factory/osmo1q77cw0mmlluxu0wr29fcdd0tdnh78gzhkvhe4n6ulal9qvrtu43qtd0nh8/wiha": {
+  "name": "WiliHall",
+  "symbol": "WIHA",
+  "coinMinimalDenom": "factory/osmo1q77cw0mmlluxu0wr29fcdd0tdnh78gzhkvhe4n6ulal9qvrtu43qtd0nh8/wiha",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": ""
+ },
+ "factory/osmo1s3l0lcqc7tu0vpj6wdjz9wqpxv8nk6eraevje4fuwkyjnwuy82qsx3lduv/boneOsmo": {
+  "name": "BackBone Labs Liquid Staked OSMO",
+  "symbol": "bOSMO",
+  "coinMinimalDenom": "factory/osmo1s3l0lcqc7tu0vpj6wdjz9wqpxv8nk6eraevje4fuwkyjnwuy82qsx3lduv/boneOsmo",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": ""
+ },
+ "factory/osmo1s6ht8qrm8x0eg8xag5x3ckx9mse9g4se248yss/BERNESE": {
+  "name": "BERNESE",
+  "symbol": "BERNESE",
+  "coinMinimalDenom": "factory/osmo1s6ht8qrm8x0eg8xag5x3ckx9mse9g4se248yss/BERNESE",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": ""
+ },
+ "factory/osmo1vf6e300hv2qe7r5rln8deft45ewgyytjnwfrdfcv5rgzrfy0s6cswjqf9r/mars-usdc-looped": {
+  "name": "Mars Looped USDC Vault",
+  "symbol": "earnUSDC",
+  "coinMinimalDenom": "factory/osmo1vf6e300hv2qe7r5rln8deft45ewgyytjnwfrdfcv5rgzrfy0s6cswjqf9r/mars-usdc-looped",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": ""
+ },
+ "factory/osmo1z0qrq605sjgcqpylfl4aa6s90x738j7m58wyatt0tdzflg2ha26q67k743/wbtc": {
+  "name": "Wrapped Bitcoin",
+  "symbol": "WBTC",
+  "coinMinimalDenom": "factory/osmo1z0qrq605sjgcqpylfl4aa6s90x738j7m58wyatt0tdzflg2ha26q67k743/wbtc",
+  "decimals": 8,
+  "preview": false,
+  "coingeckoId": "wrapped-bitcoin"
+ },
+ "ibc/015886089AB23BA8A463D1A9B9B4F95A84705BFD6A25B4B53A0CE3C1382494A6": {
+  "name": "LP Bow: INJ-USDC",
+  "symbol": "LP-INJ-USDC",
+  "coinMinimalDenom": "ibc/015886089AB23BA8A463D1A9B9B4F95A84705BFD6A25B4B53A0CE3C1382494A6",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": ""
+ },
+ "ibc/044B7B28AFE93CEC769CF529ADC626DA09EA0EFA3E0E3284D540E9E00E01E24A": {
+  "name": "ConsciousDAO",
+  "symbol": "CVN",
+  "coinMinimalDenom": "ibc/044B7B28AFE93CEC769CF529ADC626DA09EA0EFA3E0E3284D540E9E00E01E24A",
+  "decimals": 18,
+  "preview": true,
+  "coingeckoId": ""
+ },
+ "ibc/094FB70C3006906F67F5D674073D2DAFAFB41537E7033098F5C752F211E7B6C2": {
+  "name": "Saga",
+  "symbol": "SAGA",
+  "coinMinimalDenom": "ibc/094FB70C3006906F67F5D674073D2DAFAFB41537E7033098F5C752F211E7B6C2",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": "saga-2"
+ },
+ "ibc/0954E1C28EB7AF5B72D24F3BC2B47BBB2FDF91BDDFD57B74B99E133AED40972A": {
+  "name": "Secret Network",
+  "symbol": "SCRT",
+  "coinMinimalDenom": "ibc/0954E1C28EB7AF5B72D24F3BC2B47BBB2FDF91BDDFD57B74B99E133AED40972A",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": "secret"
+ },
+ "ibc/0B10F783E5012100C142DA1C0D99A0E5B52EEBD882C1E4856378257566D04FA1": {
+  "name": "WBTC / USDC LP",
+  "symbol": "WBTC-USDC-LP",
+  "coinMinimalDenom": "ibc/0B10F783E5012100C142DA1C0D99A0E5B52EEBD882C1E4856378257566D04FA1",
+  "decimals": 18,
+  "preview": false,
+  "coingeckoId": ""
+ },
+ "ibc/0B3C3D06228578334B66B57FBFBA4033216CEB8119B27ACDEE18D92DA5B28D43": {
+  "name": "Avalanche USD Coin (Wormhole)",
+  "symbol": "avalanche.USDC.wh",
+  "coinMinimalDenom": "ibc/0B3C3D06228578334B66B57FBFBA4033216CEB8119B27ACDEE18D92DA5B28D43",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": ""
+ },
+ "ibc/0CD3A0285E1341859B5E86B6AB7682F023D03E97607CCC1DC95706411D866DF7": {
+  "name": "Dai Stablecoin",
+  "symbol": "DAI",
+  "coinMinimalDenom": "ibc/0CD3A0285E1341859B5E86B6AB7682F023D03E97607CCC1DC95706411D866DF7",
+  "decimals": 18,
+  "preview": false,
+  "coingeckoId": "dai"
+ },
+ "ibc/0CF0C033EF499817C864D4C96C181ECB0A622C21B906ADDA8B9C078646EAE1B7": {
+  "name": "USD Coin (Portal from Avalanche)",
+  "symbol": "USDCav.terra",
+  "coinMinimalDenom": "ibc/0CF0C033EF499817C864D4C96C181ECB0A622C21B906ADDA8B9C078646EAE1B7",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": ""
+ },
+ "ibc/0E43EDE2E2A3AFA36D0CD38BDDC0B49FECA64FA426A82E102F304E430ECF46EE": {
+  "name": "Frax",
+  "symbol": "FRAX",
+  "coinMinimalDenom": "ibc/0E43EDE2E2A3AFA36D0CD38BDDC0B49FECA64FA426A82E102F304E430ECF46EE",
+  "decimals": 18,
+  "preview": false,
+  "coingeckoId": "frax"
+ },
+ "ibc/0E77E090EC04C476DE2BC0A7056580AC47660DAEB7B0D4701C085E3A046AC7B7": {
+  "name": "ATOM1KLFG",
+  "symbol": "ATOM1KLFG",
+  "coinMinimalDenom": "ibc/0E77E090EC04C476DE2BC0A7056580AC47660DAEB7B0D4701C085E3A046AC7B7",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": ""
+ },
+ "ibc/0EF15DF2F02480ADE0BB6E85D9EBB5DAEA2836D3860E9F97F9AADE4F57A31AA0": {
+  "name": "Terra Classic",
+  "symbol": "LUNC",
+  "coinMinimalDenom": "ibc/0EF15DF2F02480ADE0BB6E85D9EBB5DAEA2836D3860E9F97F9AADE4F57A31AA0",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": "terra-luna"
+ },
+ "ibc/0EF5630576C66968EF0787868CF09FD866FAD131BC148D24A148358A85F0EB62": {
+  "name": "Paxos Gold (Eureka)",
+  "symbol": "PAXG.atom",
+  "coinMinimalDenom": "ibc/0EF5630576C66968EF0787868CF09FD866FAD131BC148D24A148358A85F0EB62",
+  "decimals": 18,
+  "preview": false,
+  "coingeckoId": ""
+ },
+ "ibc/1480B8FD20AD5FCAE81EA87584D269547DD4D436843C1D20F15E00EB64743EF4": {
+  "name": "Akash",
+  "symbol": "AKT",
+  "coinMinimalDenom": "ibc/1480B8FD20AD5FCAE81EA87584D269547DD4D436843C1D20F15E00EB64743EF4",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": "akash-network"
+ },
+ "ibc/17C54D2D90B6584613A3B1D97A622E5056CC03170309B524EB7E1A1383D309FB": {
+  "name": "INJ / USDC LP",
+  "symbol": "INJ-USDC-LP",
+  "coinMinimalDenom": "ibc/17C54D2D90B6584613A3B1D97A622E5056CC03170309B524EB7E1A1383D309FB",
+  "decimals": 18,
+  "preview": false,
+  "coingeckoId": ""
+ },
+ "ibc/1AEF145C549D4F9847C79E49710B198C294C7F4A107F4610DEE8E725FFC4B378": {
+  "name": "Lava",
+  "symbol": "LAVA",
+  "coinMinimalDenom": "ibc/1AEF145C549D4F9847C79E49710B198C294C7F4A107F4610DEE8E725FFC4B378",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": "lava-network"
+ },
+ "ibc/1DCC8A6CB5689018431323953344A9F6CC4D0BFB261E88C9F7777372C10CD076": {
+  "name": "Regen",
+  "symbol": "REGEN",
+  "coinMinimalDenom": "ibc/1DCC8A6CB5689018431323953344A9F6CC4D0BFB261E88C9F7777372C10CD076",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": "regen"
+ },
+ "ibc/1E43D59E565D41FB4E54CA639B838FFD5BCFC20003D330A56CB1396231AA1CBA": {
+  "name": "Solana (Wormhole)",
+  "symbol": "SOL.wh",
+  "coinMinimalDenom": "ibc/1E43D59E565D41FB4E54CA639B838FFD5BCFC20003D330A56CB1396231AA1CBA",
+  "decimals": 8,
+  "preview": false,
+  "coingeckoId": ""
+ },
+ "ibc/20850C646CDDDC2270E9BBDB08558B5FEE57B647EC6827F41096AABFD8A0471B": {
+  "name": "Ethereum (Eureka)",
+  "symbol": "ETH.atom",
+  "coinMinimalDenom": "ibc/20850C646CDDDC2270E9BBDB08558B5FEE57B647EC6827F41096AABFD8A0471B",
+  "decimals": 18,
+  "preview": false,
+  "coingeckoId": ""
+ },
+ "ibc/208B2F137CDE510B44C41947C045CFDC27F996A9D990EA64460BDD5B3DBEB2ED": {
+  "name": "Passage",
+  "symbol": "PASG",
+  "coinMinimalDenom": "ibc/208B2F137CDE510B44C41947C045CFDC27F996A9D990EA64460BDD5B3DBEB2ED",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": "passage"
+ },
+ "ibc/23104D411A6EB6031FA92FB75F227422B84989969E91DCAD56A535DD7FF0A373": {
+  "name": "Ondo US Dollar Yield",
+  "symbol": "USDY",
+  "coinMinimalDenom": "ibc/23104D411A6EB6031FA92FB75F227422B84989969E91DCAD56A535DD7FF0A373",
+  "decimals": 18,
+  "preview": false,
+  "coingeckoId": "ondo-us-dollar-yield"
+ },
+ "ibc/231FD77ECCB2DB916D314019DA30FE013202833386B1908A191D16989AD80B5A": {
+  "name": "USDC (Ethereum) (Polygon via Axelar)",
+  "symbol": "USDC.e.matic.axl",
+  "coinMinimalDenom": "ibc/231FD77ECCB2DB916D314019DA30FE013202833386B1908A191D16989AD80B5A",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": ""
+ },
+ "ibc/23AB778D694C1ECFC59B91D8C399C115CC53B0BD1C61020D8E19519F002BDD85": {
+  "name": "Archway",
+  "symbol": "ARCH",
+  "coinMinimalDenom": "ibc/23AB778D694C1ECFC59B91D8C399C115CC53B0BD1C61020D8E19519F002BDD85",
+  "decimals": 18,
+  "preview": false,
+  "coingeckoId": "archway"
+ },
+ "ibc/243B3934C4462EE254C84AA31AF42E34F1869418194D3E4161E4A659A01AC6E6": {
+  "name": "POSTHUMAN",
+  "symbol": "PHMN",
+  "coinMinimalDenom": "ibc/243B3934C4462EE254C84AA31AF42E34F1869418194D3E4161E4A659A01AC6E6",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": ""
+ },
+ "ibc/245C3CA604AAB4BB9EEA5E86F23F52D59253D8722C8FC9C4E3E69F77C5CD3D2F": {
+  "name": "Stride Staked ISLM",
+  "symbol": "stISLM",
+  "coinMinimalDenom": "ibc/245C3CA604AAB4BB9EEA5E86F23F52D59253D8722C8FC9C4E3E69F77C5CD3D2F",
+  "decimals": 18,
+  "preview": false,
+  "coingeckoId": "stride-staked-islm"
+ },
+ "ibc/27394FB092D2ECCD56123C74F36E4C1F926001CEADA9CA97EA622B25F41E5EB2": {
+  "name": "Cosmos Hub",
+  "symbol": "ATOM",
+  "coinMinimalDenom": "ibc/27394FB092D2ECCD56123C74F36E4C1F926001CEADA9CA97EA622B25F41E5EB2",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": "cosmos"
+ },
+ "ibc/297C64CC42B5A8D8F82FE2EBE208A6FE8F94B86037FA28C4529A23701C228F7A": {
+  "name": "Neta",
+  "symbol": "NETA",
+  "coinMinimalDenom": "ibc/297C64CC42B5A8D8F82FE2EBE208A6FE8F94B86037FA28C4529A23701C228F7A",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": "neta"
+ },
+ "ibc/2AD3C64D19ADFBB522CD738B58F421102143F827C1CAFF574A8BF0B81017D53D": {
+  "name": "Tether USD (Ethereum) (Injective)",
+  "symbol": "USDT.eth.inj",
+  "coinMinimalDenom": "ibc/2AD3C64D19ADFBB522CD738B58F421102143F827C1CAFF574A8BF0B81017D53D",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": ""
+ },
+ "ibc/2DA9C149E9AD2BD27FEFA635458FB37093C256C1A940392634A16BEA45262604": {
+  "name": "Agoric",
+  "symbol": "BLD",
+  "coinMinimalDenom": "ibc/2DA9C149E9AD2BD27FEFA635458FB37093C256C1A940392634A16BEA45262604",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": "agoric"
+ },
+ "ibc/2E3784772E70F7B3A638BA88F65C8BE125D3CDB6E28C6AABC51098C94F5E16A5": {
+  "name": "Verona",
+  "symbol": "VERONA",
+  "coinMinimalDenom": "ibc/2E3784772E70F7B3A638BA88F65C8BE125D3CDB6E28C6AABC51098C94F5E16A5",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": "xion-2"
+ },
+ "ibc/2F21E6D4271DE3F561F20A02CD541DAF7405B1E9CB3B9B07E3C2AC7D8A4338A5": {
+  "name": "Wrapped Lido Staked Ether",
+  "symbol": "wstETH",
+  "coinMinimalDenom": "ibc/2F21E6D4271DE3F561F20A02CD541DAF7405B1E9CB3B9B07E3C2AC7D8A4338A5",
+  "decimals": 18,
+  "preview": false,
+  "coingeckoId": "wrapped-steth"
+ },
+ "ibc/37CB3078432510EE57B9AFA8DBE028B33AE3280A144826FEAC5F2334CF2C5539": {
+  "name": "NYM",
+  "symbol": "NYM",
+  "coinMinimalDenom": "ibc/37CB3078432510EE57B9AFA8DBE028B33AE3280A144826FEAC5F2334CF2C5539",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": "nym"
+ },
+ "ibc/3BCCC93AD5DF58D11A6F8A05FA8BC801CBA0BA61A981F57E91B8B598BF8061CB": {
+  "name": "Medibloc",
+  "symbol": "MED",
+  "coinMinimalDenom": "ibc/3BCCC93AD5DF58D11A6F8A05FA8BC801CBA0BA61A981F57E91B8B598BF8061CB",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": "medibloc"
+ },
+ "ibc/3C793E97322DF85D1B337E65EA10712C506E7A02F76F83DB1AC4AB4D99F7B11A": {
+  "name": "OSMO / USDC LP",
+  "symbol": "OSMO-USDC-LP",
+  "coinMinimalDenom": "ibc/3C793E97322DF85D1B337E65EA10712C506E7A02F76F83DB1AC4AB4D99F7B11A",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": ""
+ },
+ "ibc/3FF92D26B407FD61AE95D975712A7C319CDE28DE4D80BDC9978D935932B991D7": {
+  "name": "Polkadot (Moonbeam via Axelar)",
+  "symbol": "DOT.glmr.axl",
+  "coinMinimalDenom": "ibc/3FF92D26B407FD61AE95D975712A7C319CDE28DE4D80BDC9978D935932B991D7",
+  "decimals": 10,
+  "preview": false,
+  "coingeckoId": ""
+ },
+ "ibc/46B44899322F3CD854D2D46DEEF881958467CDD4B3B10086DA49296BBED94BED": {
+  "name": "Juno",
+  "symbol": "JUNO",
+  "coinMinimalDenom": "ibc/46B44899322F3CD854D2D46DEEF881958467CDD4B3B10086DA49296BBED94BED",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": "juno-network"
+ },
+ "ibc/46EB46DB30D3BBC6F404A9232C09785F36D40DA05C662A8E295712ECBAFF1609": {
+  "name": "Ripple (XRPL EVM)",
+  "symbol": "XRP.xrplevm",
+  "coinMinimalDenom": "ibc/46EB46DB30D3BBC6F404A9232C09785F36D40DA05C662A8E295712ECBAFF1609",
+  "decimals": 18,
+  "preview": false,
+  "coingeckoId": "ripple"
+ },
+ "ibc/498A0751C798A0D9A389AA3691123DADA57DAA4FE165D5C75894505B876BA6E4": {
+  "name": "USDC (Noble)",
+  "symbol": "USDC.noble",
+  "coinMinimalDenom": "ibc/498A0751C798A0D9A389AA3691123DADA57DAA4FE165D5C75894505B876BA6E4",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": "usd-coin"
+ },
+ "ibc/4ABBEF4C8926DDDB320AE5188CFD63267ABBCEFC0583E4AE05D6E5AA2401DDAB": {
+  "name": "Tether USD (Kava)",
+  "symbol": "USDT.kava",
+  "coinMinimalDenom": "ibc/4ABBEF4C8926DDDB320AE5188CFD63267ABBCEFC0583E4AE05D6E5AA2401DDAB",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": "tether"
+ },
+ "ibc/4E5444C35610CC76FC94E7F7886B93121175C28262DDFDDE6F84E82BF2425452": {
+  "name": "BitSong",
+  "symbol": "BTSG",
+  "coinMinimalDenom": "ibc/4E5444C35610CC76FC94E7F7886B93121175C28262DDFDDE6F84E82BF2425452",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": "bitsong"
+ },
+ "ibc/52C57FCA7D6854AA178E7A183DDBE4EF322B904B1D719FC485F6FFBC1F72A19E": {
+  "name": "Gelotto (Juno)",
+  "symbol": "GLTO.juno",
+  "coinMinimalDenom": "ibc/52C57FCA7D6854AA178E7A183DDBE4EF322B904B1D719FC485F6FFBC1F72A19E",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": ""
+ },
+ "ibc/5D1F516200EE8C6B2354102143B78A2DEDA25EDE771AC0F8DC3C1837C8FD4447": {
+  "name": "Fetch.ai (Fetch.ai)",
+  "symbol": "FET.fetch",
+  "coinMinimalDenom": "ibc/5D1F516200EE8C6B2354102143B78A2DEDA25EDE771AC0F8DC3C1837C8FD4447",
+  "decimals": 18,
+  "preview": false,
+  "coingeckoId": "fetch-ai"
+ },
+ "ibc/60E8734240210E52792615AD5002457D11FD7FB85FE6FE11DC92268BB5AB63F4": {
+  "name": "asUSDC",
+  "symbol": "ASUSDC",
+  "coinMinimalDenom": "ibc/60E8734240210E52792615AD5002457D11FD7FB85FE6FE11DC92268BB5AB63F4",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": ""
+ },
+ "ibc/613BF0BF2F2146AE9941E923725745E931676B2C14E9768CD609FA0849B2AE13": {
+  "name": "KYVE",
+  "symbol": "KYVE",
+  "coinMinimalDenom": "ibc/613BF0BF2F2146AE9941E923725745E931676B2C14E9768CD609FA0849B2AE13",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": "kyve-network"
+ },
+ "ibc/616C2EA69BC328F245CE449785CB0B526B462C48F19DCF9B3D30699579B4308A": {
+  "name": "Coinbase Wrapped BTC (Axelar)",
+  "symbol": "cbBTC.axl",
+  "coinMinimalDenom": "ibc/616C2EA69BC328F245CE449785CB0B526B462C48F19DCF9B3D30699579B4308A",
+  "decimals": 8,
+  "preview": false,
+  "coingeckoId": ""
+ },
+ "ibc/62118FB4D5FEDD5D2B18DC93648A745CD5E5B01D420E9B7A5FED5381CB13A7E8": {
+  "name": "C4E",
+  "symbol": "C4E",
+  "coinMinimalDenom": "ibc/62118FB4D5FEDD5D2B18DC93648A745CD5E5B01D420E9B7A5FED5381CB13A7E8",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": "chain4energy"
+ },
+ "ibc/62F720A2B0AFE59D7377E86911A9EA2B1192DFA3C26C2329479376F3CBEBD311": {
+  "name": "cUSDC",
+  "symbol": "CUSDC",
+  "coinMinimalDenom": "ibc/62F720A2B0AFE59D7377E86911A9EA2B1192DFA3C26C2329479376F3CBEBD311",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": ""
+ },
+ "ibc/64BA6E31FE887D66C6F8F31C7B1A80C7CA179239677B4088BB55F5EA07DBE273": {
+  "name": "Injective",
+  "symbol": "INJ",
+  "coinMinimalDenom": "ibc/64BA6E31FE887D66C6F8F31C7B1A80C7CA179239677B4088BB55F5EA07DBE273",
+  "decimals": 18,
+  "preview": false,
+  "coingeckoId": "injective-protocol"
+ },
+ "ibc/672406ADE4EDFD8C5EA7A0D0DD0C37E431DA7BD8393A15CD2CFDE3364917EB2A": {
+  "name": "Dora Vota",
+  "symbol": "DORA",
+  "coinMinimalDenom": "ibc/672406ADE4EDFD8C5EA7A0D0DD0C37E431DA7BD8393A15CD2CFDE3364917EB2A",
+  "decimals": 18,
+  "preview": false,
+  "coingeckoId": ""
+ },
+ "ibc/67B7FDD98FC78C38A7F7C9968EDE8CD0B65C7D85992F6A9A861A8AA945FCD67C": {
+  "name": "ATOM / USDC LP",
+  "symbol": "ATOM-USDC-LP",
+  "coinMinimalDenom": "ibc/67B7FDD98FC78C38A7F7C9968EDE8CD0B65C7D85992F6A9A861A8AA945FCD67C",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": ""
+ },
+ "ibc/68BAF19F76BAC04C4CEA06325EF91D43E8637AE43EAC7887CE6211B4B99E1EC0": {
+  "name": "Stargaze",
+  "symbol": "STARS",
+  "coinMinimalDenom": "ibc/68BAF19F76BAC04C4CEA06325EF91D43E8637AE43EAC7887CE6211B4B99E1EC0",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": "stargaze"
+ },
+ "ibc/69110FF673D70B39904FF056CFDFD58A90BEC3194303F45C32CB91B8B0A738EA": {
+  "name": "Haqq Network",
+  "symbol": "ISLM",
+  "coinMinimalDenom": "ibc/69110FF673D70B39904FF056CFDFD58A90BEC3194303F45C32CB91B8B0A738EA",
+  "decimals": 18,
+  "preview": false,
+  "coingeckoId": "islamic-coin"
+ },
+ "ibc/698350B8A61D575025F3ED13E9AC9C0F45C89DEFE92F76D5838F1D3C1A7FF7C9": {
+  "name": "Stride Staked TIA",
+  "symbol": "stTIA",
+  "coinMinimalDenom": "ibc/698350B8A61D575025F3ED13E9AC9C0F45C89DEFE92F76D5838F1D3C1A7FF7C9",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": ""
+ },
+ "ibc/6B99DB46AA9FF47162148C1726866919E44A6A5E0274B90912FD17E19A337695": {
+  "name": "USDC (Ethereum via Wormhole)",
+  "symbol": "USDC.eth.wh",
+  "coinMinimalDenom": "ibc/6B99DB46AA9FF47162148C1726866919E44A6A5E0274B90912FD17E19A337695",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": ""
+ },
+ "ibc/6F62F01D913E3FFE472A38C78235B8F021B511BC6596ADFF02615C8F83D3B373": {
+  "name": "Avalanche",
+  "symbol": "AVAX",
+  "coinMinimalDenom": "ibc/6F62F01D913E3FFE472A38C78235B8F021B511BC6596ADFF02615C8F83D3B373",
+  "decimals": 18,
+  "preview": false,
+  "coingeckoId": "avalanche-2"
+ },
+ "ibc/776917313EC3252954ED622945D4979651ACD909A18E528283F46D7B166F20BF": {
+  "name": "Epix (Epix)",
+  "symbol": "EPIX.epix",
+  "coinMinimalDenom": "ibc/776917313EC3252954ED622945D4979651ACD909A18E528283F46D7B166F20BF",
+  "decimals": 18,
+  "preview": false,
+  "coingeckoId": ""
+ },
+ "ibc/785AFEC6B3741100D15E7AF01374E3C4C36F24888E96479B1C33F5C71F364EF9": {
+  "name": "Terra",
+  "symbol": "LUNA",
+  "coinMinimalDenom": "ibc/785AFEC6B3741100D15E7AF01374E3C4C36F24888E96479B1C33F5C71F364EF9",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": "terra-luna-2"
+ },
+ "ibc/794C7D7F3B857713878A3A1927251FA6AC1EEE520424C1F6FAFE9BA26D476138": {
+  "name": "USDC (Injective)",
+  "symbol": "USDC.inj",
+  "coinMinimalDenom": "ibc/794C7D7F3B857713878A3A1927251FA6AC1EEE520424C1F6FAFE9BA26D476138",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": "usd-coin"
+ },
+ "ibc/7A08C6F11EF0F59EB841B9F788A87EC9F2361C7D9703157EC13D940DC53031FA": {
+  "name": "Cheqd",
+  "symbol": "CHEQ",
+  "coinMinimalDenom": "ibc/7A08C6F11EF0F59EB841B9F788A87EC9F2361C7D9703157EC13D940DC53031FA",
+  "decimals": 9,
+  "preview": false,
+  "coingeckoId": "cheqd-network"
+ },
+ "ibc/7BC2F718C47C0749791F2612A914C8C39D1A4F533A27AF7285D924D4B617DDA6": {
+  "name": "Tether USD (Ethereum via Eureka)",
+  "symbol": "USDT.eth.atom",
+  "coinMinimalDenom": "ibc/7BC2F718C47C0749791F2612A914C8C39D1A4F533A27AF7285D924D4B617DDA6",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": ""
+ },
+ "ibc/7D22B3B8C52261AB0A5F8360B5F472C9A14A05ADFEF858C3573D09AFF10CE1BE": {
+  "name": "Neptune Receipt USDC",
+  "symbol": "nUSDC",
+  "coinMinimalDenom": "ibc/7D22B3B8C52261AB0A5F8360B5F472C9A14A05ADFEF858C3573D09AFF10CE1BE",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": ""
+ },
+ "ibc/7ED954CFFFC06EE8419387F3FC688837FF64EF264DE14219935F724EEEDBF8D3": {
+  "name": "Shentu",
+  "symbol": "CTK",
+  "coinMinimalDenom": "ibc/7ED954CFFFC06EE8419387F3FC688837FF64EF264DE14219935F724EEEDBF8D3",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": "certik"
+ },
+ "ibc/8242AD24008032E457D2E12D46588FD39FB54FB29680C6C7663D296B383C37C4": {
+  "name": "Tether USD (Ethereum via Axelar)",
+  "symbol": "USDT.eth.axl",
+  "coinMinimalDenom": "ibc/8242AD24008032E457D2E12D46588FD39FB54FB29680C6C7663D296B383C37C4",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": "axelar-usdt"
+ },
+ "ibc/831F0B1BBB1D08A2B75311892876D71565478C532967545476DF4C2D7492E48C": {
+  "name": "dYdX Protocol (dYdX Protocol)",
+  "symbol": "DYDX.dydx",
+  "coinMinimalDenom": "ibc/831F0B1BBB1D08A2B75311892876D71565478C532967545476DF4C2D7492E48C",
+  "decimals": 18,
+  "preview": false,
+  "coingeckoId": "dydx-chain"
+ },
+ "ibc/84502A75BCA4A5F68D464C00B3F610CE2585847D59B52E5FFB7C3C9D2DDCD3FE": {
+  "name": "Stride Staked JUNO",
+  "symbol": "stJUNO",
+  "coinMinimalDenom": "ibc/84502A75BCA4A5F68D464C00B3F610CE2585847D59B52E5FFB7C3C9D2DDCD3FE",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": "stride-staked-juno"
+ },
+ "ibc/88386AC48152D48B34B082648DF836F975506F0B57DBBFC10A54213B1BF484CB": {
+  "name": "Wrapped Bitcoin (Ethereum via Eureka)",
+  "symbol": "WBTC.eth.atom",
+  "coinMinimalDenom": "ibc/88386AC48152D48B34B082648DF836F975506F0B57DBBFC10A54213B1BF484CB",
+  "decimals": 8,
+  "preview": false,
+  "coingeckoId": ""
+ },
+ "ibc/8E697BDABE97ACE8773C6DF7402B2D1D5104DD1EEABE12608E3469B7F64C15BA": {
+  "name": "Jackal",
+  "symbol": "JKL",
+  "coinMinimalDenom": "ibc/8E697BDABE97ACE8773C6DF7402B2D1D5104DD1EEABE12608E3469B7F64C15BA",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": "jackal-protocol"
+ },
+ "ibc/8FEFAE6AECF6E2A255585617F781F35A8D5709A545A804482A261C0C9548A9D3": {
+  "name": "Carbon",
+  "symbol": "SWTH",
+  "coinMinimalDenom": "ibc/8FEFAE6AECF6E2A255585617F781F35A8D5709A545A804482A261C0C9548A9D3",
+  "decimals": 8,
+  "preview": false,
+  "coingeckoId": "switcheo"
+ },
+ "ibc/903A61A498756EA560B85A85132D3AEE21B5DEDD41213725D22ABF276EA6945E": {
+  "name": "Axelar",
+  "symbol": "AXL",
+  "coinMinimalDenom": "ibc/903A61A498756EA560B85A85132D3AEE21B5DEDD41213725D22ABF276EA6945E",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": "axelar"
+ },
+ "ibc/92BE0717F4678905E53F4E45B2DED18BC0CB97BF1F8B6A25AFEDF3D5A879B4D5": {
+  "name": "Inter Stable Token",
+  "symbol": "IST",
+  "coinMinimalDenom": "ibc/92BE0717F4678905E53F4E45B2DED18BC0CB97BF1F8B6A25AFEDF3D5A879B4D5",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": "inter-stable-token"
+ },
+ "ibc/95C9B5870F95E21A242E6AF9ADCB1F212EE4A8855087226C36FBE43FC41A77B8": {
+  "name": "XPLA",
+  "symbol": "XPLA",
+  "coinMinimalDenom": "ibc/95C9B5870F95E21A242E6AF9ADCB1F212EE4A8855087226C36FBE43FC41A77B8",
+  "decimals": 18,
+  "preview": false,
+  "coingeckoId": "xpla"
+ },
+ "ibc/9712DBB13B9631EDFA9BF61B55F1B2D290B2ADB67E3A4EB3A875F3B6081B3B84": {
+  "name": "Sentinel",
+  "symbol": "P2P",
+  "coinMinimalDenom": "ibc/9712DBB13B9631EDFA9BF61B55F1B2D290B2ADB67E3A4EB3A875F3B6081B3B84",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": "sentinel"
+ },
+ "ibc/9A76CDF0CBCEF37923F32518FA15E5DC92B9F56128292BC4D63C4AEA76CBB110": {
+  "name": "Dymension Hub (Dymension Hub)",
+  "symbol": "DYM.dym",
+  "coinMinimalDenom": "ibc/9A76CDF0CBCEF37923F32518FA15E5DC92B9F56128292BC4D63C4AEA76CBB110",
+  "decimals": 18,
+  "preview": false,
+  "coingeckoId": "dymension"
+ },
+ "ibc/9BBA9A1C257E971E38C1422780CE6F0B0686F0A3085E2D61118D904BFE0F5F5E": {
+  "name": "Sommelier",
+  "symbol": "SOMM",
+  "coinMinimalDenom": "ibc/9BBA9A1C257E971E38C1422780CE6F0B0686F0A3085E2D61118D904BFE0F5F5E",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": "sommelier"
+ },
+ "ibc/9F9B07EF9AD291167CF5700628145DE1DEB777C2CFC7907553B24446515F6D0E": {
+  "name": "USDC (Ethereum via Gravity Bridge)",
+  "symbol": "USDC.eth.grv",
+  "coinMinimalDenom": "ibc/9F9B07EF9AD291167CF5700628145DE1DEB777C2CFC7907553B24446515F6D0E",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": ""
+ },
+ "ibc/A0CC0CF735BFB30E730C70019D4218A1244FF383503FF7579C9201AB93CA9293": {
+  "name": "Persistence",
+  "symbol": "XPRT",
+  "coinMinimalDenom": "ibc/A0CC0CF735BFB30E730C70019D4218A1244FF383503FF7579C9201AB93CA9293",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": "persistence"
+ },
+ "ibc/A14A79305A1168CF7C8071EA40B5BC647E3D3FEBBD427E38F05FE07F0B317E0A": {
+  "name": "USD Coin (BEP-20)",
+  "symbol": "USDC.bsc.carbon",
+  "coinMinimalDenom": "ibc/A14A79305A1168CF7C8071EA40B5BC647E3D3FEBBD427E38F05FE07F0B317E0A",
+  "decimals": 18,
+  "preview": false,
+  "coingeckoId": ""
+ },
+ "ibc/A3D296760A21029AA03A32F4EC9D1935647B7659349A6467721E7B3FAD99F27F": {
+  "name": "USDC / USDC.axl LP",
+  "symbol": "USDC-USDC.axl-LP",
+  "coinMinimalDenom": "ibc/A3D296760A21029AA03A32F4EC9D1935647B7659349A6467721E7B3FAD99F27F",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": ""
+ },
+ "ibc/A8CA5EE328FA10C9519DF6057DA1F69682D28F7D0F5CCC7ECB72E3DCA2D157A4": {
+  "name": "Stride",
+  "symbol": "STRD",
+  "coinMinimalDenom": "ibc/A8CA5EE328FA10C9519DF6057DA1F69682D28F7D0F5CCC7ECB72E3DCA2D157A4",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": "stride"
+ },
+ "ibc/AB589511ED0DD5FA56171A39978AFBF1371DB986EC1C3526CE138A16377E39BB": {
+  "name": "Polygon (ex-MATIC) (Axelar)",
+  "symbol": "POL.axl",
+  "coinMinimalDenom": "ibc/AB589511ED0DD5FA56171A39978AFBF1371DB986EC1C3526CE138A16377E39BB",
+  "decimals": 18,
+  "preview": false,
+  "coingeckoId": ""
+ },
+ "ibc/ABD49F44559CB3E557CC458459CB6A67CEBD66E23C7674A0B2B445230BDA1F6C": {
+  "name": "Stratos",
+  "symbol": "STOS",
+  "coinMinimalDenom": "ibc/ABD49F44559CB3E557CC458459CB6A67CEBD66E23C7674A0B2B445230BDA1F6C",
+  "decimals": 18,
+  "preview": false,
+  "coingeckoId": "stratos"
+ },
+ "ibc/B1C1806A540B3E165A2D42222C59946FB85BA325596FC85662D7047649F419F3": {
+  "name": "Gitopia",
+  "symbol": "LORE",
+  "coinMinimalDenom": "ibc/B1C1806A540B3E165A2D42222C59946FB85BA325596FC85662D7047649F419F3",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": "gitopia"
+ },
+ "ibc/B2CF263C761A1C41886BE7CD2FB4F850D1FBE0E60E47D88154C17C1721258EA6": {
+  "name": "Eris Protocol LUNA/USDC ampLP",
+  "symbol": "LUNA-USDC-ampLP",
+  "coinMinimalDenom": "ibc/B2CF263C761A1C41886BE7CD2FB4F850D1FBE0E60E47D88154C17C1721258EA6",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": ""
+ },
+ "ibc/B39116ED5DA87C0DD8E959A9D0DFF5B4E38608669528A20DEFF29D7447B6087B": {
+  "name": "Circle USD",
+  "symbol": "USDC.eth.carbon",
+  "coinMinimalDenom": "ibc/B39116ED5DA87C0DD8E959A9D0DFF5B4E38608669528A20DEFF29D7447B6087B",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": ""
+ },
+ "ibc/BC26A7A805ECD6822719472BCB7842A48EF09DF206182F8F259B2593EB5D23FB": {
+  "name": "AtomOne",
+  "symbol": "ATONE",
+  "coinMinimalDenom": "ibc/BC26A7A805ECD6822719472BCB7842A48EF09DF206182F8F259B2593EB5D23FB",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": "atomone"
+ },
+ "ibc/BE1BB42D4BE3C30D50B68D7C41DB4DFCE9678E8EF8C539F6E6A9345048894FCC": {
+  "name": "TerraClassicUSD",
+  "symbol": "USTC",
+  "coinMinimalDenom": "ibc/BE1BB42D4BE3C30D50B68D7C41DB4DFCE9678E8EF8C539F6E6A9345048894FCC",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": "terrausd"
+ },
+ "ibc/C140AFD542AE77BD7DCC83F13FDD8C5E5BB8C4929785E6EC2F4C636F98F17901": {
+  "name": "Stride Staked ATOM",
+  "symbol": "stATOM",
+  "coinMinimalDenom": "ibc/C140AFD542AE77BD7DCC83F13FDD8C5E5BB8C4929785E6EC2F4C636F98F17901",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": "stride-staked-atom"
+ },
+ "ibc/C822645522FC3EECF817609AA38C24B64D04F5C267A23BCCF8F2E3BC5755FA88": {
+  "name": "BeeZee",
+  "symbol": "BZE",
+  "coinMinimalDenom": "ibc/C822645522FC3EECF817609AA38C24B64D04F5C267A23BCCF8F2E3BC5755FA88",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": "bzedge"
+ },
+ "ibc/CAA179E40F0266B0B29FB5EAA288FB9212E628822265D4141EBD1C47C3CBFCBC": {
+  "name": "PSTAKE staked ATOM",
+  "symbol": "stkATOM",
+  "coinMinimalDenom": "ibc/CAA179E40F0266B0B29FB5EAA288FB9212E628822265D4141EBD1C47C3CBFCBC",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": ""
+ },
+ "ibc/CE5BFF1D9BADA03BB5CCA5F56939392A761B53A10FBD03B37506669C3218D3B2": {
+  "name": "Provenance",
+  "symbol": "HASH",
+  "coinMinimalDenom": "ibc/CE5BFF1D9BADA03BB5CCA5F56939392A761B53A10FBD03B37506669C3218D3B2",
+  "decimals": 9,
+  "preview": false,
+  "coingeckoId": "hash-2"
+ },
+ "ibc/D1542AA8762DB13087D8364F3EA6509FD6F009A34F00426AF9E4F9FA85CBBF1F": {
+  "name": "Wrapped Bitcoin (Ethereum via Axelar)",
+  "symbol": "WBTC.eth.axl",
+  "coinMinimalDenom": "ibc/D1542AA8762DB13087D8364F3EA6509FD6F009A34F00426AF9E4F9FA85CBBF1F",
+  "decimals": 8,
+  "preview": false,
+  "coingeckoId": ""
+ },
+ "ibc/D176154B0C63D1F9C6DCFB4F70349EBF2E2B5A87A05902F57A6AE92B863E9AEC": {
+  "name": "Stride Staked OSMO",
+  "symbol": "stOSMO",
+  "coinMinimalDenom": "ibc/D176154B0C63D1F9C6DCFB4F70349EBF2E2B5A87A05902F57A6AE92B863E9AEC",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": "stride-staked-osmo"
+ },
+ "ibc/D189335C6E4A68B513C10AB227BF1C1D38C746766278BA3EEB4FB14124F1D858": {
+  "name": "USDC (Ethereum via Axelar)",
+  "symbol": "USDC.eth.axl",
+  "coinMinimalDenom": "ibc/D189335C6E4A68B513C10AB227BF1C1D38C746766278BA3EEB4FB14124F1D858",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": "axlusdc"
+ },
+ "ibc/D3327A763C23F01EC43D1F0DB3CEFEC390C362569B6FD191F40A5192F8960049": {
+  "name": "Chainlink (Axelar)",
+  "symbol": "LINK.axl",
+  "coinMinimalDenom": "ibc/D3327A763C23F01EC43D1F0DB3CEFEC390C362569B6FD191F40A5192F8960049",
+  "decimals": 18,
+  "preview": false,
+  "coingeckoId": ""
+ },
+ "ibc/D6E02C5AE8A37FC2E3AB1FC8AC168878ADB870549383DFFEA9FD020C234520A7": {
+  "name": "Photon",
+  "symbol": "PHOTON",
+  "coinMinimalDenom": "ibc/D6E02C5AE8A37FC2E3AB1FC8AC168878ADB870549383DFFEA9FD020C234520A7",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": "photon-2"
+ },
+ "ibc/D6ED8CCF01DE2F86D0D8A9605A8535A66C930697E986616227506EBDE8B8AC91": {
+  "name": "Coinbase Wrapped DOGE (Axelar)",
+  "symbol": "cbDOGE.axl",
+  "coinMinimalDenom": "ibc/D6ED8CCF01DE2F86D0D8A9605A8535A66C930697E986616227506EBDE8B8AC91",
+  "decimals": 8,
+  "preview": false,
+  "coingeckoId": ""
+ },
+ "ibc/D79E7D83AB399BFFF93433E54FAA480C191248FC556924A2A8351AE2638B3877": {
+  "name": "Celestia",
+  "symbol": "TIA",
+  "coinMinimalDenom": "ibc/D79E7D83AB399BFFF93433E54FAA480C191248FC556924A2A8351AE2638B3877",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": "celestia"
+ },
+ "ibc/DAED51CBD967A3BE0C467687970AFD97B202AFE4A1718B36936F49178AFE0133": {
+  "name": "Neutaro",
+  "symbol": "NTMPI",
+  "coinMinimalDenom": "ibc/DAED51CBD967A3BE0C467687970AFD97B202AFE4A1718B36936F49178AFE0133",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": "neutaro"
+ },
+ "ibc/DC1DF96AB7F5109433C3D5FDADE83F8EC2D522B80FAB0593BC1A2781F36AD633": {
+  "name": "Ninja Blaze",
+  "symbol": "NBZ",
+  "coinMinimalDenom": "ibc/DC1DF96AB7F5109433C3D5FDADE83F8EC2D522B80FAB0593BC1A2781F36AD633",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": ""
+ },
+ "ibc/E43ABCC7E80E99E4E6E1226AE5695DDE0F83CB5C257CD04D47C36B8B90C1C839": {
+  "name": "FIRMACHAIN",
+  "symbol": "FCT",
+  "coinMinimalDenom": "ibc/E43ABCC7E80E99E4E6E1226AE5695DDE0F83CB5C257CD04D47C36B8B90C1C839",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": "firmachain"
+ },
+ "ibc/E6931F78057F7CC5DA0FD6CEF82FF39373A6E0452BF1FD76910B93292CF356C1": {
+  "name": "Cronos POS Chain",
+  "symbol": "CRO",
+  "coinMinimalDenom": "ibc/E6931F78057F7CC5DA0FD6CEF82FF39373A6E0452BF1FD76910B93292CF356C1",
+  "decimals": 8,
+  "preview": false,
+  "coingeckoId": "crypto-com-chain"
+ },
+ "ibc/E750D31033DC1CF4A044C3AA0A8117401316DC918FBEBC4E3D34F91B09D5F54C": {
+  "name": "nRide Token",
+  "symbol": "NRIDE",
+  "coinMinimalDenom": "ibc/E750D31033DC1CF4A044C3AA0A8117401316DC918FBEBC4E3D34F91B09D5F54C",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": ""
+ },
+ "ibc/EA1D43981D5C9A1C4AAEA9C23BB1D4FA126BA9BC7020A25E0AE4AA841EA25DC5": {
+  "name": "Ethereum (Axelar)",
+  "symbol": "ETH.axl",
+  "coinMinimalDenom": "ibc/EA1D43981D5C9A1C4AAEA9C23BB1D4FA126BA9BC7020A25E0AE4AA841EA25DC5",
+  "decimals": 18,
+  "preview": false,
+  "coingeckoId": "axlweth"
+ },
+ "ibc/EC3A4ACBA1CFBEE698472D3563B70985AEA5A7144C319B61B3EBDFB57B5E1535": {
+  "name": "Babylon",
+  "symbol": "BABY",
+  "coinMinimalDenom": "ibc/EC3A4ACBA1CFBEE698472D3563B70985AEA5A7144C319B61B3EBDFB57B5E1535",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": "babylon"
+ },
+ "ibc/EFAAE3AD05AA79647A1587E363A11B6126CC83C8C0593171BB1892A39EB550DF": {
+  "name": "Nether",
+  "symbol": "NTHR",
+  "coinMinimalDenom": "ibc/EFAAE3AD05AA79647A1587E363A11B6126CC83C8C0593171BB1892A39EB550DF",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": ""
+ },
+ "ibc/F08DE332018E8070CC4C68FE06E04E254F527556A614F5F8F9A68AF38D367E45": {
+  "name": "USDC (Solana via Wormhole)",
+  "symbol": "USDC.sol.wh",
+  "coinMinimalDenom": "ibc/F08DE332018E8070CC4C68FE06E04E254F527556A614F5F8F9A68AF38D367E45",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": ""
+ },
+ "ibc/F16FDC11A7662B86BC0B9CE61871CBACF7C20606F95E86260FD38915184B75B4": {
+  "name": "GenesisL1",
+  "symbol": "L1",
+  "coinMinimalDenom": "ibc/F16FDC11A7662B86BC0B9CE61871CBACF7C20606F95E86260FD38915184B75B4",
+  "decimals": 18,
+  "preview": false,
+  "coingeckoId": "genesisl1"
+ },
+ "ibc/F17C9CA112815613C5B6771047A093054F837C3020CBA59DFFD9D780A8B2984C": {
+  "name": "USDC (Avalanche via Axelar)",
+  "symbol": "USDC.avax.axl",
+  "coinMinimalDenom": "ibc/F17C9CA112815613C5B6771047A093054F837C3020CBA59DFFD9D780A8B2984C",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": ""
+ },
+ "ibc/F3FF7A84A73B62921538642F9797C423D2B4C4ACB3C7FCFFCE7F12AA69909C4B": {
+  "name": "Impact Hub",
+  "symbol": "IXO",
+  "coinMinimalDenom": "ibc/F3FF7A84A73B62921538642F9797C423D2B4C4ACB3C7FCFFCE7F12AA69909C4B",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": ""
+ },
+ "ibc/F4A070A6D78496D53127EA85C094A9EC87DFC1F36071B8CCDDBD020F933D213D": {
+  "name": "Binance Coin (Axelar)",
+  "symbol": "BNB.axl",
+  "coinMinimalDenom": "ibc/F4A070A6D78496D53127EA85C094A9EC87DFC1F36071B8CCDDBD020F933D213D",
+  "decimals": 18,
+  "preview": false,
+  "coingeckoId": ""
+ },
+ "ibc/F73B481C1EEF374A6EE46CA21D0ECDBBE8D328C27A3813538B7624CD704251DE": {
+  "name": "bglUSDC",
+  "symbol": "bglUSDC",
+  "coinMinimalDenom": "ibc/F73B481C1EEF374A6EE46CA21D0ECDBBE8D328C27A3813538B7624CD704251DE",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": ""
+ },
+ "ibc/F867AE2112EFE646EC71A25CD2DFABB8927126AC1E19F1BBF0FF693A4ECA05DE": {
+  "name": "Band Protocol",
+  "symbol": "BAND",
+  "coinMinimalDenom": "ibc/F867AE2112EFE646EC71A25CD2DFABB8927126AC1E19F1BBF0FF693A4ECA05DE",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": "band-protocol"
+ },
+ "ibc/FB26E04E71EACCCCCD6D81F0F7666D5567C3A1686E2AC577FCC03F28F5B5874F": {
+  "name": "Sovren",
+  "symbol": "SOVR",
+  "coinMinimalDenom": "ibc/FB26E04E71EACCCCCD6D81F0F7666D5567C3A1686E2AC577FCC03F28F5B5874F",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": "sovren"
+ },
+ "uion": {
+  "name": "Ion DAO",
+  "symbol": "ION",
+  "coinMinimalDenom": "uion",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": "ion"
+ },
+ "uosmo": {
+  "name": "Osmosis",
+  "symbol": "OSMO",
+  "coinMinimalDenom": "uosmo",
+  "decimals": 6,
+  "preview": false,
+  "coingeckoId": "osmosis"
+ }
+}

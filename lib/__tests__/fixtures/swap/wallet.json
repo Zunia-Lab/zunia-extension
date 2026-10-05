@@ -1,0 +1,103 @@
+{
+  "about": "A wallet on safrochain-1, cosmoshub-4, osmosis-1 and injective-1, plus safro-testnet-1 for the network filter. Balances keep the 0.1.2 reader's labels (Noble USDC read 'USDC.axl/IBC'), which the swap lists must ignore. The Osmosis voucher ibc/0123… is listed nowhere.",
+  "chains": [
+    { "chainId": "safrochain-1", "address": "addr_safro1walletfixture000000000000000000000" },
+    { "chainId": "cosmoshub-4", "address": "cosmos1walletfixture00000000000000000000000" },
+    { "chainId": "osmosis-1", "address": "osmo1walletfixture0000000000000000000000000" },
+    { "chainId": "injective-1", "address": "inj1walletfixture00000000000000000000000000" },
+    { "chainId": "safro-testnet-1", "address": "addr_safro1walletfixture000000000000000000000" }
+  ],
+  "balances": {
+    "safrochain-1": {
+      "chainId": "safrochain-1",
+      "available": "25000000",
+      "staked": "0",
+      "rewards": "0",
+      "denom": "usaf",
+      "decimals": 6,
+      "symbol": "SAF",
+      "tokens": [
+        { "denom": "usaf", "amount": "25000000", "kind": "native", "symbol": "SAF", "displayName": "SAF", "decimals": 6 }
+      ]
+    },
+    "cosmoshub-4": {
+      "chainId": "cosmoshub-4",
+      "available": "2500000",
+      "staked": "0",
+      "rewards": "0",
+      "denom": "uatom",
+      "decimals": 6,
+      "symbol": "ATOM",
+      "tokens": [
+        { "denom": "uatom", "amount": "2500000", "kind": "native", "symbol": "ATOM", "displayName": "ATOM", "decimals": 6 }
+      ]
+    },
+    "osmosis-1": {
+      "chainId": "osmosis-1",
+      "available": "10000000",
+      "staked": "0",
+      "rewards": "0",
+      "denom": "uosmo",
+      "decimals": 6,
+      "symbol": "OSMO",
+      "tokens": [
+        { "denom": "uosmo", "amount": "10000000", "kind": "native", "symbol": "OSMO", "displayName": "OSMO", "decimals": 6 },
+        {
+          "denom": "ibc/498A0751C798A0D9A389AA3691123DADA57DAA4FE165D5C75894505B876BA6E4",
+          "amount": "1234567",
+          "kind": "ibc",
+          "symbol": "USDC.axl",
+          "displayName": "USDC.axl/IBC",
+          "decimals": 6,
+          "baseDenom": "uusdc",
+          "ibcPath": "transfer/channel-750",
+          "originChainName": "Axelar"
+        },
+        {
+          "denom": "ibc/0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF",
+          "amount": "12340000",
+          "kind": "ibc",
+          "symbol": "012345",
+          "displayName": "IBC 012345",
+          "decimals": 6
+        },
+        { "denom": "uion", "amount": "0", "kind": "other", "symbol": "ION", "displayName": "ION", "decimals": 6 }
+      ]
+    },
+    "injective-1": {
+      "chainId": "injective-1",
+      "available": "1500000000000000000",
+      "staked": "0",
+      "rewards": "0",
+      "denom": "inj",
+      "decimals": 18,
+      "symbol": "INJ",
+      "tokens": [
+        { "denom": "inj", "amount": "1500000000000000000", "kind": "native", "symbol": "INJ", "displayName": "INJ", "decimals": 18 },
+        {
+          "denom": "ibc/2CBC2EA121AE42563B08028466F37B600F2D7D4282342DE938283CC3FB2BC00E",
+          "amount": "5000000",
+          "kind": "ibc",
+          "symbol": "USDC.axl",
+          "displayName": "USDC.axl/IBC",
+          "decimals": 6,
+          "baseDenom": "uusdc",
+          "ibcPath": "transfer/channel-148",
+          "originChainName": "Axelar"
+        }
+      ]
+    },
+    "safro-testnet-1": {
+      "chainId": "safro-testnet-1",
+      "available": "1000000",
+      "staked": "0",
+      "rewards": "0",
+      "denom": "usaf",
+      "decimals": 6,
+      "symbol": "SAF",
+      "tokens": [
+        { "denom": "usaf", "amount": "1000000", "kind": "native", "symbol": "SAF", "displayName": "SAF", "decimals": 6 }
+      ]
+    }
+  }
+}

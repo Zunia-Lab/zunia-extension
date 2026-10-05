@@ -25,6 +25,7 @@ import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils.js";
 import { InterchainError, isInterchainError } from "@zunialab/interchain";
 
 import {
+  catalogIconFor,
   CHAIN_CATALOG,
   currenciesOf,
   findCatalogEntry,
@@ -1088,7 +1089,13 @@ function draftFromCatalog(
     sourceNetwork: traits.sourceNetwork,
     alloyed: traits.alloyed,
     decimals: agreedDecimals(currency.coinDecimals, row?.decimals),
-    logoUrl: (row?.heldOnChainId === chainId ? row.logoUrl : null) ?? catalogLogo(chainId, denom) ?? row?.logoUrl ?? null,
+    // A chain's own staking or fee coin wears the chain's mark when nothing
+    // names a coin logo: there the chain logo is the token logo.
+    logoUrl:
+      (row?.heldOnChainId === chainId ? row.logoUrl : null) ??
+      catalogLogo(chainId, denom) ??
+      row?.logoUrl ??
+      (native ? (catalogIconFor(entry) ?? null) : null),
     coinGeckoId: currency.coinGeckoId ?? row?.coinGeckoId ?? (native ? (entry.coinGeckoId ?? null) : null),
     variantGroup: row?.variantGroup ?? null,
     aliases: row?.aliases ?? [],

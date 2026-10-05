@@ -56,6 +56,14 @@ export interface Searchable {
   label: string;
   sublabel?: string;
   keywords?: readonly string[];
+  /** Shown but not pickable. Ranked after every enabled item of its section. */
+  disabled?: boolean;
+  /**
+   * Found by a search only: left out of Favorites, Recent and All. For rows
+   * worth explaining but not worth listing, such as a swap destination the
+   * contract has no route to, which a search still shows with its reason.
+   */
+  searchOnly?: boolean;
 }
 
 function normalize(text: string): string {
@@ -94,11 +102,18 @@ export interface PickerSection<T> {
   items: T[];
 }
 
+/** Enabled items first, each group in its given order. */
+function enabledFirst<T extends Searchable>(items: readonly T[]): T[] {
+  return [...items.filter((item) => !item.disabled), ...items.filter((item) => item.disabled)];
+}
+
 /**
- * What the picker lists. With a query, one ranked list of matches. Without,
- * Favorites and Recent first (in the order the user built them), then All
- * with those already-listed ids removed so a network is never repeated.
- * Ids no longer in `items` are skipped rather than shown as blanks.
+ * What the picker lists. With a query, one ranked list of matches, search-only
+ * items included. Without, Favorites and Recent first (in the order the user
+ * built them), then All with those already-listed ids removed so a network is
+ * never repeated; search-only items appear in none of these. Ids no longer in
+ * `items` are skipped rather than shown as blanks. In every section disabled
+ * items come after the enabled ones, so the first rows are always pickable.
  */
 export function pickerSections<T extends Searchable>(
   items: readonly T[],
@@ -111,19 +126,19 @@ export function pickerSections<T extends Searchable>(
   },
 ): PickerSection<T>[] {
   if (normalize(options.query)) {
-    return [{ key: "results", title: "Results", items: searchItems(items, options.query) }];
+    return [{ key: "results", title: "Results", items: enabledFirst(searchItems(items, options.query)) }];
   }
-  const byId = new Map(items.map((item) => [item.id, item]));
+  const byId = new Map(items.filter((item) => !item.searchOnly).map((item) => [item.id, item]));
   const pick = (ids: readonly string[] | undefined) =>
     (ids ?? []).map((id) => byId.get(id)).filter((item): item is T => item !== undefined);
-  const favorites = pick(options.favorites);
+  const favorites = enabledFirst(pick(options.favorites));
   const favoriteIds = new Set(favorites.map((item) => item.id));
-  const recents = pick(options.recents).filter((item) => !favoriteIds.has(item.id));
+  const recents = enabledFirst(pick(options.recents).filter((item) => !favoriteIds.has(item.id)));
   const listed = new Set([
     ...favorites.map((item) => item.id),
     ...recents.map((item) => item.id),
   ]);
-  const rest = items.filter((item) => !listed.has(item.id));
+  const rest = enabledFirst(items.filter((item) => !item.searchOnly && !listed.has(item.id)));
   const sections: PickerSection<T>[] = [];
   if (favorites.length) sections.push({ key: "favorites", title: "Favorites", items: favorites });
   if (recents.length) sections.push({ key: "recents", title: "Recent", items: recents });

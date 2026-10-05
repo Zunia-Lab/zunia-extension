@@ -78,6 +78,58 @@ describe("pickerSections", () => {
   });
 });
 
+describe("search-only and disabled items", () => {
+  const tokens = [
+    { id: "usdc-axl", label: "USDC.axl", sublabel: "Native on Axelar" },
+    { id: "usdc-inj", label: "USDC.inj", sublabel: "Native on Injective", disabled: true, searchOnly: true },
+    { id: "osmo", label: "OSMO", sublabel: "Native on Osmosis", disabled: true },
+    { id: "atom", label: "ATOM", sublabel: "Native on Cosmos Hub" },
+    { id: "usdc-n", label: "USDC.n", sublabel: "Native on Noble", disabled: true, searchOnly: true },
+  ];
+
+  it("leaves search-only items out of Favorites, Recent and All, even when remembered", () => {
+    const sections = pickerSections(tokens, {
+      query: "",
+      favorites: ["usdc-inj", "atom"],
+      recents: ["usdc-n", "osmo"],
+    });
+    expect(sections.map((s) => [s.key, s.items.map((t) => t.id)])).toEqual([
+      ["favorites", ["atom"]],
+      ["recents", ["osmo"]],
+      ["all", ["usdc-axl"]],
+    ]);
+  });
+
+  it("finds search-only items, after every enabled match", () => {
+    const [results] = pickerSections(tokens, { query: "usdc" });
+    expect(results?.key).toBe("results");
+    // USDC.inj and USDC.n match the label as well as USDC.axl, yet come last.
+    expect(results?.items.map((t) => t.id)).toEqual(["usdc-axl", "usdc-inj", "usdc-n"]);
+  });
+
+  it("ranks a disabled item after the enabled ones in every section, order otherwise kept", () => {
+    const listed = pickerSections(tokens, { query: "" });
+    expect(listed[0]!.items.map((t) => t.id)).toEqual(["usdc-axl", "atom", "osmo"]);
+    const remembered = pickerSections(tokens, { query: "", favorites: ["osmo", "atom", "usdc-axl"] });
+    expect(remembered[0]!.items.map((t) => t.id)).toEqual(["atom", "usdc-axl", "osmo"]);
+    const [results] = pickerSections(tokens, { query: "native" });
+    expect(results?.items.map((t) => t.id)).toEqual(["usdc-axl", "atom", "usdc-inj", "osmo", "usdc-n"]);
+  });
+
+  it("is unchanged for pickers that use neither flag", () => {
+    expect(pickerSections(chains, { query: "" })[0]!.items).toEqual(chains);
+    expect(pickerSections(chains, { query: "o" })[0]!.items.map((c) => c.id)).toEqual(
+      searchItems(chains, "o").map((c) => c.id),
+    );
+  });
+
+  it("lists nothing when every item is search-only", () => {
+    const hidden = tokens.map((t) => ({ ...t, searchOnly: true }));
+    expect(pickerSections(hidden, { query: "", favorites: ["atom"] })).toEqual([]);
+    expect(pickerSections(hidden, { query: "atom" })[0]!.items.map((t) => t.id)).toEqual(["atom"]);
+  });
+});
+
 describe("picker memory", () => {
   it("keeps recents unique, newest first, and bounded", () => {
     let memory = EMPTY_PICKER_MEMORY;

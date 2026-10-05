@@ -5,43 +5,88 @@
  * registry lists for each chain. This is opt-in: the user has to grant the
  * optional host permission, otherwise every call short-circuits and the UI
  * shows a placeholder instead of a number.
+ *
+ * Every held denom is named by its TokenIdentity (lib/token-identity.ts), never
+ * here: an `ibc/` voucher by its hash-verified trace, so Noble USDC on Osmosis
+ * reads `USDC.n` and not whichever catalog chain lists `uusdc` first. This file
+ * only reads the chain and copies the identity onto the row.
  */
 
-import { parseDenomTrace } from "@zunialab/interchain";
 import {
   catalogIconFor,
   chainTicker,
-  displayCoinSymbol,
-  findCurrency,
   findCatalogEntry,
 } from "./chain-catalog";
 import { OPTIONAL_HOST_PERMISSIONS, REALTIME_HOST_PERMISSIONS } from "../config/hosts";
 import { getSettings } from "./settings";
 import { STORAGE_KEYS } from "./storage-keys";
+import {
+  hydrateTokenIdentities,
+  identifyHeld,
+  identityOf,
+  type TokenIdentity,
+  type TokenKind as IdentityKind,
+} from "./token-identity";
 
+/**
+ * How Home groups a row. `native` is the chain's staking coin only; a fee coin,
+ * an erc20, peggy or cw20 denom is `other`. The finer kind is on the identity.
+ */
 export type TokenKind = "native" | "ibc" | "factory" | "other";
 
-/** One bank denom held by the address. */
+/**
+ * One bank denom held by the address, named by its TokenIdentity. The field
+ * names predate identities and are kept; the identity fields are optional so
+ * rows built by hand elsewhere (Send's and Home's native placeholders) still
+ * type-check. A screen shows a row through {@link heldTokenIdentity}, which
+ * gives the badge, the text and the accessible name, and the decimals the
+ * amount is shown and typed with.
+ */
 export interface TokenBalance {
+  /** The exact bank denom, never case-folded. */
   denom: string;
   amount: string;
   kind: TokenKind;
-  /** Best-effort ticker for the UI (ATOM, USDC, …). */
+  /** The identity's ticker: `USDC.n`, `ATOM`, `IBC·498A`. Never from bank metadata. */
   symbol: string;
   /**
-   * Full label shown in lists. IBC tokens use `USDC/IBC`; native tokens use
-   * the ticker alone.
+   * The label lists show: the ticker, the same as `symbol`. Where the token is
+   * held is shown apart (a chain badge, "on Osmosis"), never as `USDC/IBC`.
    */
   displayName: string;
+  /** Display exponent. 0 when `decimalsKnown` is false: the amount is then base units. */
   decimals: number;
-  /** Token / asset logo when known. */
+  /**
+   * False when nothing proves the exponent. The amount is shown in base units
+   * and only Max may be sent: a typed amount cannot be converted. True for the
+   * catalog, the token table, or, for a token whose identity is unknown, the
+   * chain's own bank metadata. Absent only on rows built by hand from catalog
+   * natives, whose decimals are known.
+   */
+  decimalsKnown?: boolean;
+  /**
+   * The token's own logo. Never the holding chain's logo, except on the
+   * chain's own coin. Absent when there is none: show a monogram.
+   */
   iconUrl?: string;
-  /** Underlying denom after IBC unwind (e.g. `uusdc`). */
+  /** The exact denom on the origin chain (`uusdc`, `erc20:0xa00C…`), when the origin is known. */
   baseDenom?: string;
-  /** IBC hop string from denom_trace, e.g. `transfer/channel-0`. */
+  /** IBC trace path on the holding chain, e.g. `transfer/channel-750`. */
   ibcPath?: string;
-  /** Registry name of the base denom's chain, when known. */
+  /** The issuer chain, when the identity knows it. */
+  originChainId?: string;
+  /** The issuer chain's name, when the identity knows it. */
   originChainName?: string;
+  /**
+   * The identity is proven (registry, token table or a canonical channel
+   * walk): the only reason to show a seal. Absent means not proven.
+   */
+  proven?: boolean;
+  /**
+   * `Noble USDC`, `Unlisted Osmosis token`, `Unknown token`. For a token whose
+   * identity is unknown, the name the chain's metadata gives it, if any.
+   */
+  name?: string;
 }
 
 export interface ChainBalance {
@@ -74,8 +119,12 @@ const REQUEST_TIMEOUT_MS = 8_000;
  * zero, so a stale row could sit there for another full TTL. Ages are per entry
  * now, which is what the realtime path needs - it refreshes exactly the one
  * chain an event names.
+ *
+ * 6: rows are named by TokenIdentity and carry `decimalsKnown`, `proven` and
+ * the origin. A version-5 row would show `USDC.axl/IBC` for Noble USDC, with a
+ * guessed 6 decimals, until it aged out.
  */
-const CACHE_VERSION = 5;
+const CACHE_VERSION = 6;
 
 interface CacheEntry {
   at: number;
@@ -214,6 +263,14 @@ async function fetchBankBalances(
   return rows;
 }
 
+/** A node that answered, with a status other than 2xx. */
+class HttpError extends Error {
+  constructor(readonly status: number) {
+    super(`HTTP ${status}`);
+    this.name = "HttpError";
+  }
+}
+
 async function getJson(url: string): Promise<unknown> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
@@ -223,7 +280,7 @@ async function getJson(url: string): Promise<unknown> {
       credentials: "omit",
       headers: { accept: "application/json" },
     });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (!res.ok) throw new HttpError(res.status);
     return await res.json();
   } finally {
     clearTimeout(timer);
@@ -244,18 +301,78 @@ function sumDenom(
   return total.toString();
 }
 
-/** Classify a bank denom for display without a full asset registry. */
+/* -------------------------------------------------------------------------- *
+ * Naming held tokens
+ * -------------------------------------------------------------------------- */
+
+/** The chain's own coin as the catalog lists it, which the chain-level row also shows. */
+export interface NativeCoin {
+  denom: string;
+  symbol: string;
+  decimals: number;
+  iconUrl?: string;
+  /** The holding chain, where each denom's identity is looked up. */
+  chainId?: string;
+}
+
+/**
+ * What a chain's bank metadata says on purpose about a denom: the decimals and
+ * a name, never a ticker. A token's creator or the chain's governance writes
+ * it, so `USDC` there proves nothing; Injective's own USDC reads just `USDC`,
+ * the same text as Osmosis's alloy.
+ */
+export interface BankMetadataFacts {
+  readonly name: string | null;
+  readonly decimals: number | null;
+}
+
+function balanceKind(kind: IdentityKind): TokenKind {
+  if (kind === "ibc" || kind === "factory") return kind;
+  // The staking coin is matched before this; a fee coin, erc20, peggy and
+  // cw20 denoms group with everything else.
+  return "other";
+}
+
+/**
+ * A denom read with no chain to look it up on has no identity at all, so the
+ * row can only repeat what the denom spells out: a factory denom's subdenom,
+ * as rows read before identities. That text is its creator's and is never
+ * proven. The balance reader always names the chain and never comes here.
+ */
+function chainlessTicker(identity: TokenIdentity): string | null {
+  if (identity.heldOnChainId || identity.kind !== "factory") return null;
+  return identity.denom.split("/").pop() || null;
+}
+
+/**
+ * One bank row, named by its identity (lib/token-identity.ts).
+ *
+ * The chain's own coin keeps the ticker and decimals the chain-level row shows
+ * (`chainTicker`, the catalog's exponent), so the two never disagree; its
+ * identity adds the logo, the origin and the seal. Every other denom takes its
+ * ticker, name, decimals, logo and origin from the identity alone. Bank
+ * metadata counts only when the identity is unknown, and then only for the
+ * decimals and the name: a named token whose decimals are unknown (allSHIB,
+ * where the catalog and Osmosis disagree) stays unknown, and an unlisted
+ * token keeps its hash-tagged ticker. With no decimals the amount stays in
+ * base units (`decimals` 0, `decimalsKnown` false); nothing guesses 6.
+ *
+ * `known.identity` defaults to `identityOf(native.chainId, denom)`.
+ */
 export function classifyToken(
   denom: string,
   amount: string,
-  native: {
-    denom: string;
-    symbol: string;
-    decimals: number;
-    iconUrl?: string;
-  },
+  native: NativeCoin,
+  known: { identity?: TokenIdentity; metadata?: BankMetadataFacts | null } = {},
 ): TokenBalance {
+  const identity = known.identity ?? identityOf(native.chainId ?? "", denom);
+  const unknown = identity.provenance === "unknown";
+  const origin = {
+    ...(identity.originChainId ? { originChainId: identity.originChainId } : {}),
+    ...(identity.originChainName ? { originChainName: identity.originChainName } : {}),
+  };
   if (denom === native.denom) {
+    const iconUrl = identity.logoUrl ?? native.iconUrl;
     return {
       denom,
       amount,
@@ -263,230 +380,367 @@ export function classifyToken(
       symbol: native.symbol,
       displayName: native.symbol,
       decimals: native.decimals,
-      iconUrl: native.iconUrl,
+      decimalsKnown: true,
+      ...(iconUrl ? { iconUrl } : {}),
       baseDenom: denom,
+      ...origin,
+      proven: identity.proven,
+      ...(unknown ? {} : { name: identity.name }),
     };
   }
-  if (denom.startsWith("ibc/")) {
-    const hash = denom.slice(4);
-    return {
-      denom,
-      amount,
-      kind: "ibc",
-      symbol: hash.slice(0, 6).toUpperCase(),
-      displayName: `IBC ${hash.slice(0, 6).toUpperCase()}`,
-      decimals: 6,
-      // Origin logo is filled in after denom_trace; the holding chain's mark
-      // stays until then so the row is never a blank circle.
-      ...(native.iconUrl ? { iconUrl: native.iconUrl } : {}),
-    };
-  }
-  if (denom.startsWith("factory/")) {
-    const parts = denom.split("/");
-    const sub = parts[parts.length - 1] || "TOKEN";
-    const symbol = sub.length > 12 ? `${sub.slice(0, 10)}…` : sub;
-    return {
-      denom,
-      amount,
-      kind: "factory",
-      symbol,
-      displayName: symbol,
-      decimals: 6,
-      baseDenom: denom,
-      ...(native.iconUrl ? { iconUrl: native.iconUrl } : {}),
-    };
-  }
-  // Known base denoms held as local bank coins, including `erc20:` rows.
-  const known = findCurrency(denom);
-  if (known) {
-    const symbol = displayCoinSymbol(known.currency.coinDenom, known.entry.bech32Prefix);
-    return {
-      denom,
-      amount,
-      kind: "other",
-      symbol,
-      displayName: symbol,
-      decimals: known.currency.coinDecimals,
-      iconUrl: catalogIconFor(known.entry),
-      baseDenom: denom,
-    };
-  }
+  const metadata = unknown ? (known.metadata ?? null) : null;
+  const decimals = unknown
+    ? (metadata?.decimals ?? null)
+    : identity.decimalsKnown
+      ? identity.decimals
+      : null;
+  const ticker = chainlessTicker(identity) ?? identity.ticker;
   return {
     denom,
     amount,
-    kind: "other",
-    symbol: denom.length > 14 ? `${denom.slice(0, 12)}…` : denom,
-    displayName: denom.length > 14 ? `${denom.slice(0, 12)}…` : denom,
-    decimals: 6,
-    baseDenom: denom,
+    kind: balanceKind(identity.kind),
+    symbol: ticker,
+    displayName: ticker,
+    decimals: decimals ?? 0,
+    decimalsKnown: decimals !== null,
+    ...(identity.logoUrl ? { iconUrl: identity.logoUrl } : {}),
+    ...(identity.originDenom ? { baseDenom: identity.originDenom } : {}),
+    ...(identity.path ? { ibcPath: identity.path } : {}),
+    ...origin,
+    proven: identity.proven,
+    name: metadata?.name ?? identity.name,
   };
 }
 
-function prettyBaseSymbol(baseDenom: string): string {
-  // Strip common Cosmos prefixes so `uusdc` → `USDC`, `uatom` → `ATOM`.
-  const stripped = baseDenom.replace(/^(u|n|a|atto)/i, "");
-  if (stripped && stripped !== baseDenom && /^[a-z0-9]+$/i.test(stripped)) {
-    return stripped.toUpperCase();
-  }
-  if (baseDenom.length <= 8) return baseDenom.toUpperCase();
-  return baseDenom.slice(0, 8).toUpperCase();
-}
-
-function isUnimplementedTrace(body: unknown): boolean {
-  if (!body || typeof body !== "object" || Array.isArray(body)) return false;
-  const rec = body as Record<string, unknown>;
-  if (rec.code === 12 || rec.code === "12") return true;
-  return typeof rec.message === "string" && /not implemented/i.test(rec.message);
+/**
+ * The identity a held row is shown with: `identityOf(chainId, token.denom)`
+ * for its ticker, badge, seal and accessible name, and the row's own decimals
+ * when nothing names the token but the chain's metadata gave them (or, for
+ * the chain's own coin, the catalog). That is the rule the row and Swap's sell
+ * list already follow, so an amount reads, and a typed one converts, the same
+ * on every surface. A named token keeps its identity's decimals, known or not:
+ * a row cannot make allSHIB's disputed exponent known.
+ *
+ * Pass the identity to `formatTokenAmount` and `canTypeAmount`. A row built by
+ * hand without `decimalsKnown` counts as known, as {@link TokenBalance} says.
+ */
+export function heldTokenIdentity(
+  chainId: string,
+  token: Pick<TokenBalance, "denom" | "decimals" | "decimalsKnown">,
+): TokenIdentity {
+  const identity = identityOf(chainId, token.denom);
+  if (identity.provenance !== "unknown" || identity.decimalsKnown) return identity;
+  const decimals = token.decimals;
+  const usable = token.decimalsKnown !== false && Number.isInteger(decimals) && decimals >= 0 && decimals <= MAX_DECIMALS;
+  return usable ? { ...identity, decimals, decimalsKnown: true } : identity;
 }
 
 /**
- * ibc-go v8 `/denom_traces/{hash}` first, then v9 `/denoms/{hash}`. Hub LCDs
- * answer the old path with gRPC 12 / HTTP 501, which used to leave IBC rows
- * as a hash prefix and no origin logo.
+ * How long a balance read waits for token identification. Lookups that take
+ * longer keep running and store what they prove, so the next read names those
+ * tokens instead of this one waiting on a slow node.
  */
-async function fetchIbcTrace(
+const IDENTIFY_WAIT_MS = 8_000;
+
+/** The last identification queued per chain; each waits for the one before. */
+const identifying = new Map<string, Promise<void>>();
+let identitiesLoaded: Promise<void> | null = null;
+
+/**
+ * Wait for `work` at most `ms`. True when it settled in time; false when the
+ * caller goes on without it while it keeps running.
+ */
+async function settleWithin(work: Promise<unknown>, ms: number): Promise<boolean> {
+  let settled = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const done = work.then(
+    () => {
+      settled = true;
+    },
+    () => {
+      settled = true;
+    },
+  );
+  const elapsed = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, ms);
+  });
+  try {
+    await Promise.race([done, elapsed]);
+  } finally {
+    clearTimeout(timer);
+  }
+  return settled;
+}
+
+/**
+ * Every held denom's identity, from one `identifyHeld` call per chain read.
+ * It asks only about vouchers that neither the token table nor the catalog
+ * names, at most 32 per call, and never again about one it proved or failed
+ * to trace in the last half hour, so each unknown voucher costs one lookup.
+ *
+ * Calls for one chain run one after another: a read that starts while another
+ * read of the same chain is still asking waits for it, and then finds those
+ * vouchers answered instead of asking about them a second time.
+ *
+ * The stored facts are loaded first, once per context: the worker boots
+ * without awaiting them, and a voucher proven last session must not be looked
+ * up again. That load is part of the wait too, so storage that never answers
+ * costs a read the stored names, not its balances.
+ *
+ * `settled` is false when the read stopped waiting, so some names may still
+ * be on their way.
+ */
+async function identitiesFor(
+  chainId: string,
+  denoms: readonly string[],
+): Promise<{ identities: ReadonlyMap<string, TokenIdentity>; settled: boolean }> {
+  // Kept for the life of the context, so it must never be a rejection; bounded
+  // so that one stuck storage read cannot hold every later identification.
+  identitiesLoaded ??= settleWithin(
+    hydrateTokenIdentities().catch(() => undefined),
+    IDENTIFY_WAIT_MS,
+  ).then(() => undefined);
+  const loaded = identitiesLoaded;
+  const previous = identifying.get(chainId) ?? Promise.resolve();
+  const run: Promise<void> = previous
+    .then(() => loaded)
+    .then(() => identifyHeld(chainId, denoms))
+    .then(
+      () => undefined,
+      () => undefined,
+    )
+    .finally(() => {
+      if (identifying.get(chainId) === run) identifying.delete(chainId);
+    });
+  identifying.set(chainId, run);
+  const settled = await settleWithin(run, IDENTIFY_WAIT_MS);
+  return {
+    identities: new Map(denoms.map((denom) => [denom, identityOf(chainId, denom)])),
+    settled,
+  };
+}
+
+/* -------------------------------------------------------------------------- *
+ * Bank metadata, for tokens nothing else names
+ * -------------------------------------------------------------------------- */
+
+/** Metadata changes by governance, not by block: an answer is asked again after this long. */
+const METADATA_TTL_MS = 30 * 60_000;
+/** A read that failed (timeout, 5xx, rate limit) is not tried again before this. */
+const METADATA_RETRY_MS = 60_000;
+/**
+ * How long a balance read waits for metadata. Reads still running then keep
+ * going and fill the memo, so a slow node delays some decimals by one read
+ * instead of holding every chain's balances.
+ */
+const METADATA_WAIT_MS = 3_000;
+const METADATA_MAX = 1_000;
+/** Unknown tokens are few, but an airdrop of junk vouchers must not fan out. */
+const METADATA_CONCURRENCY = 4;
+/** Exponents past this are not a token's decimals but a broken record. */
+const MAX_DECIMALS = 30;
+
+/**
+ * The last answer per `${chainId}:${denom}`. Kept past its TTL until a new
+ * answer replaces it: a refresh that fails must not turn known decimals back
+ * into base units.
+ */
+const metadataMemo = new Map<string, { at: number; facts: BankMetadataFacts | null }>();
+/** When the last read failed, per `${chainId}:${denom}`. */
+const metadataFailedAt = new Map<string, number>();
+/** Reads in flight, so two balance reads of one chain never ask twice. */
+const metadataPending = new Map<string, Promise<void>>();
+
+/**
+ * Statuses meaning "not this way": no metadata for the denom (404), or a node
+ * that does not serve this route or this spelling of the denom (400, 405, 501).
+ */
+const ABSENT_STATUSES: ReadonlySet<number> = new Set([400, 404, 405, 501]);
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function textOf(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function exponentOf(value: unknown): number | null {
+  const parsed = typeof value === "string" && /^\d+$/.test(value) ? Number(value) : value;
+  return typeof parsed === "number" && Number.isInteger(parsed) && parsed > 0 && parsed <= MAX_DECIMALS
+    ? parsed
+    : null;
+}
+
+/**
+ * One line of plain text: no control or bidi characters, at most 64
+ * characters, cut between characters rather than inside a surrogate pair.
+ */
+function cleanName(value: string): string | null {
+  const text = value.replace(/[\p{Cc}\p{Cf}]+/gu, " ").replace(/\s+/g, " ").trim();
+  if (!text) return null;
+  const chars = Array.from(text);
+  return chars.length > 64 ? `${chars.slice(0, 63).join("")}…` : text;
+}
+
+/**
+ * The decimals and name a metadata record states on purpose, or `undefined`
+ * when the record is another denom's.
+ *
+ * ibc-go writes a record for every voucher it mints: description `IBC token
+ * from <path>`, display the path, name `<path> IBC token`, symbol the
+ * upper-cased base (`UUSDC`) and one unit at exponent 0. None of it names the
+ * token, and an exponent of 0 says nothing about decimals, so such a record
+ * yields nothing unless the chain amended it (Injective adds the exponent as a
+ * second unit and as `decimals`). Decimals need a positive exponent on the
+ * display unit, or Injective's `decimals` field.
+ *
+ * The chain keys every record by its `base`, so a record whose base is not
+ * the denom asked about came from a node or cache that mixed up its answers
+ * (a proxy keyed on the path alone serves one record for every query string).
+ * Its decimals would convert a typed amount at another token's scale.
+ */
+function metadataFacts(body: unknown, denom: string): BankMetadataFacts | undefined {
+  const meta = asRecord(asRecord(body)?.metadata);
+  if (!meta) return { name: null, decimals: null };
+  const base = textOf(meta.base);
+  if (base && base !== denom) return undefined;
+  const display = textOf(meta.display).toLowerCase();
+  const name = textOf(meta.name);
+  const generated = /^IBC token from /i.test(textOf(meta.description)) || /\bIBC token$/i.test(name);
+  let decimals: number | null = null;
+  const units = Array.isArray(meta.denom_units) ? meta.denom_units : [];
+  for (const raw of units) {
+    const unit = asRecord(raw);
+    if (!unit || !display) continue;
+    const aliases = Array.isArray(unit.aliases) ? unit.aliases : [];
+    const names = [unit.denom, ...aliases].map((alias) => textOf(alias).toLowerCase());
+    if (!names.includes(display)) continue;
+    decimals = exponentOf(unit.exponent);
+    break;
+  }
+  return {
+    name: generated ? null : cleanName(name),
+    decimals: decimals ?? exponentOf(meta.decimals),
+  };
+}
+
+/**
+ * The chain's bank metadata for one denom: its facts, `null` when it has
+ * none, or `undefined` when the node could not be asked or answered for
+ * another denom (tried again later). A denom with `/` (`ibc/…`, `factory/…`)
+ * goes through the query-string route first: the path route answers 501 for
+ * those on the Osmosis and Injective LCDs.
+ */
+async function readBankMetadata(
   rest: string,
-  hash: string,
-): Promise<{ baseDenom: string; path: string } | null> {
-  const urls = [
-    `${rest}/ibc/apps/transfer/v1/denom_traces/${hash}`,
-    `${rest}/ibc/apps/transfer/v1/denoms/${hash}`,
-    `${rest}/ibc/apps/transfer/v1/denoms/${encodeURIComponent(`ibc/${hash}`)}`,
-  ];
-  for (const url of urls) {
+  denom: string,
+): Promise<BankMetadataFacts | null | undefined> {
+  const byPath = `${rest}/cosmos/bank/v1beta1/denoms_metadata/${encodeURIComponent(denom)}`;
+  const byQuery = `${rest}/cosmos/bank/v1beta1/denoms_metadata_by_query_string?${new URLSearchParams({ denom })}`;
+  for (const url of denom.includes("/") ? [byQuery, byPath] : [byPath]) {
     try {
-      const body = await getJson(url);
-      if (isUnimplementedTrace(body)) continue;
-      const trace = parseDenomTrace(body);
-      if (trace.baseDenom) return { baseDenom: trace.baseDenom, path: trace.path };
-    } catch {
-      continue;
+      return metadataFacts(await getJson(url), denom);
+    } catch (error) {
+      if (error instanceof HttpError && ABSENT_STATUSES.has(error.status)) continue;
+      return undefined;
     }
   }
   return null;
 }
 
+/** Read one denom's metadata into the memo, or note that the read failed. */
+async function refreshMetadata(chainId: string, rest: string, denom: string): Promise<void> {
+  const key = `${chainId}:${denom}`;
+  const facts = await readBankMetadata(rest, denom);
+  if (facts === undefined) {
+    if (metadataFailedAt.size >= METADATA_MAX) metadataFailedAt.clear();
+    metadataFailedAt.set(key, Date.now());
+    return;
+  }
+  metadataFailedAt.delete(key);
+  if (metadataMemo.size >= METADATA_MAX) metadataMemo.clear();
+  metadataMemo.set(key, { at: Date.now(), facts });
+}
+
 /**
- * Unwind an IBC denom via the chain's denom trace endpoint and attach the
- * registry symbol / logo when the base denom is known.
+ * Metadata for denoms whose identity is unknown: each asked at most once per
+ * half hour, or once a minute while its reads fail, and never twice at once.
+ * The read waits {@link METADATA_WAIT_MS} at most; answers that land later
+ * are in the memo for the next read. `settled` is false when it stopped
+ * waiting.
  */
-async function resolveIbcToken(
+async function metadataFor(
+  chainId: string,
   rest: string,
-  token: TokenBalance,
-): Promise<TokenBalance> {
-  if (token.kind !== "ibc" || !token.denom.startsWith("ibc/")) return token;
-  const hash = token.denom.slice(4);
-  try {
-    const traced = await fetchIbcTrace(rest, hash);
-    if (!traced) return token;
-
-    const base = traced.baseDenom;
-    const path = traced.path;
-    const known = findCurrency(base);
-    if (known) {
-      const symbol = displayCoinSymbol(known.currency.coinDenom, known.entry.bech32Prefix);
-      return {
-        ...token,
-        symbol,
-        displayName: `${symbol}/IBC`,
-        decimals: known.currency.coinDecimals,
-        iconUrl: catalogIconFor(known.entry),
-        baseDenom: base,
-        ...(path ? { ibcPath: path } : {}),
-        originChainName: known.entry.chainName,
-      };
+  denoms: readonly string[],
+): Promise<{ facts: ReadonlyMap<string, BankMetadataFacts | null>; settled: boolean }> {
+  const now = Date.now();
+  const waits: Promise<void>[] = [];
+  const ask: string[] = [];
+  for (const denom of new Set(denoms)) {
+    const key = `${chainId}:${denom}`;
+    const pending = metadataPending.get(key);
+    if (pending) {
+      waits.push(pending);
+      continue;
     }
-
-    // Fall back to bank metadata on this chain for custom / CW20-origin assets.
-    const fromMeta = await readBankMetadata(rest, token.denom);
-    if (fromMeta) {
-      return {
-        ...token,
-        symbol: fromMeta.symbol,
-        displayName: `${fromMeta.symbol}/IBC`,
-        decimals: fromMeta.decimals,
-        baseDenom: base,
-        ...(path ? { ibcPath: path } : {}),
-      };
-    }
-    const symbol = prettyBaseSymbol(base);
-    return {
-      ...token,
-      symbol,
-      displayName: `${symbol}/IBC`,
-      baseDenom: base,
-      ...(path ? { ibcPath: path } : {}),
-    };
-  } catch {
-    return token;
+    const hit = metadataMemo.get(key);
+    if (hit && now - hit.at < METADATA_TTL_MS) continue;
+    const failed = metadataFailedAt.get(key);
+    if (failed !== undefined && now - failed < METADATA_RETRY_MS) continue;
+    ask.push(denom);
   }
-}
-
-async function readBankMetadata(
-  rest: string,
-  denom: string,
-): Promise<{ symbol: string; decimals: number } | null> {
-  try {
-    const meta = (await getJson(
-      `${rest}/cosmos/bank/v1beta1/denoms_metadata/${encodeURIComponent(denom)}`,
-    )) as {
-      metadata?: {
-        symbol?: string;
-        display?: string;
-        name?: string;
-        denom_units?: Array<{ denom?: string; exponent?: number }>;
-      };
-    };
-    const m = meta.metadata;
-    const symbol = (m?.symbol || m?.display || m?.name || "").trim();
-    if (!symbol) return null;
-    const decimals =
-      m?.denom_units?.reduce((max, unit) => Math.max(max, unit.exponent ?? 0), 0) ?? 6;
-    return { symbol, decimals };
-  } catch {
-    return null;
+  if (ask.length > 0) {
+    const batch = mapPool(ask, METADATA_CONCURRENCY, (denom) => refreshMetadata(chainId, rest, denom)).then(
+      () => undefined,
+      () => undefined,
+    );
+    for (const denom of ask) metadataPending.set(`${chainId}:${denom}`, batch);
+    void batch.then(() => {
+      for (const denom of ask) {
+        const key = `${chainId}:${denom}`;
+        if (metadataPending.get(key) === batch) metadataPending.delete(key);
+      }
+    });
+    waits.push(batch);
   }
+  const settled = waits.length === 0 || (await settleWithin(Promise.all(waits), METADATA_WAIT_MS));
+  const facts = new Map<string, BankMetadataFacts | null>();
+  for (const denom of denoms) {
+    const hit = metadataMemo.get(`${chainId}:${denom}`);
+    if (hit) facts.set(denom, hit.facts);
+  }
+  return { facts, settled };
 }
 
-/** Factory and other denoms: use on-chain metadata when the chain published it. */
-async function resolveHeldToken(
-  rest: string,
-  token: TokenBalance,
-): Promise<TokenBalance> {
-  if (token.kind === "ibc") return resolveIbcToken(rest, token);
-  if (token.kind !== "factory" && token.kind !== "other") return token;
-  const fromMeta = await readBankMetadata(rest, token.denom);
-  if (!fromMeta) return token;
-  return {
-    ...token,
-    symbol: fromMeta.symbol,
-    displayName: fromMeta.symbol,
-    decimals: fromMeta.decimals,
-  };
-}
-
-async function enrichTokens(
-  rest: string,
-  tokens: TokenBalance[],
-): Promise<TokenBalance[]> {
-  return Promise.all(tokens.map((token) => resolveHeldToken(rest, token)));
+/** Non-zero bank rows, as the chain spelled them. */
+function heldRows(
+  rows: Array<{ denom?: string; amount?: string }> | undefined,
+): Array<{ denom: string; amount: string }> {
+  const out: Array<{ denom: string; amount: string }> = [];
+  for (const row of rows ?? []) {
+    if (!row.denom || !row.amount || row.amount === "0") continue;
+    out.push({ denom: row.denom, amount: row.amount });
+  }
+  return out;
 }
 
 function parseBankTokens(
-  rows: Array<{ denom?: string; amount?: string }> | undefined,
-  native: {
-    denom: string;
-    symbol: string;
-    decimals: number;
-    iconUrl?: string;
-  },
+  rows: ReadonlyArray<{ denom: string; amount: string }>,
+  native: NativeCoin,
+  identities: ReadonlyMap<string, TokenIdentity>,
+  metadata: ReadonlyMap<string, BankMetadataFacts | null>,
 ): TokenBalance[] {
-  if (!rows) return [];
-  const tokens: TokenBalance[] = [];
-  for (const row of rows) {
-    if (!row.denom || !row.amount || row.amount === "0") continue;
-    tokens.push(classifyToken(row.denom, row.amount, native));
-  }
+  const tokens = rows.map((row) => {
+    const identity = identities.get(row.denom);
+    return classifyToken(row.denom, row.amount, native, {
+      ...(identity ? { identity } : {}),
+      metadata: metadata.get(row.denom) ?? null,
+    });
+  });
   // Native first, then IBC, factory, other; alphabetical within each kind.
   const order: Record<TokenKind, number> = {
     native: 0,
@@ -501,17 +755,26 @@ function parseBankTokens(
   });
 }
 
+/**
+ * Reads that stopped waiting for names or decimals still on their way. Such a
+ * row is shown, but not served again from the cache: the next read asks the
+ * chain once more and picks up what has landed, instead of pinning `IBC·498A`
+ * for a minute.
+ */
+const provisional = new WeakSet<ChainBalance>();
+
 async function fetchChainBalance(
   chainId: string,
   address: string,
 ): Promise<ChainBalance> {
   const entry = findCatalogEntry(chainId);
   const iconUrl = entry ? catalogIconFor(entry) : undefined;
-  const native = {
+  const native: NativeCoin = {
+    chainId,
     denom: entry?.coinMinimalDenom ?? "",
     symbol: entry ? chainTicker(entry) : chainId,
     decimals: entry?.coinDecimals ?? 6,
-    iconUrl,
+    ...(iconUrl ? { iconUrl } : {}),
   };
   const base: ChainBalance = {
     chainId,
@@ -557,18 +820,31 @@ async function fetchChainBalance(
           .total
       : undefined;
 
-  const tokens = await enrichTokens(
-    rest,
-    parseBankTokens(bankRows, native),
+  // One identification for the whole chain, then metadata only for what it
+  // could not name: a known token never costs a request here.
+  const held = heldRows(bankRows);
+  const named = await identitiesFor(
+    chainId,
+    held.map((row) => row.denom),
   );
+  const unnamed = held
+    .map((row) => row.denom)
+    .filter(
+      (heldDenom) =>
+        heldDenom !== denom && named.identities.get(heldDenom)?.provenance === "unknown",
+    );
+  const metadata = await metadataFor(chainId, rest, unnamed);
+  const tokens = parseBankTokens(held, native, named.identities, metadata.facts);
 
-  return {
+  const balance: ChainBalance = {
     ...base,
     available: sumDenom(bankRows, denom),
     staked: sumDenom(stakedRows, denom),
     rewards: sumDenom(rewardRows, denom),
     tokens,
   };
+  if (!named.settled || !metadata.settled) provisional.add(balance);
+  return balance;
 }
 
 async function mapPool<T, R>(
@@ -622,11 +898,13 @@ export async function getChainBalances(
     if (options.force) return null;
     const entry = cached.balances[key];
     if (!entry || now - entry.at >= CACHE_TTL_MS) return null;
-    // Older caches predate IBC display names and logos; treat them as missing
-    // so one refresh upgrades them rather than pinning the old rendering.
+    // A row without identity fields predates TokenIdentity; treat it as
+    // missing so one refresh upgrades it rather than pinning the old label.
     const tokens = entry.balance?.tokens;
     if (!Array.isArray(tokens)) return null;
-    if (!tokens.every((token) => typeof token.displayName === "string")) return null;
+    const named = (token: TokenBalance) =>
+      typeof token.displayName === "string" && typeof token.decimalsKnown === "boolean";
+    if (!tokens.every(named)) return null;
     return entry.balance;
   };
 
@@ -667,8 +945,9 @@ export async function getChainBalances(
       hits.set(key, balance);
       // A failed read is cached too, with its error, so a chain whose endpoint
       // is down does not get re-tried on every render. It ages out like any
-      // other row, and `force` skips it.
-      cached.balances[key] = { at, balance };
+      // other row, and `force` skips it. A provisional read is stored already
+      // expired: it still replaces an older row, but the next read refetches.
+      cached.balances[key] = { at: provisional.has(balance) ? 0 : at, balance };
     });
     await browser.storage.local.set({ [STORAGE_KEYS.balanceCache]: cached });
   }
