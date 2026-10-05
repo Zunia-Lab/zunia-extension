@@ -129,7 +129,12 @@ export function formatFiat(value: number, currency: string): string {
   return `${sign}${symbol}${formatCompact(Math.abs(value), 2)}`;
 }
 
-/** `ibc/27394FB0…41E5EB2` for a voucher, a clipped factory path, else the denom. */
+/**
+ * The one short form of a denom, for every surface (`lib/token-identity.ts`
+ * re-exports it): `ibc/498A…6BA6E4` for a voucher, `erc20:0xa00C…235a` and
+ * `peggy0xdAC1…1ec7` for bridged ERC-20s, a clipped factory path, else the
+ * denom. Display only: the full denom stays one copy away.
+ */
 export function shortDenom(denom: string): string {
   if (denom.startsWith("factory/")) {
     const parts = denom.split("/");
@@ -139,8 +144,12 @@ export function shortDenom(denom: string): string {
       creator.length > 12 ? `${creator.slice(0, 6)}…${creator.slice(-4)}` : creator;
     return clipped ? `factory/${clipped}/${sub}` : denom;
   }
-  if (!denom.startsWith("ibc/") || denom.length <= 20) return denom;
-  return `ibc/${denom.slice(4, 12)}…${denom.slice(-6)}`;
+  if (denom.startsWith("ibc/")) {
+    return denom.length <= 20 ? denom : `ibc/${denom.slice(4, 8)}…${denom.slice(-6)}`;
+  }
+  const bridged = /^(erc20:0x|peggy0x|gravity0x)([0-9a-fA-F]{12,})$/.exec(denom);
+  if (bridged) return `${bridged[1]}${bridged[2].slice(0, 4)}…${bridged[2].slice(-4)}`;
+  return denom;
 }
 
 /** `cosmos1qy35…hx9f2k` for a long address; short ones are left whole. */

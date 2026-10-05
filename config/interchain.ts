@@ -25,10 +25,14 @@ export const SWAP_VENUE_CHAIN_ID = "osmosis-1";
  * something to trust; `verifySwapVenue()` reads
  * `/cosmwasm/wasm/v1/contract/{addr}` on the venue chain and only then is the
  * swap path enabled. Never inline one of these at a call site.
+ *
+ * The one entry answered on 2026-10-05 with label "CrossChainSwaps v1.2",
+ * code 37. A second candidate, `osmo1efakw4…ddqgg`, was listed until 0.1.3 and
+ * removed: the Osmosis LCD answers "no such contract" for it, so it could never
+ * become the venue and only added a second "absent" check.
  */
 export const XCS_CONTRACT_CANDIDATES: readonly string[] = [
   "osmo1uwk8xc6q0s6t5qcpr6rht3sczu6du83xq8pwxjua0hfj5hzcnh3sqxwvxs",
-  "osmo1efakw4was99usxve258p58a5a26f0yt072gvyej5zr4lv5r0hxqqsddqgg",
 ];
 
 /**

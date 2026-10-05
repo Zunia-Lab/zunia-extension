@@ -1,4 +1,5 @@
 import { CHAIN_CATALOG } from "./chain-catalog.generated";
+import { catalogTicker } from "./token-identity";
 
 export type ChainNetwork = "mainnet" | "testnet";
 
@@ -78,16 +79,13 @@ export { CHAIN_CATALOG };
  * `custom-chains.ts` on every context boot, so lookups stay synchronous.
  */
 let customEntries: readonly CatalogEntry[] = [];
-/** Symbols that appear under more than one bech32 prefix. Rebuilt when custom chains change. */
-let collidingSymbols: Set<string> | undefined;
-/** Minimal denom to every currency that uses it. Rebuilt with the collision set. */
+/** Minimal denom to every currency that uses it. Rebuilt when custom chains change. */
 let currencyIndex:
   | Map<string, { entry: CatalogEntry; currency: CatalogCurrency }[]>
   | undefined;
 
 export function setCustomCatalogEntries(entries: readonly CatalogEntry[]): void {
   customEntries = entries;
-  collidingSymbols = undefined;
   currencyIndex = undefined;
 }
 
@@ -149,6 +147,11 @@ export function findCatalogEntry(chainId: string): CatalogEntry | undefined {
 /**
  * Find a registry row by base denom (e.g. `uusdc`, `uatom`). Prefers mainnet
  * when several chains advertise the same minimal denom.
+ *
+ * @deprecated Never use it to name or price a token: `uusdc` is issued by
+ * Noble and Axelar alike and this returns whichever the catalog lists first.
+ * Use `identityOf` (lib/token-identity.ts), or {@link uniqueIssuerOf} when
+ * only a base denom is known. Kept so callers migrate one at a time.
  */
 export function findCatalogByMinimalDenom(
   minimalDenom: string,
@@ -190,49 +193,61 @@ export function currenciesOf(entry: CatalogEntry): readonly CatalogCurrency[] {
   ];
 }
 
-function collidingCoinDenoms(): Set<string> {
-  if (collidingSymbols) return collidingSymbols;
-  const prefixes = new Map<string, Set<string>>();
-  for (const entry of allCatalogEntries()) {
-    const seen = new Set<string>();
-    for (const currency of currenciesOf(entry)) {
-      if (seen.has(currency.coinDenom)) continue;
-      seen.add(currency.coinDenom);
-      const set = prefixes.get(currency.coinDenom) ?? new Set<string>();
-      set.add(entry.bech32Prefix);
-      prefixes.set(currency.coinDenom, set);
-    }
-  }
-  collidingSymbols = new Set(
-    [...prefixes.entries()].filter(([, set]) => set.size > 1).map(([symbol]) => symbol),
-  );
-  return collidingSymbols;
-}
-
 /**
- * `USDC.inj` when that ticker is issued on more than one prefix.
- * `wINJ` stays `wINJ` because only the `inj` prefix uses it.
+ * The ticker a currency named `symbol` on a chain with `bech32Prefix` reads as.
+ *
+ * @deprecated A symbol and a prefix do not identify a token: `terra` is both
+ * Terra and Terra Classic, and the old rule suffixed every issuer of a shared
+ * symbol, the home one included (`ATOM.cosmos`). This now finds the mainnet
+ * currency and applies the identity rule (`USDC` on `noble` reads `USDC.n`,
+ * `ATOM` on `cosmos` reads `ATOM`); use `identityOf` for a held denom.
  */
 export function displayCoinSymbol(symbol: string, bech32Prefix: string): string {
-  if (!symbol || !collidingCoinDenoms().has(symbol)) return symbol;
-  return `${symbol}.${bech32Prefix}`;
+  if (!symbol) return symbol;
+  for (const entry of CHAIN_CATALOG) {
+    if (entry.bech32Prefix !== bech32Prefix || entry.network !== "mainnet") continue;
+    const currency = currenciesOf(entry).find((row) => row.coinDenom === symbol);
+    if (currency) return catalogTicker(entry, currency);
+  }
+  return symbol;
 }
 
-/** The chain's staking ticker, with a prefix suffix when that ticker is shared. */
-export function chainTicker(entry: {
+/** The parts of a catalog row the ticker rule reads. */
+type TickerChain = {
+  chainId?: string;
   coinDenom: string;
+  coinMinimalDenom?: string;
   bech32Prefix: string;
-}): string {
-  return displayCoinSymbol(entry.coinDenom, entry.bech32Prefix);
+};
+
+/**
+ * The chain's staking ticker under the identity rule: `ATOM` on the Hub, `AXL`
+ * on Axelar, `USDC.n` on Noble. Testnets and chains the user added are never
+ * issuers, so they read as the bare symbol and cannot rename anyone else's.
+ */
+export function chainTicker(entry: TickerChain): string {
+  return tickerOfCurrency(entry, entry.coinDenom, entry.coinMinimalDenom);
 }
 
-/** The fee ticker, with the same suffix rule as {@link chainTicker}. */
-export function feeTicker(entry: {
-  feeDenom: string;
-  coinDenom: string;
-  bech32Prefix: string;
-}): string {
-  return displayCoinSymbol(entry.feeDenom || entry.coinDenom, entry.bech32Prefix);
+/** The fee ticker, with the same rule as {@link chainTicker}. */
+export function feeTicker(
+  entry: TickerChain & { feeDenom: string; feeMinimalDenom?: string },
+): string {
+  if (!entry.feeDenom || entry.feeDenom === entry.coinDenom) return chainTicker(entry);
+  return tickerOfCurrency(entry, entry.feeDenom, entry.feeMinimalDenom);
+}
+
+function tickerOfCurrency(entry: TickerChain, symbol: string, minimalDenom?: string): string {
+  const row = entry.chainId ? findCatalogEntry(entry.chainId) : undefined;
+  if (!row) return symbol;
+  const currency =
+    (minimalDenom ? findCurrencyOn(row.chainId, minimalDenom)?.currency : undefined) ??
+    currenciesOf(row).find((candidate) => candidate.coinDenom === symbol) ?? {
+      coinDenom: symbol,
+      coinMinimalDenom: minimalDenom ?? row.coinMinimalDenom,
+      coinDecimals: row.coinDecimals,
+    };
+  return catalogTicker(row, currency);
 }
 
 export function chainUsesEthKeySign(chainId: string): boolean {
@@ -266,7 +281,14 @@ function indexedCurrencies(): Map<
   return index;
 }
 
-/** A currency row whose minimal denom is `denom`, preferring a mainnet issuer. */
+/**
+ * A currency row whose minimal denom is `denom`, preferring a mainnet issuer.
+ *
+ * @deprecated Global first match: `uusdc` resolves to Axelar even for Noble
+ * USDC. Use {@link findCurrencyOn} with the chain that holds the denom, or
+ * `identityOf` (lib/token-identity.ts) to name a token. Kept so callers
+ * migrate one at a time.
+ */
 export function findCurrency(
   denom: string,
 ): { entry: CatalogEntry; currency: CatalogCurrency } | undefined {
@@ -275,6 +297,83 @@ export function findCurrency(
   const matches = indexedCurrencies().get(denomIndexKey(needle));
   if (!matches || matches.length === 0) return undefined;
   return matches.find((match) => match.entry.network === "mainnet") ?? matches[0];
+}
+
+/**
+ * The currency `denom` is on `chainId` itself, or `undefined`.
+ *
+ * Only `erc20:` and `peggy` denoms compare without case: the catalog spells
+ * Injective's erc20 rows in lowercase while the bank uses mixed case. Every
+ * other denom must match exactly. This is for naming only; never build a
+ * message denom from the row it returns.
+ */
+export function findCurrencyOn(
+  chainId: string,
+  denom: string,
+): { entry: CatalogEntry; currency: CatalogCurrency } | undefined {
+  const entry = findCatalogEntry(chainId);
+  if (!entry || !denom) return undefined;
+  const currency = currenciesOf(entry).find((row) => denomsMatch(row.coinMinimalDenom, denom));
+  if (currency) return { entry, currency };
+  // A few registry rows list a staking or fee coin only in its own fields.
+  if (denom === entry.coinMinimalDenom) {
+    return {
+      entry,
+      currency: {
+        coinDenom: entry.coinDenom,
+        coinMinimalDenom: entry.coinMinimalDenom,
+        coinDecimals: entry.coinDecimals,
+        ...(entry.coinGeckoId ? { coinGeckoId: entry.coinGeckoId } : {}),
+      },
+    };
+  }
+  if (denom === entry.feeMinimalDenom) {
+    return {
+      entry,
+      currency: {
+        coinDenom: entry.feeDenom,
+        coinMinimalDenom: entry.feeMinimalDenom,
+        coinDecimals: entry.feeDecimals,
+      },
+    };
+  }
+  return undefined;
+}
+
+/**
+ * Base units that Ethereum, Bitcoin and Solana assets unwind to. A catalog
+ * chain that happens to call its own coin `wei` (Stratos) is not the issuer of
+ * the Ethereum ETH that Picasso carries, so these never have a unique issuer.
+ */
+const FOREIGN_BASE_UNITS: ReadonlySet<string> = new Set([
+  "wei",
+  "gwei",
+  "sat",
+  "sats",
+  "satoshi",
+  "lamport",
+  "lamports",
+]);
+
+/**
+ * The one mainnet registry chain that issues `baseDenom`, or `undefined` when
+ * none does or several do (`uusdc`: Noble, Axelar and others).
+ *
+ * The only safe base-denom lookup: it never picks between issuers. Custom
+ * chains and testnets do not count, so a chain the user adds cannot capture a
+ * denom, and non-Cosmos base units (`wei`) never resolve to a Cosmos chain.
+ */
+export function uniqueIssuerOf(
+  baseDenom: string,
+): { entry: CatalogEntry; currency: CatalogCurrency } | undefined {
+  const needle = baseDenom.trim();
+  if (!needle || FOREIGN_BASE_UNITS.has(needle.toLowerCase())) return undefined;
+  const custom = new Set(customEntries.map((entry) => entry.chainId));
+  const issuers = (indexedCurrencies().get(denomIndexKey(needle)) ?? []).filter(
+    (match) => match.entry.network === "mainnet" && !custom.has(match.entry.chainId),
+  );
+  const chains = new Set(issuers.map((match) => match.entry.chainId));
+  return chains.size === 1 ? issuers[0] : undefined;
 }
 
 /** Case-insensitive match on name, chain id, prefix, or denom. */

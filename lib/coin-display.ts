@@ -1,15 +1,12 @@
 /**
- * How an amount of one denom reads, from the chain catalog alone. Shared by
- * the history, the transaction detail and the signing prompt.
+ * How an amount of one denom reads, for the history, the transaction detail
+ * and the signing prompt. Every name comes from lib/token-identity.ts; this
+ * module only decides which identity a denom from those surfaces refers to.
  */
 
-import {
-  displayCoinSymbol,
-  findCatalogEntry,
-  findCurrency,
-  type CatalogEntry,
-} from "./chain-catalog";
+import { uniqueIssuerOf } from "./chain-catalog";
 import { formatUnitsExact, shortDenom } from "./format";
+import { identityOf, type TokenIdentity } from "./token-identity";
 
 /** How to show an amount of one denom. */
 export interface CoinDisplay {
@@ -24,36 +21,40 @@ export function baseDenomOf(denom: string): string {
   return denom.replace(/^(?:[a-z0-9._-]+\/channel-\d+\/)+/i, "");
 }
 
+const named = (identity: TokenIdentity | undefined): identity is TokenIdentity =>
+  identity !== undefined && identity.provenance !== "unknown" && identity.decimalsKnown;
+
 /**
- * The ticker and decimals for `denom` as seen on `chainId`: the chain's own
- * coins first, then a coin some catalog chain issues. An `ibc/` voucher stays
- * unnamed here; the popup names the ones the wallet holds from its balances.
+ * The identity a denom from a message or a fee refers to on `chainId`.
+ *
+ * A bank denom (`uatom`, `ibc/…`, `erc20:…`) is the holding chain's own, so
+ * {@link identityOf} answers. A packet denom is not: `transfer/channel-141/uosmo`
+ * is the sender's trace, and its channel numbers belong to the sender, so
+ * mapping them from the receiving chain would name the wrong issuer (the same
+ * mistake as naming every `uusdc` after Axelar). Such a denom, and a bare base
+ * denom the holding chain does not issue, is named only when exactly one
+ * registry chain issues its base ({@link uniqueIssuerOf}); otherwise it stays
+ * unknown. History derives the receiving chain's local denom first, which is
+ * exact.
  */
-function shown(entry: CatalogEntry, coinDenom: string, decimals: number): CoinDisplay {
-  return {
-    symbol: displayCoinSymbol(coinDenom, entry.bech32Prefix),
-    decimals,
-    known: true,
-  };
+function displayIdentity(chainId: string, denom: string): TokenIdentity | undefined {
+  const base = baseDenomOf(denom);
+  if (base === denom) {
+    const own = identityOf(chainId, denom);
+    if (named(own) || denom.startsWith("ibc/")) return own;
+  }
+  if (base.startsWith("ibc/")) return undefined;
+  const issuer = uniqueIssuerOf(base);
+  // The exact spelling the message carries, on its issuer: the catalog's own
+  // spelling may differ in case (Injective's erc20 rows), and that is another,
+  // empty denom.
+  return issuer ? identityOf(issuer.entry.chainId, base) : undefined;
 }
 
 export function coinDisplay(chainId: string, denom: string): CoinDisplay {
-  const entry = findCatalogEntry(chainId);
-  if (entry) {
-    const onChain = findCurrency(denom);
-    if (onChain && onChain.entry.chainId === entry.chainId) {
-      return shown(entry, onChain.currency.coinDenom, onChain.currency.coinDecimals);
-    }
-    if (entry.feeMinimalDenom === denom) {
-      return shown(entry, entry.feeDenom, entry.feeDecimals);
-    }
-  }
-  const base = baseDenomOf(denom);
-  if (!base.startsWith("ibc/")) {
-    const issued = findCurrency(base);
-    if (issued) {
-      return shown(issued.entry, issued.currency.coinDenom, issued.currency.coinDecimals);
-    }
+  const identity = displayIdentity(chainId, denom);
+  if (named(identity)) {
+    return { symbol: identity.ticker, decimals: identity.decimals, known: true };
   }
   return { symbol: shortDenom(denom), decimals: 0, known: false };
 }

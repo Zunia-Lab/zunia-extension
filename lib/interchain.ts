@@ -5,7 +5,9 @@
  * route planning, swap quoting, packet tracking) goes through the engine, and
  * the engine only ever sees the ports declared here. There is deliberately no
  * second implementation: `lib/ibc-channels.ts` used to hold a hand-rolled copy
- * of channel discovery and was deleted when this file replaced it.
+ * of channel discovery and was deleted when this file replaced it. The one
+ * read the engine does not offer yet, a channel's light-client status, lives
+ * here (`readChannelClient`) until it does.
  *
  * Two things are the host's job and are done here:
  *
@@ -34,6 +36,7 @@ import {
   SEED_CHANNEL_ROUTES,
   type ChainInfoLike,
   type ChainRegistryHandle,
+  type ChannelRoute,
   type DenomResolver,
   type IbcChannelService,
   type LcdClient,
@@ -41,6 +44,7 @@ import {
   type LcdClientHandle,
   type LcdResolver,
   type RouteRegistry,
+  type RouteRegistrySnapshot,
   type SwapVenue,
 } from "@zunialab/interchain";
 
@@ -57,6 +61,7 @@ import {
   getCustomCatalogEntries,
   type CatalogEntry,
 } from "./chain-catalog";
+import { IBC_CHANNEL_ROWS } from "./ibc-channels.generated";
 import { getSettings } from "./settings";
 import { STORAGE_KEYS } from "./storage-keys";
 
@@ -252,6 +257,199 @@ export function denomResolver(): DenomResolver {
 }
 
 /* -------------------------------------------------------------------------- *
+ * Light-client status
+ * -------------------------------------------------------------------------- */
+
+/**
+ * What one chain says about the light client behind one of its channels.
+ *
+ * - `ok`: the chain named the client and its status (`Active`, `Expired`,
+ *   `Frozen`, `Unknown` or `Unauthorized`, ibc-go's spelling).
+ * - `unsupported`: the node does not serve the route, so there is no answer
+ *   to be had from it, now or on a retry.
+ * - `unreachable`: nothing was learned. A retry may do better.
+ */
+export type ChannelClientRead =
+  | {
+      readonly kind: "ok";
+      readonly clientId: string;
+      /** Chain the client tracks. `null` for a client type that does not say. */
+      readonly trackedChainId: string | null;
+      readonly status: string;
+    }
+  | { readonly kind: "unsupported"; readonly detail: string }
+  | { readonly kind: "unreachable"; readonly detail: string };
+
+/** Client status changes on the scale of a relayer going quiet for days. */
+const CLIENT_STATUS_CACHE_MS = 30_000;
+
+/**
+ * HTTP answers meaning "this node does not serve the route": a gRPC gateway
+ * says 501 for a query service the chain does not register, and proxies in
+ * front of public LCDs say 404 or 405. Same set as the engine's channel module.
+ */
+const ROUTE_ABSENT_STATUSES: ReadonlySet<number> = new Set([404, 405, 501]);
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function asText(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+/** Turn a failed read into an answer. A cancel or the reads gate is not one. */
+function clientReadFailure(error: unknown, what: string): ChannelClientRead {
+  if (isInterchainError(error)) {
+    if (error.code === "aborted" || error.code === "reads-disabled") throw error;
+    if (error.httpStatus !== undefined && ROUTE_ABSENT_STATUSES.has(error.httpStatus)) {
+      return { kind: "unsupported", detail: `${what}: HTTP ${error.httpStatus}` };
+    }
+  }
+  return {
+    kind: "unreachable",
+    detail: `${what}: ${error instanceof Error ? error.message : String(error)}`,
+  };
+}
+
+/**
+ * Read the light client behind `channelId` on `chainId`, and its status.
+ *
+ * Two reads: `/channels/{ch}/ports/{port}/client_state` names the client and
+ * the chain it tracks, then `/client/v1/client_status/{id}` says whether it is
+ * still Active. A channel can stay `STATE_OPEN` for years after its client
+ * expired (Osmosis channel-109 to Injective is one): every packet sent into it
+ * then times out, because nothing can prove it arrived. The channel state alone
+ * cannot see that, which is why the engine's channel check is not enough.
+ *
+ * The engine has no client-status read yet, so this is the host's. It moves
+ * next to `validateIbcChannel` when the SDK grows one.
+ *
+ * @throws {@link InterchainError} `aborted` or `reads-disabled` only.
+ */
+export async function readChannelClient(
+  chainId: string,
+  channelId: string,
+  portId: string,
+  options: { signal?: AbortSignal } = {},
+): Promise<ChannelClientRead> {
+  const chain = chainRegistry().get(chainId);
+  if (!chain) return { kind: "unreachable", detail: `${chainId} is not in the chain list` };
+  let client: LcdClientHandle;
+  try {
+    client = lcdFor(chain);
+  } catch (error) {
+    return clientReadFailure(error, `${chainId} has no REST endpoint`);
+  }
+  const request = {
+    cacheTtlMs: CLIENT_STATUS_CACHE_MS,
+    ...(options.signal ? { signal: options.signal } : {}),
+  };
+
+  let clientId: string | null;
+  let trackedChainId: string | null;
+  try {
+    const body = await client.getJson(
+      `/ibc/core/channel/v1/channels/${encodeURIComponent(channelId)}/ports/${encodeURIComponent(portId)}/client_state`,
+      request,
+    );
+    const identified = asRecord(asRecord(body)?.identified_client_state);
+    clientId = asText(identified?.client_id);
+    trackedChainId = asText(asRecord(identified?.client_state)?.chain_id);
+  } catch (error) {
+    return clientReadFailure(error, `client_state of ${channelId} on ${chainId}`);
+  }
+  if (!clientId) {
+    return { kind: "unreachable", detail: `${chainId} named no client for ${channelId}` };
+  }
+
+  try {
+    const body = await client.getJson(
+      `/ibc/core/client/v1/client_status/${encodeURIComponent(clientId)}`,
+      request,
+    );
+    const status = asText(asRecord(body)?.status);
+    if (!status) {
+      return { kind: "unreachable", detail: `${chainId} gave no status for ${clientId}` };
+    }
+    return { kind: "ok", clientId, trackedChainId, status };
+  } catch (error) {
+    return clientReadFailure(error, `client_status of ${clientId} on ${chainId}`);
+  }
+}
+
+/* -------------------------------------------------------------------------- *
+ * Canonical channels
+ * -------------------------------------------------------------------------- */
+
+/**
+ * The chain registry's canonical transfer channel for each pair of catalog
+ * mainnets, as seed rows: `source: "seed"`, `verifiedAt: 0`.
+ *
+ * Generated from cosmos/chain-registry `_IBC` by
+ * scripts/generate-ibc-channels.mjs, because discovery cannot be relied on to
+ * find these: on a fresh install it returned nothing for Osmosis to Noble or
+ * Injective, and where it finds parallel channels it ranks an expired one
+ * first. Seeds are still checked on chain before a plan that uses one can be
+ * signed (`lib/route-plan.ts`).
+ */
+export const CANONICAL_CHANNEL_ROUTES: readonly ChannelRoute[] = Object.freeze(
+  IBC_CHANNEL_ROWS.map(([sourceChainId, channelId, destChainId, counterpartyChannelId]) =>
+    Object.freeze({
+      sourceChainId,
+      destChainId,
+      channelId,
+      counterpartyChannelId,
+      verifiedAt: 0,
+      source: "seed" as const,
+    }),
+  ),
+);
+
+let canonicalIndex: Map<string, readonly string[]> | null = null;
+
+function pairKey(sourceChainId: string, destChainId: string): string {
+  // NUL cannot appear in a chain id, so two pairs never share a key.
+  return `${sourceChainId}\u0000${destChainId}`;
+}
+
+/**
+ * The canonical channel ids leaving `sourceChainId` for `destChainId`.
+ *
+ * Almost always one. Empty when the registry names none for the pair. The
+ * engine's own two seeds (the Hub and Osmosis) are the same pair the registry
+ * names and are included, so the answer never depends on which table a row
+ * came from.
+ */
+export function canonicalChannelIds(
+  sourceChainId: string,
+  destChainId: string,
+): readonly string[] {
+  if (!canonicalIndex) {
+    const index = new Map<string, string[]>();
+    for (const route of [...SEED_CHANNEL_ROUTES, ...CANONICAL_CHANNEL_ROUTES]) {
+      const key = pairKey(route.sourceChainId, route.destChainId);
+      const ids = index.get(key) ?? [];
+      if (!ids.includes(route.channelId)) ids.push(route.channelId);
+      index.set(key, ids);
+    }
+    canonicalIndex = index;
+  }
+  return canonicalIndex.get(pairKey(sourceChainId, destChainId)) ?? [];
+}
+
+/** Whether the registry names `channelId` as the canonical channel for this direction. */
+export function isCanonicalChannel(
+  sourceChainId: string,
+  destChainId: string,
+  channelId: string,
+): boolean {
+  return canonicalChannelIds(sourceChainId, destChainId).includes(channelId);
+}
+
+/* -------------------------------------------------------------------------- *
  * The channel-route cache
  * -------------------------------------------------------------------------- */
 
@@ -259,8 +457,9 @@ export function denomResolver(): DenomResolver {
  * Channels the wallet has discovered or the user has entered, persisted so a
  * route survives a popup close.
  *
- * Seeded with the engine's `SEED_CHANNEL_ROUTES`, which carry `verifiedAt: 0`
- * and are therefore always shown as unverified until something checks them.
+ * Seeded with the engine's `SEED_CHANNEL_ROUTES` and the registry's canonical
+ * channels. Both carry `verifiedAt: 0` and are therefore shown as unverified
+ * until something checks them.
  */
 export async function loadRouteRegistry(): Promise<RouteRegistry> {
   const stored = (await browser.storage.local.get(STORAGE_KEYS.channelRoutes))[
@@ -268,14 +467,48 @@ export async function loadRouteRegistry(): Promise<RouteRegistry> {
   ];
   const registry = deserializeRouteRegistry(stored);
   registry.putMany(SEED_CHANNEL_ROUTES);
+  registry.putMany(CANONICAL_CHANNEL_ROUTES);
   return registry;
 }
 
-/** Persist the registry. Rows are plain JSON; nothing secret is written. */
+/**
+ * Persist the registry. Rows are plain JSON; nothing secret is written.
+ *
+ * Seed rows are left out: they are compiled in and re-added by every load, so
+ * writing a thousand of them back on each save would only grow the stored
+ * snapshot. A seed the wallet has since verified is a `discovered` row by then
+ * and is kept.
+ */
 export async function saveRouteRegistry(registry: RouteRegistry): Promise<void> {
-  await browser.storage.local.set({
-    [STORAGE_KEYS.channelRoutes]: registry.toJSON(),
+  const snapshot: RouteRegistrySnapshot = {
+    version: 1,
+    routes: registry.list().filter((route) => route.source !== "seed"),
+  };
+  await browser.storage.local.set({ [STORAGE_KEYS.channelRoutes]: snapshot });
+}
+
+let registryWrites: Promise<unknown> = Promise.resolve();
+
+/**
+ * Load, change and save the route cache as one step.
+ *
+ * Channel checks run in parallel, and each one used to load the cache, add its
+ * row and save. Two finishing together wrote back two different copies and the
+ * first row was lost. Writes from this context are queued instead, so each
+ * starts from the previous one's result.
+ */
+export function updateRouteRegistry<T>(
+  change: (registry: RouteRegistry) => T | Promise<T>,
+): Promise<T> {
+  const run = registryWrites.then(async () => {
+    const registry = await loadRouteRegistry();
+    const result = await change(registry);
+    await saveRouteRegistry(registry);
+    return result;
   });
+  // A failed write must not wedge the queue for every later one.
+  registryWrites = run.catch(() => undefined);
+  return run;
 }
 
 /* -------------------------------------------------------------------------- *

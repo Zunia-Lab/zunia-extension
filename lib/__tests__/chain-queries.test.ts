@@ -15,7 +15,8 @@ import { forwardChannelOf } from "../packet-tracking";
 const ME = "osmo1qyqszqgpqyqszqgpqyqszqgpqyqszqgpjnp7du";
 const OTHER = "osmo1zgq2rswzqupqyqs3dqsdgq2rswzqupqyqs5c7ms0";
 const HUB_SENDER = "cosmos1qyqszqgpqyqszqgpqyqszqgpqyqszqgpgq2rsw";
-const VOUCHER = "ibc/27394FB092D2ECCD56123C74F36E4C1F926001CEADA9CA97EA622B25F41E5EB2";
+/** A voucher no table or trace names (ibc/2739… would read ATOM now). */
+const VOUCHER = "ibc/0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF";
 
 function recvPacket(receiver: string, denom: string, amount: string) {
   const data = { denom, amount, sender: HUB_SENDER, receiver };
@@ -61,12 +62,12 @@ describe("baseDenomOf", () => {
 describe("coinDisplay", () => {
   it("names the chain's own coin and a coin another catalog chain issues", () => {
     expect(coinDisplay("cosmoshub-4", "uatom")).toEqual({
-      symbol: "ATOM.cosmos",
+      symbol: "ATOM",
       decimals: 6,
       known: true,
     });
     expect(coinDisplay("osmosis-1", "uatom")).toEqual({
-      symbol: "ATOM.cosmos",
+      symbol: "ATOM",
       decimals: 6,
       known: true,
     });

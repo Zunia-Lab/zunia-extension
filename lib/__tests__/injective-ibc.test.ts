@@ -24,6 +24,8 @@ const KNOWN_INJ = "inj1n5sm83csgezypzlje2q9yc3dwagqnsp8f6x9nz";
 const KNOWN_HEX = "0x9D21b3C7104644408bf2ca8052622d775009c027";
 const USDC = "erc20:0xa00c59ff5a080d2b954d0c75e46e22a0c371235a";
 const USDC_MIXED = "erc20:0xA00C59fF5a080D2b954d0c75e46E22a0c371235a";
+/** The spelling Injective's bank holds (9.6M supply); the others hold nothing. */
+const USDC_BANK = "erc20:0xa00C59fF5a080D2b954d0c75e46E22a0c371235a";
 const WINJ = "erc20:0x0000000088827d2d103ee2d9a6b781773ae03ffb";
 const PHRASE = `${"abandon ".repeat(11)}about`;
 
@@ -82,8 +84,14 @@ describe("injective bank denoms", () => {
     expect(denomsMatch("peggy0xdAC17F958D2ee523a2206206994597C13D831ec7", "peggy0xdac17f958d2ee523a2206206994597c13d831ec7")).toBe(true);
     expect(denomsMatch("inj", "INJ")).toBe(false);
 
-    const usdc = coinDisplay("injective-1", USDC_MIXED);
-    expect(usdc).toEqual({ symbol: "USDC.inj", decimals: 6, known: true });
+    // Matching is for finding the catalog row; naming is for the bank denom.
+    // Bank denoms are case-sensitive, so only the spelling the token table
+    // proves is USDC.inj. Another spelling is an empty denom (the lowercase
+    // one hashes to ibc/D3B2…, not the ibc/794C… Osmosis trades) and must
+    // not borrow the name.
+    expect(coinDisplay("injective-1", USDC_BANK)).toEqual({ symbol: "USDC.inj", decimals: 6, known: true });
+    expect(coinDisplay("injective-1", USDC_MIXED).known).toBe(false);
+    expect(coinDisplay("injective-1", USDC).known).toBe(false);
     expect(coinDisplay("injective-1", WINJ)).toEqual({
       symbol: "wINJ",
       decimals: 18,
@@ -92,33 +100,29 @@ describe("injective bank denoms", () => {
     expect(displayCoinSymbol("wINJ", "inj")).toBe("wINJ");
   });
 
-  it("suffixes a shared ticker with the chain prefix and leaves unique tickers bare", () => {
-    const prefixes = new Map<string, Set<string>>();
-    for (const entry of allCatalogEntries()) {
-      const seen = new Set<string>();
-      for (const currency of currenciesOf(entry)) {
-        if (seen.has(currency.coinDenom)) continue;
-        seen.add(currency.coinDenom);
-        const set = prefixes.get(currency.coinDenom) ?? new Set<string>();
-        set.add(entry.bech32Prefix);
-        prefixes.set(currency.coinDenom, set);
-      }
-    }
-
-    const usdc = prefixes.get("USDC");
-    expect(usdc?.has("inj")).toBe(true);
-    expect(usdc && usdc.size).toBeGreaterThan(1);
-    for (const prefix of usdc ?? []) {
-      expect(displayCoinSymbol("USDC", prefix)).toBe(`USDC.${prefix}`);
-    }
+  it("tags a shared ticker by its issuer and keeps the home issuer bare", () => {
+    // USDC is issued on several chains, so every issuer is tagged: Noble with
+    // the ecosystem's "n", Injective's Circle mint with "inj", Gravity's
+    // bridged copy with its bridge.
+    const usdcIssuers = allCatalogEntries().filter(
+      (entry) =>
+        entry.network === "mainnet" &&
+        currenciesOf(entry).some((currency) => currency.coinDenom === "USDC"),
+    );
+    expect(usdcIssuers.length).toBeGreaterThan(1);
+    expect(displayCoinSymbol("USDC", "noble")).toBe("USDC.n");
+    expect(displayCoinSymbol("USDC", "inj")).toBe("USDC.inj");
+    expect(displayCoinSymbol("USDC", "gravity")).toBe("USDC.grv");
+    expect(displayCoinSymbol("USDT", "inj")).toBe("USDT.peggy");
 
     const injective = findCatalogEntry("injective-1");
     const noble = findCatalogEntry("noble-1");
     expect(injective && chainTicker(injective)).toBe("INJ");
-    expect(noble && chainTicker(noble)).toBe("USDC.noble");
+    expect(noble && chainTicker(noble)).toBe("USDC.n");
     expect(displayCoinSymbol("INJ", "inj")).toBe("INJ");
     expect(displayCoinSymbol("OSMO", "osmo")).toBe("OSMO");
-    expect(displayCoinSymbol("ATOM", "cosmos")).toBe("ATOM.cosmos");
+    // The Hub's ATOM is home and bare; THORChain's pool ATOM is not.
+    expect(displayCoinSymbol("ATOM", "cosmos")).toBe("ATOM");
     expect(displayCoinSymbol("ATOM", "thor")).toBe("ATOM.thor");
   });
 

@@ -11,6 +11,7 @@ import {
 } from "./chain-catalog";
 import { validateCustomChainDraft, type CustomChainDraft } from "./chain-draft";
 import { STORAGE_KEYS } from "./storage-keys";
+import { hydrateTokenIdentities } from "./token-identity";
 
 export type { CustomChainDraft } from "./chain-draft";
 
@@ -48,10 +49,17 @@ export async function listCustomChains(): Promise<CatalogEntry[]> {
   return read();
 }
 
-/** Pull saved chains into the in-memory catalog. Call once per context boot. */
+/**
+ * Pull saved chains into the in-memory catalog. Call once per context boot.
+ *
+ * Also loads the token-identity facts cache, because every context that names
+ * a chain also names its tokens: this is the one boot hook the background,
+ * the popup and the approval window all run.
+ */
 export async function hydrateCustomChains(): Promise<CatalogEntry[]> {
   const rows = await read();
   setCustomCatalogEntries(rows);
+  await hydrateTokenIdentities();
   return rows;
 }
 

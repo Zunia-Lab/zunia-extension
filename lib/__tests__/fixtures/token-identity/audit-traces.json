@@ -1,0 +1,146 @@
+{
+  "capturedAt": "2026-10-05",
+  "source": "lcd-osmosis.keplr.app and lcd-injective.keplr.app: /ibc/apps/transfer/v1/denom_traces/{hash} for the traces, /ibc/core/channel/v1/channels/{channel}/ports/transfer/client_state for each channel's counterparty chain id. The same values the token audit recorded.",
+  "traces": [
+    {
+      "chainId": "osmosis-1",
+      "denom": "ibc/498A0751C798A0D9A389AA3691123DADA57DAA4FE165D5C75894505B876BA6E4",
+      "path": "transfer/channel-750",
+      "baseDenom": "uusdc"
+    },
+    {
+      "chainId": "osmosis-1",
+      "denom": "ibc/D189335C6E4A68B513C10AB227BF1C1D38C746766278BA3EEB4FB14124F1D858",
+      "path": "transfer/channel-208",
+      "baseDenom": "uusdc"
+    },
+    {
+      "chainId": "osmosis-1",
+      "denom": "ibc/794C7D7F3B857713878A3A1927251FA6AC1EEE520424C1F6FAFE9BA26D476138",
+      "path": "transfer/channel-122",
+      "baseDenom": "erc20:0xa00C59fF5a080D2b954d0c75e46E22a0c371235a"
+    },
+    {
+      "chainId": "osmosis-1",
+      "denom": "ibc/27394FB092D2ECCD56123C74F36E4C1F926001CEADA9CA97EA622B25F41E5EB2",
+      "path": "transfer/channel-0",
+      "baseDenom": "uatom"
+    },
+    {
+      "chainId": "osmosis-1",
+      "denom": "ibc/A23E590BA7E0D808706FB5085A449B3B9D6864AE4DDE7DAF936243CEBB2A3D43",
+      "path": "transfer/channel-1279/transfer/channel-52",
+      "baseDenom": "wei"
+    },
+    {
+      "chainId": "osmosis-1",
+      "denom": "ibc/785AFEC6B3741100D15E7AF01374E3C4C36F24888E96479B1C33F5C71F364EF9",
+      "path": "transfer/channel-251",
+      "baseDenom": "uluna"
+    },
+    {
+      "chainId": "osmosis-1",
+      "denom": "ibc/0E77E090EC04C476DE2BC0A7056580AC47660DAEB7B0D4701C085E3A046AC7B7",
+      "path": "transfer/channel-874",
+      "baseDenom": "factory/neutron13lkh47msw28yynspc5rnmty3yktk43wc3dsv0l/ATOM1KLFG"
+    },
+    {
+      "chainId": "injective-1",
+      "denom": "ibc/2CBC2EA121AE42563B08028466F37B600F2D7D4282342DE938283CC3FB2BC00E",
+      "path": "transfer/channel-148",
+      "baseDenom": "uusdc"
+    }
+  ],
+  "channels": [
+    { "chainId": "osmosis-1", "channelId": "channel-750", "counterpartyChainId": "noble-1" },
+    { "chainId": "osmosis-1", "channelId": "channel-208", "counterpartyChainId": "axelar-dojo-1" },
+    { "chainId": "osmosis-1", "channelId": "channel-122", "counterpartyChainId": "injective-1" },
+    { "chainId": "injective-1", "channelId": "channel-148", "counterpartyChainId": "noble-1" },
+    { "chainId": "osmosis-1", "channelId": "channel-251", "counterpartyChainId": "phoenix-1" },
+    { "chainId": "osmosis-1", "channelId": "channel-0", "counterpartyChainId": "cosmoshub-4" },
+    { "chainId": "osmosis-1", "channelId": "channel-1279", "counterpartyChainId": "centauri-1" },
+    { "chainId": "osmosis-1", "channelId": "channel-874", "counterpartyChainId": "neutron-1" }
+  ],
+  "naming": [
+    {
+      "chainId": "osmosis-1",
+      "denom": "ibc/498A0751C798A0D9A389AA3691123DADA57DAA4FE165D5C75894505B876BA6E4",
+      "ticker": "USDC.n",
+      "originChainId": "noble-1",
+      "originDenom": "uusdc"
+    },
+    {
+      "chainId": "injective-1",
+      "denom": "ibc/2CBC2EA121AE42563B08028466F37B600F2D7D4282342DE938283CC3FB2BC00E",
+      "ticker": "USDC.n",
+      "originChainId": "noble-1",
+      "originDenom": "uusdc"
+    },
+    { "chainId": "noble-1", "denom": "uusdc", "ticker": "USDC.n", "originChainId": "noble-1", "originDenom": "uusdc" },
+    {
+      "chainId": "osmosis-1",
+      "denom": "ibc/D189335C6E4A68B513C10AB227BF1C1D38C746766278BA3EEB4FB14124F1D858",
+      "ticker": "USDC.axl",
+      "originChainId": "axelar-dojo-1",
+      "originDenom": "uusdc"
+    },
+    {
+      "chainId": "injective-1",
+      "denom": "erc20:0xa00C59fF5a080D2b954d0c75e46E22a0c371235a",
+      "ticker": "USDC.inj",
+      "originChainId": "injective-1",
+      "originDenom": "erc20:0xa00C59fF5a080D2b954d0c75e46E22a0c371235a"
+    },
+    {
+      "chainId": "osmosis-1",
+      "denom": "ibc/794C7D7F3B857713878A3A1927251FA6AC1EEE520424C1F6FAFE9BA26D476138",
+      "ticker": "USDC.inj",
+      "originChainId": "injective-1",
+      "originDenom": "erc20:0xa00C59fF5a080D2b954d0c75e46E22a0c371235a"
+    },
+    {
+      "chainId": "injective-1",
+      "denom": "peggy0xdAC17F958D2ee523a2206206994597C13D831ec7",
+      "ticker": "USDT.peggy",
+      "originChainId": "injective-1",
+      "originDenom": "peggy0xdAC17F958D2ee523a2206206994597C13D831ec7"
+    },
+    {
+      "chainId": "osmosis-1",
+      "denom": "factory/osmo147h5x9pcj7lm0cttlaefx6sqq5vdfnmwfcqxkmjd7exqm9gc7grqhr75m0/alloyed/allUSDC",
+      "ticker": "allUSDC",
+      "originChainId": "osmosis-1",
+      "originDenom": "factory/osmo147h5x9pcj7lm0cttlaefx6sqq5vdfnmwfcqxkmjd7exqm9gc7grqhr75m0/alloyed/allUSDC"
+    },
+    { "chainId": "cosmoshub-4", "denom": "uatom", "ticker": "ATOM", "originChainId": "cosmoshub-4", "originDenom": "uatom" },
+    {
+      "chainId": "osmosis-1",
+      "denom": "ibc/27394FB092D2ECCD56123C74F36E4C1F926001CEADA9CA97EA622B25F41E5EB2",
+      "ticker": "ATOM",
+      "originChainId": "cosmoshub-4",
+      "originDenom": "uatom"
+    },
+    { "chainId": "axelar-dojo-1", "denom": "uaxl", "ticker": "AXL", "originChainId": "axelar-dojo-1", "originDenom": "uaxl" },
+    {
+      "chainId": "osmosis-1",
+      "denom": "ibc/A23E590BA7E0D808706FB5085A449B3B9D6864AE4DDE7DAF936243CEBB2A3D43",
+      "ticker": "ETH.pica",
+      "originChainId": "centauri-1",
+      "originDenom": "ibc/F9D075D4079FC56A9C49B601E54A45292C319D8B0E8CC0F8439041130AA7166C"
+    },
+    {
+      "chainId": "osmosis-1",
+      "denom": "ibc/785AFEC6B3741100D15E7AF01374E3C4C36F24888E96479B1C33F5C71F364EF9",
+      "ticker": "LUNA",
+      "originChainId": "phoenix-1",
+      "originDenom": "uluna"
+    },
+    {
+      "chainId": "osmosis-1",
+      "denom": "ibc/0E77E090EC04C476DE2BC0A7056580AC47660DAEB7B0D4701C085E3A046AC7B7",
+      "ticker": "ATOM1KLFG",
+      "originChainId": "neutron-1",
+      "originDenom": "factory/neutron13lkh47msw28yynspc5rnmty3yktk43wc3dsv0l/ATOM1KLFG"
+    }
+  ]
+}

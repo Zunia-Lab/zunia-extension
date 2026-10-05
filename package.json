@@ -1,6 +1,6 @@
 {
   "name": "zunia-extension",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "packageManager": "pnpm@9.15.0",
   "description": "Zunia browser extension for Cosmos multi-chain wallet (Chrome, Firefox, Edge, Safari)",
@@ -27,6 +27,7 @@
     "safari:open": "open safari/Zunia/Zunia.xcodeproj",
     "lint:firefox": "pnpm dlx web-ext@10.7.0 lint --source-dir .output/firefox-mv3",
     "chains:generate": "node scripts/generate-chain-catalog.mjs",
+    "channels:generate": "node scripts/generate-ibc-channels.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint",
     "test": "vitest run",

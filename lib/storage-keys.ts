@@ -62,6 +62,18 @@ export const STORAGE_KEYS = {
   /** Osmosis's listed token list, cached in chrome.storage.session. */
   osmosisAssets: "zunia.osmosisAssets",
   /**
+   * Proven IBC traces for vouchers the token table does not list, in
+   * chrome.storage.local (`lib/token-identity.ts`). Facts only (origin chain,
+   * base denom, path), never labels, so a naming-rule change needs no wipe.
+   * Versioned; a record from another version is ignored.
+   */
+  tokenIdentity: "zunia.tokenIdentity",
+  /**
+   * The Osmosis crosschain-swaps router's route table, cached in
+   * chrome.storage.session for about an hour (`lib/xcs-routes.ts`).
+   */
+  xcsRoutes: "zunia.xcsRoutes",
+  /**
    * CW721 contract addresses the user added, keyed by chain id.
    *
    * CosmWasm has no chain-level "tokens by owner" index, so without an address
