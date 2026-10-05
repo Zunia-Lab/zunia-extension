@@ -141,6 +141,24 @@ function checkBuild(browser) {
   if (files.some((file) => file.endsWith(".map"))) {
     fail("source maps are shipped in a production build");
   }
+
+  // Content-script CSS is inserted into the host page. A font or body rule
+  // there replaces the site's own typography.
+  for (const script of manifest.content_scripts ?? []) {
+    for (const cssFile of script.css ?? []) {
+      const cssPath = path.join(dir, cssFile);
+      if (!fs.existsSync(cssPath)) {
+        fail(`content script css ${cssFile} is missing`);
+        continue;
+      }
+      const css = fs.readFileSync(cssPath, "utf8");
+      if (/@font-face|font-family|\bbody\b|\bhtml\b|:root/.test(css)) {
+        fail(
+          `${cssFile} styles the host page. Content-script CSS must not set fonts or document margins.`,
+        );
+      }
+    }
+  }
   return problems;
 }
 

@@ -8,7 +8,11 @@ import { providerErrorCode, type ProviderErrorCode } from "../lib/provider-error
 import { pageEventFor } from "../lib/provider-events";
 import { getSettings } from "../lib/settings";
 import { STORAGE_KEYS } from "../lib/storage-keys";
-import "./style.css";
+
+// No stylesheet import. WXT injects content-script CSS into every matching
+// page at document_start, and a body font rule was replacing each site's own
+// face with Space Grotesk, then system-ui. Overlay styles stay in the shadow
+// root (lib/connect-overlay-view.ts).
 
 class BridgeError extends Error {
   constructor(
