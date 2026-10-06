@@ -18,7 +18,7 @@ import type { ActivityItem } from "../../../lib/chain-queries";
 import { groupedSubtitle, listAmount, type HeldIdentify } from "../../../lib/home-assets";
 import type { SpotPrice } from "../../../lib/prices";
 import { toWholeCoins } from "../../../lib/portfolio";
-import { NO_VALUE, formatFiat, relativeTime, shortDenom } from "../../../lib/format";
+import { NO_VALUE, formatFiat, formatFiatPrice, relativeTime, shortDenom } from "../../../lib/format";
 import { formatTokenAmount } from "../../../lib/token-amount";
 import type { TokenIdentity } from "../../../lib/token-identity";
 import type { ChainAccountView } from "../hooks/useChainAccounts";
@@ -442,6 +442,11 @@ export function ChainDetailScreen({
                 <span className="text-fg-muted">{totalFiat} total</span>
               ) : null}
               {price ? (
+                <span className="normal-case tracking-normal text-fg-muted">
+                  {formatFiatPrice(price.price, currency)}
+                </span>
+              ) : null}
+              {price ? (
                 <span
                   className={cn(
                     "normal-case tracking-normal",
@@ -453,6 +458,18 @@ export function ChainDetailScreen({
                   {price.change24h >= 0 ? "+" : ""}
                   {price.change24h.toFixed(1)}%
                 </span>
+              ) : null}
+              {price?.source ? (
+                // One exchange market, not an aggregate: say which, and link it.
+                <a
+                  href={price.source.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title={`Price from the ${price.source.pair} market on ${price.source.name}`}
+                  className="normal-case tracking-normal text-fg-dim underline decoration-dotted underline-offset-2 hover:text-fg"
+                >
+                  via {price.source.name}
+                </a>
               ) : null}
             </p>
           </div>

@@ -130,6 +130,28 @@ export function formatFiat(value: number, currency: string): string {
 }
 
 /**
+ * One coin's price, with the digits a small price needs: two decimals from 1
+ * up, else four significant digits, so SAF reads `$0.00028`, not `$0.00`.
+ */
+export function formatFiatPrice(value: number, currency: string): string {
+  if (!Number.isFinite(value) || value <= 0) return formatFiat(0, currency);
+  if (value >= 1) return formatFiat(value, currency);
+  const symbol =
+    new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: currency.toUpperCase(),
+      currencyDisplay: "narrowSymbol",
+    })
+      .formatToParts(0)
+      .find((part) => part.type === "currency")?.value ?? "$";
+  const digits = new Intl.NumberFormat("en-US", {
+    maximumSignificantDigits: 4,
+    maximumFractionDigits: 12,
+  }).format(value);
+  return `${symbol}${digits}`;
+}
+
+/**
  * The one short form of a denom, for every surface (`lib/token-identity.ts`
  * re-exports it): `ibc/498A…6BA6E4` for a voucher, `erc20:0xa00C…235a` and
  * `peggy0xdAC1…1ec7` for bridged ERC-20s, a clipped factory path, else the
