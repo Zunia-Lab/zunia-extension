@@ -647,6 +647,8 @@ export function SendScreen({
   balances,
   initialChainId,
   initialMode,
+  initialDenom,
+  initialDestChainId,
   contacts,
   onContactsChanged,
   onBack,
@@ -657,6 +659,10 @@ export function SendScreen({
   initialChainId?: string;
   /** "cross" when opened from the old Bridge entry point. */
   initialMode?: SendMode;
+  /** The token to open on: its exact bank denom on `initialChainId` (Swap's move to Osmosis). */
+  initialDenom?: string;
+  /** The destination to open other-chain mode on, when it is an enabled network. */
+  initialDestChainId?: string;
   contacts: AddressBookEntry[];
   onContactsChanged?: () => void;
   onBack: () => void;
@@ -668,13 +674,14 @@ export function SendScreen({
   const liveReads = settings.liveBalances;
   const [mode, setMode] = useState<SendMode>(initialMode ?? "send");
   const [chainId, setChainId] = useState(initialChainId ?? chains[0]?.chainId ?? "");
-  const [destChainId, setDestChainId] = useState(
-    () =>
-      chains.find((c) => c.chainId !== (initialChainId ?? chains[0]?.chainId))?.chainId ??
-      chains[1]?.chainId ??
-      "",
-  );
-  const [denom, setDenom] = useState("");
+  const [destChainId, setDestChainId] = useState(() => {
+    const source = initialChainId ?? chains[0]?.chainId;
+    if (initialDestChainId && initialDestChainId !== source && chains.some((c) => c.chainId === initialDestChainId)) {
+      return initialDestChainId;
+    }
+    return chains.find((c) => c.chainId !== source)?.chainId ?? chains[1]?.chainId ?? "";
+  });
+  const [denom, setDenom] = useState(initialDenom ?? "");
   const [recipient, setRecipient] = useState("");
   /** Cross-chain To field stays closed until the user wants a different address. */
   const [toOpen, setToOpen] = useState(false);

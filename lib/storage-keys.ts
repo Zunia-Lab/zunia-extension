@@ -74,6 +74,12 @@ export const STORAGE_KEYS = {
    */
   xcsRoutes: "zunia.xcsRoutes",
   /**
+   * The pool swap a user set out to make before moving its tokens to Osmosis
+   * (`lib/swap-intent.ts`), in chrome.storage.session for an hour, so Swap
+   * opens on it once they arrive.
+   */
+  swapIntent: "zunia.swapIntent",
+  /**
    * CW721 contract addresses the user added, keyed by chain id.
    *
    * CosmWasm has no chain-level "tokens by owner" index, so without an address

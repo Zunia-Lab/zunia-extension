@@ -8,6 +8,7 @@ import {
   Spinner,
   ThemeProvider,
 } from "@zunialab/ui";
+import { SWAP_VENUE_CHAIN_ID } from "../../config/interchain";
 import { SESSION_CONFIG } from "../../config/session";
 import { watchUserActivity } from "../../lib/activity";
 import type { AddressBookEntry } from "../../lib/address-book";
@@ -470,6 +471,15 @@ function AppBody({ state }: { state: ExtensionState }) {
               chains={chains}
               balances={balances}
               initialChainId={location.chainId}
+              onMoveToVenue={({ chainId, denom }) =>
+                navigate({
+                  route: "send",
+                  chainId,
+                  sendMode: "cross",
+                  sendDenom: denom,
+                  sendToChainId: SWAP_VENUE_CHAIN_ID,
+                })
+              }
             />,
           )
         : null}
@@ -552,11 +562,13 @@ function AppBody({ state }: { state: ExtensionState }) {
 
       {route === "send" ? (
         <SendScreen
-          key={`${location.chainId ?? ""}:${location.sendMode ?? "send"}`}
+          key={`${location.chainId ?? ""}:${location.sendMode ?? "send"}:${location.sendDenom ?? ""}:${location.sendToChainId ?? ""}`}
           chains={chains}
           balances={balances}
           initialChainId={location.chainId}
           initialMode={location.sendMode === "cross" ? "cross" : "send"}
+          initialDenom={location.sendDenom}
+          initialDestChainId={location.sendToChainId}
           contacts={contacts}
           onContactsChanged={loadContacts}
           onBack={back}

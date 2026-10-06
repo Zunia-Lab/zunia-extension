@@ -93,6 +93,8 @@ function phraseForOne(msg: MemoSourceMsg, chainId: string | undefined): string {
       return labeled("Swap", symbol);
     case "swap-call":
       return swapCallPhrase(value, chainId);
+    case "pool-swap":
+      return poolSwapPhrase(value, chainId);
     case "stake":
       return labeled("Stake", symbol);
     case "unstake":
@@ -137,6 +139,28 @@ function swapCallPhrase(value: Record<string, unknown>, chainId: string | undefi
 }
 
 /**
+ * A swap in Osmosis's own pools (poolmanager's `MsgSwapExactAmountIn` or
+ * `MsgSplitRouteSwapExactAmountIn`): `Swap OSMO to USDC.inj`, under the same
+ * rule as {@link swapCallPhrase}: both tokens proven on the signing chain, or
+ * the generic `Swap`.
+ */
+function poolSwapPhrase(value: Record<string, unknown>, chainId: string | undefined): string {
+  const soldDenom = isCoin(value.token_in) ? value.token_in.denom : text(value.token_in_denom);
+  const routes = Array.isArray(value.routes) ? value.routes : [];
+  const lastOf = (hops: unknown): unknown => (Array.isArray(hops) ? hops[hops.length - 1] : undefined);
+  const first = routes[0] as Record<string, unknown> | undefined;
+  // A split route nests its pools; a single route lists them directly.
+  const lastHop = (first && Array.isArray(first.pools) ? lastOf(first.pools) : lastOf(routes)) as
+    | Record<string, unknown>
+    | undefined;
+  const outputDenom = lastHop ? text(lastHop.token_out_denom) : "";
+  if (!soldDenom || !outputDenom) return "Swap";
+  const sold = tokenSymbol(soldDenom, chainId, "swap-call");
+  const bought = tokenSymbol(outputDenom, chainId, "swap-call");
+  return sold && bought ? `Swap ${sold} to ${bought}` : "Swap";
+}
+
+/**
  * The two denoms of a crosschain-swaps call: the one coin it pays with and
  * the `output_denom` it asks for. `null` for any other shape, which the
  * contract would refuse anyway (it takes exactly one coin).
@@ -159,6 +183,7 @@ type MemoKind =
   | "ibc-forward"
   | "swap"
   | "swap-call"
+  | "pool-swap"
   | "stake"
   | "unstake"
   | "redelegate"
@@ -185,6 +210,15 @@ function messageKind(msg: MemoSourceMsg): MemoKind {
     if (packet === "swap") return "swap";
     if (packet === "forward") return "ibc-forward";
     return "ibc";
+  }
+  if (
+    type.includes("poolmanager") &&
+    (type.includes("msgswapexactamountin") ||
+      type.includes("msgsplitrouteswapexactamountin") ||
+      type.includes("swap-exact-amount-in") ||
+      type.includes("split-amount-in"))
+  ) {
+    return "pool-swap";
   }
   if (type.includes("executecontract") || type.includes("wasm/msgexecute")) {
     const action = wasmAction(msg.value ?? {});

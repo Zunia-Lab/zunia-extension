@@ -32,7 +32,7 @@ import {
 } from "../../../lib/swap-assets";
 import { MAX_ONLY_NOTE, amountFieldText, canTypeAmount } from "../../../lib/token-amount";
 import { resolveTxMemo } from "../../../lib/tx-memo";
-import { noRouteReason, parseRouterState, type XcsRouteTable } from "../../../lib/xcs-routes";
+import { notTradedReason, parseRouterState, type XcsRouteTable } from "../../../lib/xcs-routes";
 import sqs from "../../../lib/__tests__/fixtures/swap/sqs-tokens-metadata.json";
 import wallet from "../../../lib/__tests__/fixtures/swap/wallet.json";
 import live from "../../../lib/__tests__/fixtures/swap/xcs-route-table.json";
@@ -884,14 +884,15 @@ describe("the To side", () => {
   it("defaults to the first row that can be used, and keeps a refused pick with its reason", () => {
     const first = pickTo(fromOsmo, null);
     expect(first?.disabledReason).toBeNull();
-    const refused = row(fromOsmo, "injective-1:erc20:0xa00C59fF5a080D2b954d0c75e46E22a0c371235a");
+    // SAF is not traded on Osmosis: a pick of it stays, with the reason.
+    const refused = row(fromOsmo, "safrochain-1:usaf");
     expect(pickTo(fromOsmo, refused.key)).toBe(refused);
-    expect(refused.disabledReason).toBe(noRouteReason("OSMO", "USDC.inj"));
+    expect(refused.disabledReason).toBe(notTradedReason("SAF"));
     const saf = row(sell, "safrochain-1:usaf");
     expect(pickTo(buy(saf), null)).toBeUndefined();
   });
 
-  it("draws the two USDC.inj rows with their location, their token logo and the plain reason", () => {
+  it("draws the two USDC.inj rows with their location and their token logo, both pickable", () => {
     const rows = [
       row(fromOsmo, "injective-1:erc20:0xa00C59fF5a080D2b954d0c75e46E22a0c371235a"),
       row(fromOsmo, `osmosis-1:${USDC_INJ_ON_OSMOSIS}`),
@@ -899,9 +900,10 @@ describe("the To side", () => {
     const items = rows.map((option) => swapPickerItem(option, false));
     expect(items.map((item) => item.sublabel)).toEqual(["Native on Injective", "Injective USDC · on Osmosis"]);
     for (const item of items) {
-      expect(item.disabled).toBe(true);
-      expect(item.searchOnly).toBe(true);
-      expect(item.disabledReason).toBe("Zunia's Osmosis swap contract has no route from OSMO to USDC.inj yet.");
+      // The contract has no route from OSMO, Osmosis's own pools do.
+      expect(item.disabled ?? false).toBe(false);
+      expect(item.searchOnly ?? false).toBe(false);
+      expect(item.disabledReason).toBeUndefined();
       expect(item.srNote).toMatch(/^Verified: /);
       const icon = item.icon as { props: { locationBadge: string; identity: { logoUrl: string | null } } };
       expect(icon.props.locationBadge).toBe("always");

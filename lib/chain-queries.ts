@@ -837,15 +837,19 @@ function executeMsgOf(raw: unknown): Record<string, unknown> | null {
   }
 }
 
+/** Osmosis poolmanager's swap messages, the ones Swap signs in Osmosis's own pools. */
+const POOL_SWAP_TYPES = [".MsgSwapExactAmountIn", ".MsgSplitRouteSwapExactAmountIn"];
+
 /**
- * Whether a transaction swaps through the crosschain-swaps contract, the two
- * ways Swap signs one: a contract call to `osmosis_swap` (funds already on
- * Osmosis), or an ICS20 transfer whose memo calls it when it arrives (funds
- * on another chain).
+ * Whether a transaction is a swap the way Swap signs one: a contract call to
+ * `osmosis_swap` (the crosschain-swaps contract, funds already on Osmosis), an
+ * ICS20 transfer whose memo calls it when it arrives (funds on another chain),
+ * or poolmanager's own swap message (Osmosis's pools, funds on Osmosis).
  */
 export function isSwapTx(messages: readonly Record<string, unknown>[]): boolean {
   return messages.some((message) => {
     const type = typeUrlOf(message);
+    if (type.includes("poolmanager") && POOL_SWAP_TYPES.some((name) => type.endsWith(name))) return true;
     if (type.endsWith(".MsgExecuteContract")) {
       const call = executeMsgOf(message.msg);
       return call !== null && Object.hasOwn(call, "osmosis_swap");
@@ -992,6 +996,29 @@ export function describeMessage(
       summary: type.endsWith(".MsgUpdateClient")
         ? `Update the IBC client ${text(message.client_id)}`.trim()
         : `IBC relayer step: ${humanType(type).toLowerCase()}`,
+    };
+  }
+
+  if (type.endsWith(".MsgSplitRouteSwapExactAmountIn")) {
+    // One input denom, its amount spread over the routes; every route ends in
+    // the same output, which is what the first route's last pool pays.
+    const routes = Array.isArray(message.routes) ? message.routes.map(asRecord) : [];
+    let total = 0n;
+    for (const route of routes) {
+      const share = text(route?.token_in_amount);
+      if (/^\d+$/.test(share)) total += BigInt(share);
+    }
+    const inDenom = text(message.token_in_denom);
+    const { words, ...coin } = withCoin(inDenom && total > 0n ? { denom: inDenom, amount: total.toString() } : null, "-");
+    const pools = Array.isArray(routes[0]?.pools) ? (routes[0]?.pools as unknown[]) : [];
+    const outDenom = text(asRecord(pools[pools.length - 1])?.token_out_denom);
+    const outSymbol = outDenom ? identityOf(chainId, outDenom).ticker : "";
+    return {
+      kind: "swap",
+      title: outSymbol && coin.symbol ? `Swap ${coin.symbol} for ${outSymbol}` : "Swap",
+      subtitle: `on ${routes.length} route${routes.length === 1 ? "" : "s"}`,
+      ...coin,
+      summary: words ? `Swap ${words}${outSymbol ? ` for ${outSymbol}` : ""}` : "Swap",
     };
   }
 

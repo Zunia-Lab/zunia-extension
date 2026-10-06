@@ -6,17 +6,17 @@
  * route in its memo: it asks its swaprouter `get_route(input, output)` and
  * refuses the packet when the router has no entry. SQS prices far more pairs
  * than that table holds (on 2026-10-05: 39 directional routes over 20 denoms,
- * against 1,319 listed tokens), so without the table the To list offered
- * hundreds of tokens whose quote could only ever fail with "no route".
+ * against 1,319 listed tokens). Those pairs are swapped in Osmosis's own pools
+ * instead (lib/pool-swap.ts), so the table's answer picks the path for a pair
+ * (lib/swap-path.ts) rather than whether it can be swapped at all.
  *
  * The table is read once per session and cached in `storage.session`: the
  * contract's raw `config` names the router (`swap_contract`), and the router's
  * paginated contract state holds the `routing_table` map. The answer is
- * advisory. It decides which To rows are offered and why the others are off,
- * but the route gate in lib/route-plan.ts (`readXcsExecutableRoute`, live, per
- * pair) still decides what may be signed, and nothing here can enable a pair
- * that gate refuses. When the table cannot be read every answer is `unknown`,
- * and `unknown` never disables a row.
+ * advisory. The route gate in lib/route-plan.ts (`readXcsExecutableRoute`,
+ * live, per pair) still decides what the contract path may sign, and nothing
+ * here can enable a pair that gate refuses. When the table cannot be read
+ * every answer is `unknown`, and `unknown` never disables a row.
  */
 
 import {
@@ -33,6 +33,7 @@ import { hexToBytes } from "@noble/hashes/utils.js";
 
 import { SWAP_VENUE_CHAIN_ID } from "../config/interchain";
 import { chainRegistry, lcdFor } from "./interchain";
+import { swapPathFor } from "./swap-path";
 import { STORAGE_KEYS } from "./storage-keys";
 import { identityOf, type TokenIdentity } from "./token-identity";
 
@@ -104,9 +105,13 @@ export function noRouteReason(fromTicker: string, toTicker: string): string {
   return `Zunia's Osmosis swap contract has no route from ${fromTicker} to ${toTicker} yet.`;
 }
 
-/** SwapScreen's refusal when both sides sit on Osmosis, shown in the picker instead of after the pick. */
-export const BOTH_ON_OSMOSIS_REASON =
-  "Both tokens are already on Osmosis, and this screen swaps by sending to another chain after the pool.";
+/**
+ * A side Osmosis has no denom for: neither the contract nor Osmosis's own
+ * pools can trade it.
+ */
+export function notTradedReason(ticker: string): string {
+  return `${ticker} is not traded on Osmosis, so Zunia cannot swap it.`;
+}
 
 /** The To row is the From row itself. */
 export const SELF_REASON = "This is the token you are selling.";
@@ -541,9 +546,13 @@ export function executableBetween(
 /**
  * The verdict on `option` as the To side of a swap from `from`, in order of
  * what the user can act on: a testnet side, the From row itself, the same
- * asset elsewhere, no route in the contract's table, both on Osmosis.
- * `executable` reports the table alone; the first three and the last apply
- * with or without it.
+ * asset elsewhere, a side Osmosis does not trade. `executable` reports the
+ * table alone.
+ *
+ * A pair the contract's table does not hold is not refused for that: Osmosis's
+ * own pools swap it (lib/swap-path.ts), at once when the funds are on Osmosis,
+ * after moving them there otherwise. Only the pools' one requirement refuses a
+ * row on that path: both sides need a denom on Osmosis.
  */
 export function gateOption(
   from: GateSide | null | undefined,
@@ -558,8 +567,9 @@ export function gateOption(
   const vin = osmosisDenomFor(from);
   const vout = osmosisDenomFor(option);
   if (vin && vout && denomKey(vin) === denomKey(vout)) return gate(SAME_TOKEN_REASON);
-  if (answer === "no") return gate(noRouteReason(from.identity.ticker, option.identity.ticker));
-  if (from.chainId === VENUE && option.chainId === VENUE) return gate(BOTH_ON_OSMOSIS_REASON);
+  if (swapPathFor(from, option, answer) !== "contract" && !(vin && vout)) {
+    return gate(notTradedReason((vin ? option : from).identity.ticker));
+  }
   return gate(null);
 }
 

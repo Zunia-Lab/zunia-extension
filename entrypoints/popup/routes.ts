@@ -69,6 +69,10 @@ export interface PopupLocation {
   tokenId?: string;
   /** Opens Send on its other-chain mode. */
   sendMode?: "cross";
+  /** Opens Send on this token of `chainId`: its exact bank denom. */
+  sendDenom?: string;
+  /** Opens Send's other-chain mode with this destination. */
+  sendToChainId?: string;
 }
 
 /** Deep enough for any real path through the popup; older entries drop off. */
@@ -82,7 +86,9 @@ export function sameLocation(a: PopupLocation, b: PopupLocation): boolean {
     a.operatorAddress === b.operatorAddress &&
     a.collectionAddress === b.collectionAddress &&
     a.tokenId === b.tokenId &&
-    a.sendMode === b.sendMode
+    a.sendMode === b.sendMode &&
+    a.sendDenom === b.sendDenom &&
+    a.sendToChainId === b.sendToChainId
   );
 }
 

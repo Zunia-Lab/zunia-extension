@@ -3,7 +3,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { identityOf } from "../token-identity";
 import {
-  BOTH_ON_OSMOSIS_REASON,
   SAME_TOKEN_REASON,
   SELF_REASON,
   TESTNET_REASON,
@@ -14,7 +13,7 @@ import {
   gateOption,
   gateOptions,
   loadXcsRoutes,
-  noRouteReason,
+  notTradedReason,
   osmosisDenomFor,
   parseRouterState,
   readRoutingTable,
@@ -236,19 +235,34 @@ describe("executable", () => {
 describe("gateOption", () => {
   const osmo = side("osmosis-1", "uosmo");
 
-  it("with From OSMO on Osmosis: no route to USDC.inj on either chain, USDC.axl on Axelar but not on Osmosis", () => {
-    const toInjective = gateOption(osmo, side("injective-1", USDC_INJ_ERC20), table);
-    expect(toInjective).toEqual({
+  it("with From OSMO on Osmosis: every pair Osmosis trades can be picked, whatever the contract's table says", () => {
+    // The contract has no route to USDC.inj or USDC.n: Osmosis's own pools swap
+    // them (on Osmosis, or with a transfer after the swap), so nothing is refused.
+    expect(gateOption(osmo, side("injective-1", USDC_INJ_ERC20), table)).toEqual({
       executable: "no",
-      disabledReason: "Zunia's Osmosis swap contract has no route from OSMO to USDC.inj yet.",
+      disabledReason: null,
     });
-    // No route outranks the both-on-Osmosis rule: delivering elsewhere would not help.
-    expect(gateOption(osmo, side("osmosis-1", USDC_INJ), table)).toEqual(toInjective);
-    expect(gateOption(osmo, side("noble-1", "uusdc"), table).disabledReason).toBe(noRouteReason("OSMO", "USDC.n"));
+    expect(gateOption(osmo, side("osmosis-1", USDC_INJ), table)).toEqual({ executable: "no", disabledReason: null });
+    expect(gateOption(osmo, side("noble-1", "uusdc"), table)).toEqual({ executable: "no", disabledReason: null });
+    // Both on Osmosis is a swap in its pools, not a refusal.
     expect(gateOption(osmo, side("axelar-dojo-1", "uusdc"), table)).toEqual({ executable: "yes", disabledReason: null });
-    expect(gateOption(osmo, side("osmosis-1", USDC_AXL), table)).toEqual({
-      executable: "yes",
-      disabledReason: BOTH_ON_OSMOSIS_REASON,
+    expect(gateOption(osmo, side("osmosis-1", USDC_AXL), table)).toEqual({ executable: "yes", disabledReason: null });
+  });
+
+  it("refuses a side Osmosis does not trade, in either direction", () => {
+    // SAF has no denom on Osmosis: neither the contract nor the pools can take it.
+    expect(gateOption(osmo, side("safrochain-1", "usaf"), table)).toEqual({
+      executable: "no",
+      disabledReason: notTradedReason("SAF"),
+    });
+    expect(gateOption(side("safrochain-1", "usaf"), osmo, table)).toEqual({
+      executable: "no",
+      disabledReason: notTradedReason("SAF"),
+    });
+    // Funds elsewhere that Osmosis does trade move there first: not refused.
+    expect(gateOption(side("cosmoshub-4", "uatom"), side("injective-1", USDC_INJ_ERC20), table)).toEqual({
+      executable: "no",
+      disabledReason: null,
     });
   });
 
@@ -272,8 +286,7 @@ describe("gateOption", () => {
       executable: "unknown",
       disabledReason: null,
     });
-    // Both on Osmosis is the screen's own rule, not the table's.
-    expect(gateOption(osmo, side("osmosis-1", USDC_INJ), null).disabledReason).toBe(BOTH_ON_OSMOSIS_REASON);
+    expect(gateOption(osmo, side("osmosis-1", USDC_INJ), null).disabledReason).toBeNull();
     expect(gateOption(null, side("injective-1", USDC_INJ_ERC20), table)).toEqual({
       executable: "unknown",
       disabledReason: null,

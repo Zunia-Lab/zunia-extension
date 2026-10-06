@@ -408,6 +408,44 @@ describe("a swap signed as one contract call on Osmosis", () => {
   });
 });
 
+describe("a swap in Osmosis's own pools", () => {
+  const USDC_INJ = "ibc/794C7D7F3B857713878A3A1927251FA6AC1EEE520424C1F6FAFE9BA26D476138";
+  const single = (soldDenom: string, outputDenom: string): MemoSourceMsg => ({
+    typeUrl: "/osmosis.poolmanager.v1beta1.MsgSwapExactAmountIn",
+    value: {
+      sender: "osmo1sender",
+      routes: [
+        { pool_id: "3497", token_out_denom: USDC_N_ON_OSMOSIS },
+        { pool_id: "1464", token_out_denom: outputDenom },
+      ],
+      token_in: { denom: soldDenom, amount: "1000000" },
+      token_out_min_amount: "1",
+    },
+  });
+  const split = (soldDenom: string, outputDenom: string): MemoSourceMsg => ({
+    typeUrl: "/osmosis.poolmanager.v1beta1.MsgSplitRouteSwapExactAmountIn",
+    value: {
+      sender: "osmo1sender",
+      routes: [
+        { pools: [{ pool_id: "3498", token_out_denom: outputDenom }], token_in_amount: "6000000" },
+        { pools: [{ pool_id: "3586", token_out_denom: outputDenom }], token_in_amount: "4000000" },
+      ],
+      token_in_denom: soldDenom,
+      token_out_min_amount: "1",
+    },
+  });
+
+  it("names both tokens as Osmosis holds them, single route or split", () => {
+    expect(resolveTxMemo("", [split("uosmo", USDC_INJ)], "osmosis-1")).toBe(`Swap OSMO to USDC.inj · ${ZUNIA_WALLET_TAG}`);
+    expect(resolveTxMemo("", [single(USDC_INJ, "uosmo")], "osmosis-1")).toBe(`Swap USDC.inj to OSMO · ${ZUNIA_WALLET_TAG}`);
+  });
+
+  it("says only 'Swap' unless both tokens are proven", () => {
+    expect(resolveTxMemo("", [split("uosmo", UNLISTED)], "osmosis-1")).toBe(`Swap · ${ZUNIA_WALLET_TAG}`);
+    expect(resolveTxMemo("", [single(UNLISTED, "uosmo")], "osmosis-1")).toBe(`Swap · ${ZUNIA_WALLET_TAG}`);
+  });
+});
+
 describe("a swap with Zunia's fee signed after it", () => {
   const TREASURY_OSMO = bech32.encode("osmo", bech32.toWords(new Uint8Array(20).fill(0x5a)));
   const TREASURY_HUB = bech32.encode("cosmos", bech32.toWords(new Uint8Array(20).fill(0x5a)));

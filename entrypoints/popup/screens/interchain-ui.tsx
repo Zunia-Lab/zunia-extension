@@ -117,11 +117,17 @@ export function useOsmosisAssets(enabled: boolean): {
 
 /**
  * The swap contract's route table (lib/xcs-routes.ts), read once the venue is
- * verified: pass its contract address, or null while there is none. `null`
- * while it loads and when it cannot be read, which gates no To row; the live
- * route check in the planner still decides what may be signed.
+ * verified: pass its contract address, or null while there is none. `table`
+ * is `null` while it loads and when it cannot be read, which gates no To row;
+ * the live route check in the planner still decides what the contract may
+ * sign. `loading` tells the two apart: the table picks how a pair swaps
+ * (lib/swap-path.ts), and a screen waits for it rather than switch paths.
  */
-export function useXcsRoutes(contract: string | null): XcsRouteTable | null {
+export function useXcsRoutes(contract: string | null): {
+  readonly table: XcsRouteTable | null;
+  /** The read for `contract` has not answered yet. `false` without a contract to read. */
+  readonly loading: boolean;
+} {
   const [settled, setSettled] = useState<{
     contract: string;
     table: XcsRouteTable | null;
@@ -137,7 +143,11 @@ export function useXcsRoutes(contract: string | null): XcsRouteTable | null {
       .catch(() => undefined);
     return () => controller.abort();
   }, [contract]);
-  return contract && settled?.contract === contract ? settled.table : null;
+  const answered = Boolean(contract) && settled?.contract === contract;
+  return {
+    table: answered ? (settled?.table ?? null) : null,
+    loading: Boolean(contract) && !answered,
+  };
 }
 
 /** `Date.now()`, refreshed every second while `active`. */

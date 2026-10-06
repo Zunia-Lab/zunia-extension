@@ -134,6 +134,7 @@ import { msgDelegate, msgUndelegate, msgVote, msgWithdrawReward, type AminoMsg, 
 import { CHAIN_CATALOG } from "../chain-catalog";
 import { chainJsonFor } from "../chains";
 import { createLocalKernel } from "../kernel";
+import { buildPoolSwapMsg } from "../pool-swap";
 import { buildSwapFeeMsg } from "../swap-fee";
 import { identityOf } from "../token-identity";
 import { previewTx, signAndBroadcastTx, type TxPreview, type TxRequest } from "../tx-kernel";
@@ -211,6 +212,8 @@ function transfer(fromChainId: string, channel: string, denom: string, receiver:
 
 /** ATOM on Osmosis (`transfer/channel-0/uatom`). */
 const ATOM_ON_OSMOSIS = "ibc/27394FB092D2ECCD56123C74F36E4C1F926001CEADA9CA97EA622B25F41E5EB2";
+/** Injective's USDC on Osmosis (`transfer/channel-122/erc20:0xa00C…`). */
+const USDC_INJ_ON_OSMOSIS = "ibc/794C7D7F3B857713878A3A1927251FA6AC1EEE520424C1F6FAFE9BA26D476138";
 
 /**
  * Swap's venue-origin message: funds already on `chainId` paid straight to
@@ -398,6 +401,79 @@ describe("tx-kernel: a default memo names the token on the signing chain, and is
     if (typeof executeMsg === "string") expect(tx).toContain(Buffer.from(executeMsg, "base64").toString("hex"));
     expect(tx).toContain(hexOf(treasury));
     expect(tx.indexOf(hexOf(treasury))).toBeGreaterThan(tx.indexOf(hexOf(XCS)));
+  });
+
+  it.each([
+    {
+      what: "OSMO swapped into USDC.inj in Osmosis's own pools, split over two routes",
+      split: true,
+      deliver: false,
+    },
+    {
+      what: "USDC.inj swapped into OSMO in Osmosis's own pools, one route through two pools",
+      split: false,
+      deliver: false,
+    },
+    {
+      what: "OSMO swapped into USDC.inj in Osmosis's pools, then its floor sent home to Injective",
+      split: true,
+      deliver: true,
+    },
+  ])("$what: the swap, the fee and any transfer in one transaction, signed by the kernel", async ({ split, deliver }) => {
+    const chainId = "osmosis-1";
+    const me = addressOn(chainId);
+    const treasury = treasuryOn(chainId);
+    const sold = split ? "uosmo" : USDC_INJ_ON_OSMOSIS;
+    const routes = split
+      ? [
+          { hops: [{ poolId: "3498", tokenOutDenom: USDC_INJ_ON_OSMOSIS }], inAmount: "5970000" },
+          { hops: [{ poolId: "3586", tokenOutDenom: USDC_INJ_ON_OSMOSIS }], inAmount: "3980000" },
+        ]
+      : [
+          {
+            hops: [
+              { poolId: "3497", tokenOutDenom: USDC_N_ON_OSMOSIS },
+              { poolId: "1464", tokenOutDenom: "uosmo" },
+            ],
+            inAmount: "9950000",
+          },
+        ];
+    const floor = split ? "349331" : "280000000";
+    const homeTransfer = transfer(chainId, "channel-122", USDC_INJ_ON_OSMOSIS, addressOn("injective-1"));
+    const msgs = [
+      buildPoolSwapMsg({ sender: me, denom: sold, routes, minOut: floor }),
+      buildSwapFeeMsg({ sender: me, recipient: treasury, denom: sold, amount: 50_000n }),
+      ...(deliver
+        ? [{ ...homeTransfer, value: { ...homeTransfer.value, token: { denom: USDC_INJ_ON_OSMOSIS, amount: floor } } }]
+        : []),
+    ];
+    const memo = tagged(split ? "Swap OSMO to USDC.inj" : "Swap USDC.inj to OSMO");
+    const request: TxRequest = { chainId, signerAddress: me, msgs };
+    expect(resolveTxMemo("", msgs, chainId)).toBe(memo);
+
+    const preview = await previewTx(request);
+    expect(preview.preview.memo).toBe(memo);
+    expect(calls.simulate).toEqual([memo]);
+    // The kernel describes each message itself, the swap first, by its pools.
+    expect(preview.preview.summaries).toHaveLength(msgs.length);
+    expect(preview.preview.summaries[0]).toContain(split ? "3498" : "3497");
+    expect(preview.preview.summaries[0]).toContain(floor);
+    expect(preview.preview.summaries[1]).toBe(`Send 50000 ${sold} to ${treasury}`);
+
+    const result = await signAndBroadcastTx(signRequest(request, preview));
+    expect(result.success).toBe(true);
+    expect(calls.sign).toEqual([memo]);
+    const tx = directTxHex(0);
+    const typeUrl = split
+      ? "/osmosis.poolmanager.v1beta1.MsgSplitRouteSwapExactAmountIn"
+      : "/osmosis.poolmanager.v1beta1.MsgSwapExactAmountIn";
+    expect(tx).toContain(hexOf(typeUrl));
+    expect(tx).toContain(hexOf(floor));
+    // The swap first, then the fee, then the transfer that spends the swap's output.
+    expect(tx.indexOf(hexOf(treasury))).toBeGreaterThan(tx.indexOf(hexOf(typeUrl)));
+    if (deliver) {
+      expect(tx.indexOf(hexOf("channel-122"))).toBeGreaterThan(tx.indexOf(hexOf(treasury)));
+    }
   });
 
   it("refuses, in the kernel itself, a fee to another chain's address, and broadcasts nothing", async () => {

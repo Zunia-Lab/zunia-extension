@@ -21,11 +21,10 @@ import {
 } from "../swap-assets";
 import { ibcDenomFor, identityOf } from "../token-identity";
 import {
-  BOTH_ON_OSMOSIS_REASON,
   SAME_TOKEN_REASON,
   SELF_REASON,
   TESTNET_REASON,
-  noRouteReason,
+  notTradedReason,
   parseRouterState,
   type XcsRouteTable,
 } from "../xcs-routes";
@@ -338,35 +337,40 @@ describe("buyOptions", () => {
     expect(search(rows, "usdc.noble").map((option) => option.key)).toContain(`osmosis-1:${USDC_N}`);
   });
 
-  it("with From OSMO on Osmosis: no route to USDC.inj or USDC.n, USDC.axl only delivered on Axelar", () => {
+  it("with From OSMO on Osmosis: USDC.inj, USDC.n and USDC.axl can be bought on every chain; the table only says which the contract reaches", () => {
     const rows = buy(osmoFrom);
-    for (const key of [`injective-1:${USDC_INJ_ERC20}`, `osmosis-1:${USDC_INJ}`]) {
-      expect(row(rows, key)).toMatchObject({
-        executable: "no",
-        disabledReason: "Zunia's Osmosis swap contract has no route from OSMO to USDC.inj yet.",
-        searchOnly: true,
-      });
+    // The contract has no route to USDC.inj or USDC.n. Osmosis's own pools swap
+    // them, on Osmosis or with a transfer after the swap, so the rows are offered.
+    for (const key of [
+      `injective-1:${USDC_INJ_ERC20}`,
+      `osmosis-1:${USDC_INJ}`,
+      "noble-1:uusdc",
+      `osmosis-1:${USDC_N}`,
+      `injective-1:${USDC_N_ON_INJECTIVE}`,
+    ]) {
+      expect(row(rows, key)).toMatchObject({ executable: "no", disabledReason: null, searchOnly: false });
     }
-    for (const key of ["noble-1:uusdc", `osmosis-1:${USDC_N}`, `injective-1:${USDC_N_ON_INJECTIVE}`]) {
-      expect(row(rows, key)).toMatchObject({ executable: "no", disabledReason: noRouteReason("OSMO", "USDC.n") });
+    // Both on Osmosis is a swap in its pools, not a refusal.
+    for (const key of ["axelar-dojo-1:uusdc", `osmosis-1:${USDC_AXL}`]) {
+      expect(row(rows, key)).toMatchObject({ executable: "yes", disabledReason: null, searchOnly: false });
     }
-    expect(row(rows, "axelar-dojo-1:uusdc")).toMatchObject({
-      executable: "yes",
-      disabledReason: null,
-      searchOnly: false,
-    });
-    expect(row(rows, `osmosis-1:${USDC_AXL}`)).toMatchObject({
-      executable: "yes",
-      disabledReason: BOTH_ON_OSMOSIS_REASON,
+    expect(row(rows, "osmosis-1:uosmo").disabledReason).toBe(SELF_REASON);
+    // A coin Osmosis does not trade is still refused, with its own reason.
+    expect(row(rows, "safrochain-1:usaf")).toMatchObject({
+      disabledReason: notTradedReason("SAF"),
       searchOnly: true,
     });
-    expect(row(rows, "osmosis-1:uosmo").disabledReason).toBe(SELF_REASON);
-    // The search still explains all of them, after what can be picked.
+    // The search lists every USDC row, all of them pickable.
     const usdc = search(rows, "usdc");
-    expect(usdc[0]?.key).toBe("axelar-dojo-1:uusdc");
     expect(usdc.map((option) => option.key)).toEqual(
-      expect.arrayContaining([`injective-1:${USDC_INJ_ERC20}`, `osmosis-1:${USDC_INJ}`, `osmosis-1:${USDC_AXL}`]),
+      expect.arrayContaining([
+        `injective-1:${USDC_INJ_ERC20}`,
+        `osmosis-1:${USDC_INJ}`,
+        `osmosis-1:${USDC_AXL}`,
+        "axelar-dojo-1:uusdc",
+      ]),
     );
+    expect(usdc.every((option) => option.disabledReason === null)).toBe(true);
   });
 
   it("orders held rows, then what the contract reaches, then the rest; the list shows only pickable rows", () => {
@@ -376,30 +380,49 @@ describe("buyOptions", () => {
     const groups = rows.map(group);
     expect(groups).toEqual([...groups].sort((a, b) => a - b));
     expect(rows[0]?.held).toBe(true);
-    // Held rows keep the balance order. ATOM is held, so it leads; the rest of
-    // what OSMO reaches is delivered at home (both on Osmosis is refused) and
-    // reads alphabetically. MARS.old and STARS.og have routes but no row:
-    // Osmosis flags their vouchers unstable and Mars and Stargaze are not
-    // bundled chains.
-    expect(rows.filter((option) => group(option) === 0).map((option) => option.key)).toEqual(["cosmoshub-4:uatom"]);
-    const reachable = rows.filter((option) => group(option) === 1);
-    expect(reachable.map((option) => option.symbol)).toEqual([
-      "AKT",
-      "AXL",
-      "CRO",
-      "DAI.axl",
-      "ETH.axl",
-      "EVMOS",
-      "IST",
-      "JKL",
-      "JUNO",
-      "SCRT",
-      "stOSMO",
-      "STRD",
-      "USDC.axl",
-      "WBTC.axl",
+    // Held rows keep the balance order, the ones on Osmosis included: OSMO
+    // swaps into them in Osmosis's pools. Then what the contract reaches reads
+    // alphabetically, each token at home before its Osmosis row. MARS.old and
+    // STARS.og have routes but no row: Osmosis flags their vouchers unstable
+    // and Mars and Stargaze are not bundled chains.
+    expect(rows.filter((option) => group(option) === 0).map((option) => option.key)).toEqual([
+      "cosmoshub-4:uatom",
+      `osmosis-1:${USDC_N}`,
+      `osmosis-1:${UNLISTED}`,
+      "injective-1:inj",
+      `injective-1:${USDC_N_ON_INJECTIVE}`,
     ]);
-    expect(reachable.every((option) => option.chainId !== "osmosis-1")).toBe(true);
+    const reachable = rows.filter((option) => group(option) === 1);
+    expect(reachable.map((option) => `${option.symbol}@${option.chainId === "osmosis-1" ? "osmosis" : "home"}`)).toEqual([
+      "AKT@home",
+      "AKT@osmosis",
+      "ATOM@osmosis",
+      "AXL@home",
+      "AXL@osmosis",
+      "CRO@home",
+      "CRO@osmosis",
+      "DAI.axl@home",
+      "DAI.axl@osmosis",
+      "ETH.axl@home",
+      "ETH.axl@osmosis",
+      "EVMOS@home",
+      "IST@home",
+      "IST@osmosis",
+      "JKL@home",
+      "JKL@osmosis",
+      "JUNO@home",
+      "JUNO@osmosis",
+      "SCRT@home",
+      "SCRT@osmosis",
+      "stOSMO@home",
+      "stOSMO@osmosis",
+      "STRD@home",
+      "STRD@osmosis",
+      "USDC.axl@home",
+      "USDC.axl@osmosis",
+      "WBTC.axl@home",
+      "WBTC.axl@osmosis",
+    ]);
 
     const shown = new Set(listed(rows));
     for (const option of rows) {
@@ -417,8 +440,12 @@ describe("buyOptions", () => {
       [`osmosis-1:${ATOM}`, SAME_TOKEN_REASON],
     ]);
     expect(row(rows, `injective-1:${USDC_INJ_ERC20}`)).toMatchObject({ disabledReason: null, searchOnly: false });
-    // With the table, ATOM reaches only its own pools.
-    expect(row(buy(atomFrom), `injective-1:${USDC_INJ_ERC20}`).disabledReason).toBe(noRouteReason("ATOM", "USDC.inj"));
+    // With the table, the contract cannot take ATOM to USDC.inj, but the row
+    // stays: ATOM moves to Osmosis first, then swaps in its pools.
+    expect(row(buy(atomFrom), `injective-1:${USDC_INJ_ERC20}`)).toMatchObject({
+      executable: "no",
+      disabledReason: null,
+    });
   });
 
   it("without SQS offers held rows and chain coins only, and nothing is gated without a From", () => {

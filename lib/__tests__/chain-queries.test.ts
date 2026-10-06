@@ -247,6 +247,25 @@ describe("a swap's Zunia fee in the history", () => {
   const HUB_TREASURY = treasury("cosmos");
   /** The test's own treasuries: the shipped map is empty until the owner fills it. */
   const FEES = { "osmosis-1": OSMO_TREASURY, "cosmoshub-4": HUB_TREASURY };
+  const USDC_INJ = "ibc/794C7D7F3B857713878A3A1927251FA6AC1EEE520424C1F6FAFE9BA26D476138";
+  /** Swaps in Osmosis's pools, as a node returns them. */
+  const poolSwap = {
+    "@type": "/osmosis.poolmanager.v1beta1.MsgSwapExactAmountIn",
+    sender: ME,
+    routes: [{ pool_id: "1464", token_out_denom: USDC_INJ }],
+    token_in: { denom: "uosmo", amount: "1000000" },
+    token_out_min_amount: "1",
+  };
+  const poolSplit = {
+    "@type": "/osmosis.poolmanager.v1beta1.MsgSplitRouteSwapExactAmountIn",
+    sender: ME,
+    routes: [
+      { pools: [{ pool_id: "3498", token_out_denom: USDC_INJ }], token_in_amount: "6000000" },
+      { pools: [{ pool_id: "3586", token_out_denom: USDC_INJ }], token_in_amount: "4000000" },
+    ],
+    token_in_denom: "uosmo",
+    token_out_min_amount: "1",
+  };
   const swap = { output_denom: "uatom", receiver: HUB_SENDER, on_failed_delivery: "do_nothing" };
   /** A swap from funds on Osmosis, as a node returns it: the ExecuteMsg as JSON. */
   const swapCall = {
@@ -326,6 +345,33 @@ describe("a swap's Zunia fee in the history", () => {
     expect(isSwapTx([{ ...swapTransfer, memo: "thanks" }])).toBe(false);
     expect(isSwapTx([{ ...swapCall, msg: { recover: {} } }])).toBe(false);
     expect(isSwapTx([])).toBe(false);
+    // Osmosis's own pools: poolmanager's two swap messages, and not gamm's old one.
+    expect(isSwapTx([poolSwap, send(ME, OSMO_TREASURY, "uosmo", "1")])).toBe(true);
+    expect(isSwapTx([poolSplit])).toBe(true);
+    expect(isSwapTx([{ ...poolSwap, "@type": "/osmosis.gamm.v1beta1.MsgSwapExactAmountIn" }])).toBe(false);
+  });
+
+  it("reads a swap in Osmosis's pools, split or not, with the fee beside it", () => {
+    expect(describeMessage(poolSplit, ME, "osmosis-1")).toMatchObject({
+      kind: "swap",
+      title: "Swap OSMO for USDC.inj",
+      subtitle: "on 2 routes",
+      amount: "-10000000",
+    });
+    expect(describeMessage(poolSwap, ME, "osmosis-1")).toMatchObject({ kind: "swap", amount: "-1000000" });
+    const detail = parseTxDetail(
+      {
+        tx: { body: { memo: "", messages: [poolSplit, send(ME, OSMO_TREASURY, "uosmo", "50000")] } },
+        tx_response: { txhash: "POOL1", height: "1", code: 0, timestamp: "2026-10-06T10:00:00Z", events: [] },
+      },
+      "osmosis-1",
+      ME,
+      FEES,
+    );
+    expect(detail?.messages.map((message) => [message.kind, message.title])).toEqual([
+      ["swap", "Swap OSMO for USDC.inj"],
+      ["sent", "Zunia fee"],
+    ]);
   });
 
   it("lists the fee as 'Zunia fee' in the transaction's detail, after the swap", () => {
