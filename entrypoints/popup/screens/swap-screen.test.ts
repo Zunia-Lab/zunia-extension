@@ -6,6 +6,7 @@ import { encodeBase64Utf8, type BuiltMsg, type OsmosisSwapQuote } from "@zuniala
 
 import { SWAP_FEE_RECIPIENTS } from "../../../config/fees";
 import { QUOTE_TTL_MS } from "../../../config/interchain";
+import { NO_VALUE } from "../../../lib/format";
 import { clearInterchainCaches } from "../../../lib/interchain";
 import {
   buildSwapFeeMsg,
@@ -44,12 +45,9 @@ import {
   SwapTerms,
   UNREADABLE_SWAP,
   amountUnitsOf,
-  boughtIdentity,
-  deliveryLine,
-  feePaidSentence,
+  contractReviewSummary,
   minimumTerms,
   ownerOf,
-  payBreakdown,
   pickTo,
   priceExpired,
   quoteBlockText,
@@ -61,7 +59,6 @@ import {
   swapPlanKey,
   swapPlanRequest,
   swapQuoteView,
-  swapSentence,
   swapSignBlock,
   swapTermsProblems,
   swapTxMsgs,
@@ -836,7 +833,6 @@ describe("the quote as shown", () => {
       quote(),
     );
     expect(exact).toEqual({ rule: "35.561021 USDC.axl", estimate: null, exact: "35.561021 USDC.axl" });
-    expect(deliveryLine(usdcAxl, exact.exact)).toBe("Delivered on Axelar · at least 35.561021 USDC.axl");
     // A TWAP tolerance is a rule: the quote's floor is an estimate, never "at least".
     const twap = minimumTerms(
       {
@@ -853,7 +849,6 @@ describe("the quote as shown", () => {
       estimate: "About 35.562021 USDC.axl at the quoted price",
       exact: null,
     });
-    expect(deliveryLine(usdcAxl, twap.exact)).toBe("Delivered on Axelar");
     // A quote for another output estimates nothing.
     expect(
       minimumTerms(
@@ -1384,11 +1379,25 @@ describe("the confirm screen's terms, read from the message that is signed", () 
     const { facts, problems, rows } = confirmTerms(floor, review);
     expect(problems).toEqual([]);
     expect(rows["Minimum received"]).toEqual(["15 ATOM"]);
-    const minimum = minimumTerms(facts!.swap, boughtIdentity(facts!.swap.outputDenom, review.to), review.price.quote);
-    expect(deliveryLine(review.to, minimum.exact)).toBe("Delivered on Cosmos Hub · at least 15 ATOM");
-    // Without a price, the rule alone.
+    // The confirm screen's summary: about the quote, at least the message's floor, delivered at home.
+    const summary = contractReviewSummary(review, facts);
+    expect(summary.minimum).toEqual({ value: "15 ATOM", note: null });
+    expect(summary.receive).toMatch(/^≈ \d/);
+    expect(summary.receiveLine).toBe("Delivered on Cosmos Hub");
+    // A TWAP tolerance is said as its rule, with today's estimate under it.
+    const twap = contractReviewSummary(review, confirmTerms(message, review).facts);
+    expect(twap.minimum?.value).toBe("The 10-second average price, less 1%");
+    expect(twap.minimum?.note).toMatch(/^About .* at the quoted price$/);
+    // Without a price, the rule alone, and no amount to receive.
     const unpriced = { ...review, price: { ...review.price, quote: null } };
     expect(confirmTerms(message, unpriced).rows["Minimum received"]).toEqual(["The 10-second average price, less 1%"]);
+    expect(contractReviewSummary(unpriced, confirmTerms(message, unpriced).facts)).toMatchObject({
+      receive: NO_VALUE,
+      minimum: { value: "The 10-second average price, less 1%", note: null },
+      rate: null,
+    });
+    // A message that cannot be read gives no minimum to show: the problems say why.
+    expect(contractReviewSummary(review, null).minimum).toBeNull();
   });
 
   /* ------------------------------------------------------------------------ *
@@ -1436,17 +1445,14 @@ describe("the confirm screen's terms, read from the message that is signed", () 
     const text = shownText(html);
     expect(text).toContain("The swap and the fee are one transaction: if the swap fails, no fee is taken.");
     expect(text).not.toContain("comes back");
-    // The hero, the form's line and the plain words, all from the same numbers.
-    expect(payBreakdown(review)).toBe("62.685 OSMO swapped + 0.315 OSMO Zunia fee (0.5%)");
+    // The summary, the form's line and the plain words, all from the same numbers.
+    expect(contractReviewSummary(review, facts)).toMatchObject({
+      pay: "63 OSMO",
+      zuniaFee: { amount: "0.315 OSMO", rate: "0.5%" },
+    });
     const line = swapFeeLine(review.fee, review.from);
     expect(line).toEqual({ label: "Zunia fee", value: "0.5% · 0.315 OSMO" });
     expect(`${line?.label} ${line?.value}`).toBe("Zunia fee 0.5% · 0.315 OSMO");
-    expect(swapSentence("62.685 OSMO", review.from, review.to)).toBe(
-      "Sends 62.685 OSMO from Osmosis to the Osmosis swap contract, which buys ATOM and delivers it to your address on Cosmos Hub.",
-    );
-    expect(feePaidSentence(fee!, review.from)).toBe(
-      `In the same transaction, it pays the Zunia fee: 0.315 OSMO to ${short(OSMO_TREASURY)}.`,
-    );
   });
 
   it("a swap from another chain with a fee: says plainly that a failed swap returns the amount swapped and not the fee", async () => {
@@ -1480,7 +1486,10 @@ describe("the confirm screen's terms, read from the message that is signed", () 
       "If the swap fails on Osmosis, the amount swapped comes back to you, but the 0.5% Zunia fee does not.",
     );
     expect(text).not.toContain("no fee is taken");
-    expect(payBreakdown(review)).toBe("0.995 ATOM swapped + 0.005 ATOM Zunia fee (0.5%)");
+    expect(contractReviewSummary(review, facts)).toMatchObject({
+      pay: "1 ATOM",
+      zuniaFee: { amount: "0.005 ATOM", rate: "0.5%" },
+    });
     expect(swapFeeOutcome("transfer", 50)).toBe(
       "If the swap fails on Osmosis, the amount swapped comes back to you, but the 0.5% Zunia fee does not.",
     );
@@ -1493,7 +1502,7 @@ describe("the confirm screen's terms, read from the message that is signed", () 
     expect(fee).toBeNull();
     expect(rows["Zunia fee"]).toBeUndefined();
     expect(shownText(html)).not.toMatch(/Zunia fee|no fee is taken|comes back/);
-    expect(payBreakdown(review)).toBeNull();
+    expect(contractReviewSummary(review, confirmTerms(msgs, review).facts).zuniaFee).toBeNull();
     expect(swapFeeLine(review.fee, review.from)).toBeNull();
     expect(swapFeeLine(null, review.from)).toBeNull();
   });

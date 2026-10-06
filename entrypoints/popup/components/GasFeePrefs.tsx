@@ -36,13 +36,18 @@ export function feeLabelText(
   feeDecimals: number,
   feeSymbol: string,
 ): string {
-  if (feeAmount === undefined) return `Tx Fee: — ${feeSymbol}`;
+  return `Tx Fee: ${feeAmountText(feeAmount, feeDecimals, feeSymbol)}`;
+}
+
+/** The fee alone, under the same policy: `0.004012 OSMO`, or `— OSMO` before there is one. */
+export function feeAmountText(feeAmount: string | undefined, feeDecimals: number, feeSymbol: string): string {
+  if (feeAmount === undefined) return `— ${feeSymbol}`;
   const amount = formatTokenAmount(
     feeAmount,
     { decimals: feeDecimals, decimalsKnown: true, ticker: feeSymbol, denom: "", provenance: "native" },
     "confirm",
   );
-  return `Tx Fee: ${amount} ${feeSymbol}`;
+  return `${amount} ${feeSymbol}`;
 }
 
 export function GasFeePrefs({
@@ -50,12 +55,19 @@ export function GasFeePrefs({
   feeDecimals,
   feeSymbol,
   onChanged,
+  variant = "bar",
 }: {
   feeAmount?: string;
   feeDecimals: number;
   feeSymbol: string;
   /** Rebuild the preview after prefs are saved. */
   onChanged?: () => void;
+  /**
+   * `bar`: the `Tx Fee:` line with its own button, as a section of its own.
+   * `fact`: one line of a summary, `Network fee  0.004 OSMO  Edit`, lined up
+   * with the rows around it.
+   */
+  variant?: "bar" | "fact";
 }) {
   const { settings, update } = usePrefs();
   const [open, setOpen] = useState(false);
@@ -78,22 +90,41 @@ export function GasFeePrefs({
 
   return (
     <>
-      <div className="flex items-center justify-between gap-2">
-        <p className="min-w-0 truncate font-mono text-[11px] tabular-nums text-fg">
-          {feeLabel}
-        </p>
-        <button
-          type="button"
-          onClick={openSheet}
-          className={cn(
-            "shrink-0 font-mono text-[10px] uppercase tracking-[0.06em] text-fg-muted",
-            "hover:text-fg",
-            focusRing,
-          )}
-        >
-          Change pref gas fees
-        </button>
-      </div>
+      {variant === "fact" ? (
+        <div className="flex min-w-0 items-baseline justify-between gap-3">
+          <span className="shrink-0 text-[11.5px] text-fg-muted">Network fee</span>
+          <span className="flex min-w-0 items-baseline gap-2">
+            <span className="min-w-0 truncate text-[11.5px] font-medium tabular-nums text-fg">
+              {feeAmountText(feeAmount, feeDecimals, feeSymbol)}
+            </span>
+            <button
+              type="button"
+              onClick={openSheet}
+              aria-label="Change the network fee speed"
+              className={cn("shrink-0 rounded-[6px] text-[10.5px] text-accent hover:underline", focusRing)}
+            >
+              Edit
+            </button>
+          </span>
+        </div>
+      ) : (
+        <div className="flex items-center justify-between gap-2">
+          <p className="min-w-0 truncate font-mono text-[11px] tabular-nums text-fg">
+            {feeLabel}
+          </p>
+          <button
+            type="button"
+            onClick={openSheet}
+            className={cn(
+              "shrink-0 font-mono text-[10px] uppercase tracking-[0.06em] text-fg-muted",
+              "hover:text-fg",
+              focusRing,
+            )}
+          >
+            Change pref gas fees
+          </button>
+        </div>
+      )}
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="w-[min(340px,calc(100%-28px))] p-4">

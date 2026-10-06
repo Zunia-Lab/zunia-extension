@@ -162,7 +162,7 @@ import {
   useSwapVenue,
   useXcsRoutes,
 } from "./interchain-ui";
-import { IconCheck, IconCopy, IconSettings } from "./icons";
+import { IconCheck, IconChevronDown, IconCopy, IconSettings } from "./icons";
 import { signingError, useSignedSend } from "../state/SigningPassword";
 import { notifyBroadcastAccepted, useToast } from "../state/Toasts";
 
@@ -438,20 +438,6 @@ export function swapQuoteView(
 }
 
 /**
- * The confirm screen's line under what is bought: where it is delivered and,
- * when the message itself sets one, the floor with its ticker (`Delivered on
- * Axelar · at least 35.56 USDC.axl`). `minimum` is that floor as
- * {@link minimumTerms} reads it out of the message (`exact`); a quote's
- * estimate is never said as "at least", because nothing signed holds the
- * contract to it. A TWAP tolerance has no number, so the line names only
- * the chain, and the terms below say the rule.
- */
-export function deliveryLine(to: AssetOption, minimum: string | null): string {
-  const floor = minimum ? ` · at least ${minimum}` : "";
-  return `${tokenLocationText(to.identity, "delivered")}${floor}`;
-}
-
-/**
  * What the screen asks the planner for. Every field that ends up signed is
  * copied as is: the chain the From is held on and its exact bank denom, the
  * chain the To is delivered on and its exact denom, the base units, the
@@ -529,20 +515,6 @@ export function swapPlanKey(args: {
   ].join("~");
 }
 
-/**
- * The confirm screen's plain line above the exact message: what leaves, what
- * is bought, and where it arrives. The name joins the ticker when the token
- * arrives away from its origin (`USDC.axl (Axelar USDC)` on Osmosis).
- */
-export function swapSentence(amount: string, from: AssetOption, to: AssetOption): string {
-  const bought = to.identity;
-  const named =
-    bought.provenance !== "unknown" && bought.originChainId !== to.chainId
-      ? `${bought.ticker} (${bought.name})`
-      : bought.ticker;
-  return `Sends ${amount} from ${from.chainName} to the Osmosis swap contract, which buys ${named} and delivers it to your address on ${to.chainName}.`;
-}
-
 /* -------------------------------------------------------------------------- *
  * The Zunia fee
  * -------------------------------------------------------------------------- */
@@ -596,18 +568,6 @@ export function swapFeeLine(
 }
 
 /**
- * The confirm hero's breakdown of what the user pays: `62.685 OSMO swapped +
- * 0.315 OSMO Zunia fee (0.5%)`. `null` when no fee applies: what is paid is
- * then what is swapped.
- */
-export function payBreakdown(review: Pick<ReviewedSwap, "from" | "fee">): string | null {
-  const { fee, from } = review;
-  if (fee.fee <= 0n) return null;
-  const swapped = tickerAmount(fee.net, from.identity, "confirm");
-  return `${swapped} swapped + ${tickerAmount(fee.fee, from.identity, "confirm")} Zunia fee (${feeRateText(fee.bps)})`;
-}
-
-/**
  * An amount with every digit its token has (`0.000123456789 INJ`, never cut to
  * six decimals), or in base units when its decimals are unknown.
  */
@@ -620,17 +580,6 @@ function exactTickerAmount(amount: string | bigint, identity: TokenIdentity): st
 /** What a fee coin is named: the From's token when it is the denom sold, else whatever its chain calls it. */
 function feeIdentity(denom: string, from: AssetOption): TokenIdentity {
   return denom === from.denom ? from.identity : identityOf(from.chainId, denom);
-}
-
-/**
- * The confirm screen's plain words for the fee message, read out of it: what
- * it pays and to whom (`In the same transaction, it pays the Zunia fee: 0.315
- * OSMO to osmo1zunia…00000000.`). Whether that is Zunia's address is for the
- * terms panel to say, and to refuse.
- */
-export function feePaidSentence(paid: SwapFeeMessage, from: AssetOption): string {
-  const amount = exactTickerAmount(paid.amount, feeIdentity(paid.denom, from));
-  return `In the same transaction, it pays the Zunia fee: ${amount} to ${truncateAddress(paid.to, 10, 8)}.`;
 }
 
 /**
@@ -1184,42 +1133,6 @@ export function poolQuoteText(
   }
 }
 
-/** The bought token as the sentence names it: with its name when it is away from its origin. */
-function namedTicker(to: AssetOption): string {
-  const bought = to.identity;
-  return bought.provenance !== "unknown" && bought.originChainId !== to.chainId
-    ? `${bought.ticker} (${bought.name})`
-    : bought.ticker;
-}
-
-/**
- * The confirm screen's plain line for a pool swap: what is sold, in whose
- * pools, what is bought and where it ends up. For `pool-deliver`, the amount
- * sent on is the floor, and the line says what becomes of the rest.
- */
-export function poolSwapSentence(
-  amount: string,
-  review: Pick<ReviewedPoolSwap, "path" | "from" | "to">,
-  minimum: string,
-): string {
-  const named = namedTicker(review.to);
-  if (review.path === "pool") {
-    return `Swaps ${amount} in Osmosis's own pools for ${named}, paid to your address on Osmosis.`;
-  }
-  return `Swaps ${amount} in Osmosis's own pools for ${named}, then sends ${minimum} of it to your address on ${review.to.chainName}. Anything the swap pays above that stays in your Osmosis account.`;
-}
-
-/**
- * The confirm hero's line under what a pool swap buys: where it ends up, with
- * the floor the message holds the swap to. For `pool-deliver` that floor is
- * exactly what the transfer sends on (`Delivered on Injective · exactly 0.35
- * USDC.inj, the rest stays on Osmosis`).
- */
-export function poolDeliveryLine(review: Pick<ReviewedPoolSwap, "path" | "to">, minimum: string): string {
-  if (review.path === "pool") return deliveryLine(review.to, minimum);
-  return `${tokenLocationText(review.to.identity, "delivered")} · exactly ${minimum}, the rest stays on Osmosis`;
-}
-
 /** What becomes of the fee, and of the transfer, when the swap does not happen. */
 export function poolFeeOutcome(path: "pool" | "pool-deliver"): string {
   return path === "pool"
@@ -1443,46 +1356,6 @@ function routeChainIds(view: RoutePlanView): string[] {
   return [...ids];
 }
 
-/**
- * One side of the confirm screen's summary: the token's logo with the chain
- * it is on, the amount, and where it is held or delivered. The proven seal is
- * drawn on the logo and said in words to assistive tech.
- */
-function HeroSide({
-  option,
-  amount,
-  line,
-  detail = null,
-}: {
-  option: AssetOption;
-  amount: string;
-  line: string;
-  /** Under the line: what the amount is made of (the swap and the Zunia fee). */
-  detail?: string | null;
-}) {
-  const identity = shownIdentity(option);
-  const seal = provenanceLabel(identity);
-  return (
-    <div className="mt-1.5 flex items-center gap-2">
-      <TokenAvatar identity={identity} size={28} locationBadge="always" />
-      <div className="min-w-0 flex-1">
-        <p className="text-[15px] font-semibold leading-tight tracking-[-0.02em] tabular-nums text-fg [overflow-wrap:anywhere]">
-          {amount}
-        </p>
-        <p className="mt-0.5 text-[10.5px] leading-snug text-fg-dim [overflow-wrap:anywhere]">
-          {line}
-        </p>
-        {detail ? (
-          <p className="mt-0.5 text-[10.5px] leading-snug tabular-nums text-fg-muted [overflow-wrap:anywhere]">
-            {detail}
-          </p>
-        ) : null}
-        {seal ? <span className="sr-only">{seal}</span> : null}
-      </div>
-    </div>
-  );
-}
-
 /** An exact denom, short on screen and whole in the clipboard. */
 function CopyDenom({
   denom,
@@ -1697,6 +1570,7 @@ export function SwapTerms({
   onCopy,
   fee = null,
   onCopyAddress = COPY_NOTHING,
+  framed = true,
 }: {
   facts: SwapMessageFacts | null;
   review: ReviewedSwap;
@@ -1705,11 +1579,14 @@ export function SwapTerms({
   /** The transaction's fee message, read out of it; `null` when it signs none. */
   fee?: SwapFeeMessage | null;
   onCopyAddress?: (address: string) => void;
+  /** Drawn in its own box; `false` inside a section that already has one. */
+  framed?: boolean;
 }) {
   const venueName = findCatalogEntry(VENUE_CHAIN_ID)?.chainName ?? VENUE_CHAIN_ID;
+  const box = framed ? TERMS_BOX : "min-w-0";
   if (!facts) {
     return (
-      <section className={TERMS_BOX}>
+      <section className={box}>
         <SectionLabel>What the swap will do</SectionLabel>
         <p role="alert" className="mt-1 text-[11px] leading-snug text-[var(--z-danger)]">
           {UNREADABLE_SWAP}
@@ -1729,7 +1606,7 @@ export function SwapTerms({
   const verified = facts.contract === review.contract;
   const final = facts.forwardsOut ? ownerNote(facts.forwardsOut.finalReceiver, review) : null;
   return (
-    <section className={TERMS_BOX}>
+    <section className={box}>
       <SectionLabel>
         {facts.via === "contract-call" ? "What the contract call does" : "What the memo will do"}
       </SectionLabel>
@@ -1865,6 +1742,7 @@ export function PoolSwapTerms({
   fee = null,
   transfer = null,
   onCopyAddress = COPY_NOTHING,
+  framed = true,
 }: {
   facts: PoolSwapFacts | null;
   review: ReviewedPoolSwap;
@@ -1875,11 +1753,14 @@ export function PoolSwapTerms({
   /** The transfer after the swap, read out of it; `null` for `pool`. */
   transfer?: DeliveryTransferFacts | null;
   onCopyAddress?: (address: string) => void;
+  /** Drawn in its own box; `false` inside a section that already has one. */
+  framed?: boolean;
 }) {
   const venueName = findCatalogEntry(VENUE_CHAIN_ID)?.chainName ?? VENUE_CHAIN_ID;
+  const box = framed ? TERMS_BOX : "min-w-0";
   if (!facts) {
     return (
-      <section className={TERMS_BOX}>
+      <section className={box}>
         <SectionLabel>What the swap will do</SectionLabel>
         <p role="alert" className="mt-1 text-[11px] leading-snug text-[var(--z-danger)]">
           {UNREADABLE_SWAP}
@@ -1896,7 +1777,7 @@ export function PoolSwapTerms({
   const delivered = transfer ? poolOwnerNote(transfer.receiver, review) : null;
   const sentOn = transfer ? identityOf(VENUE_CHAIN_ID, transfer.token.denom) : null;
   return (
-    <section className={TERMS_BOX}>
+    <section className={box}>
       <SectionLabel>What the transaction does</SectionLabel>
       <p className="mt-1 min-w-0 text-[11px] leading-snug text-fg [overflow-wrap:anywhere]">
         {review.path === "pool"
@@ -1985,8 +1866,394 @@ export function PoolSwapTerms({
   );
 }
 
+/* -------------------------------------------------------------------------- *
+ * The review, laid out: the essentials first, the rest folded away
+ * -------------------------------------------------------------------------- */
+
+/**
+ * A section that opens on demand and starts closed: a native `<details>`, so
+ * the keyboard and assistive tech open it with no script, and what is inside
+ * stays in the page for anyone who wants to read it.
+ */
+export function ReviewDisclosure({
+  title,
+  hint = null,
+  children,
+}: {
+  title: string;
+  /** Beside the title, quieter: what is inside, in a word or two. */
+  hint?: string | null;
+  children: ReactNode;
+}) {
+  return (
+    <details className="group min-w-0 rounded-[12px] border border-[var(--z-line)]">
+      <summary
+        className={cn(
+          "flex cursor-pointer select-none list-none items-center justify-between gap-2 rounded-[12px] px-3 py-2.5",
+          "text-[12px] font-medium text-fg-muted transition-colors duration-[var(--z-duration-base)] hover:text-fg",
+          "[&::-webkit-details-marker]:hidden",
+          focusRing,
+        )}
+      >
+        <span className="min-w-0">{title}</span>
+        <span className="flex shrink-0 items-center gap-1.5">
+          {hint ? <span className="text-[10.5px] font-normal text-fg-dim">{hint}</span> : null}
+          <IconChevronDown
+            width={14}
+            height={14}
+            aria-hidden
+            className="transition-transform duration-[var(--z-duration-base)] group-open:rotate-180"
+          />
+        </span>
+      </summary>
+      <div className="flex min-w-0 flex-col gap-2 px-3 pb-3">{children}</div>
+    </details>
+  );
+}
+
+/** One line of the review's summary: what it is on the left, the amount on the right, a quiet note under it. */
+function ReviewFact({
+  label,
+  children,
+  note = null,
+}: {
+  label: string;
+  children: ReactNode;
+  note?: string | null;
+}) {
+  return (
+    <div className="flex min-w-0 items-baseline justify-between gap-3">
+      <span className="shrink-0 text-[11.5px] text-fg-muted">{label}</span>
+      <span className="flex min-w-0 flex-col items-end text-right">
+        <span className="max-w-full text-[11.5px] font-medium tabular-nums text-fg [overflow-wrap:anywhere]">
+          {children}
+        </span>
+        {note ? <span className="text-[10px] leading-snug text-fg-dim [overflow-wrap:anywhere]">{note}</span> : null}
+      </span>
+    </div>
+  );
+}
+
+/** One side of the review: what it is, the token's logo, the amount in large type, and where the token is. */
+function ReviewSide({
+  label,
+  option,
+  amount,
+  line,
+}: {
+  label: string;
+  option: AssetOption;
+  amount: string;
+  line: string;
+}) {
+  const identity = shownIdentity(option);
+  const seal = provenanceLabel(identity);
+  return (
+    <div className="min-w-0">
+      <p className="font-mono text-[9px] uppercase tracking-[0.12em] text-fg-dim">{label}</p>
+      <div className="mt-1.5 flex items-center gap-2.5">
+        <TokenAvatar identity={identity} size={32} locationBadge="always" />
+        <div className="min-w-0 flex-1">
+          <p className="text-[18px] font-semibold leading-tight tracking-[-0.03em] tabular-nums text-fg [overflow-wrap:anywhere]">
+            {amount}
+          </p>
+          <p className="mt-0.5 text-[10.5px] leading-snug text-fg-dim [overflow-wrap:anywhere]">{line}</p>
+          {seal ? <span className="sr-only">{seal}</span> : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** What the top of a swap's confirm screen says: the two sides, then the few numbers that matter. */
+export interface SwapReviewSummary {
+  readonly from: AssetOption;
+  readonly to: AssetOption;
+  /** Everything the user spends, the Zunia fee included: `10 OSMO`. */
+  readonly pay: string;
+  /** What comes back: `≈ 0.3524 USDC.inj`, or the exact amount when the signed messages fix it. */
+  readonly receive: string;
+  /** Where it arrives, and anything else the user has to know about it. */
+  readonly receiveLine: string;
+  /** The floor below which the swap does not happen; `null` when {@link receive} is already exact. */
+  readonly minimum: { readonly value: string; readonly note: string | null } | null;
+  /** `1 OSMO ≈ 0.0354 USDC.inj`, when both sides have known decimals. */
+  readonly rate: string | null;
+  /** The Zunia fee and its rate; `null` when none is taken. */
+  readonly zuniaFee: { readonly amount: string; readonly rate: string } | null;
+}
+
+/** The Zunia fee as the summary shows it. */
+function zuniaFeeFact(review: Pick<ReviewedSwap, "fee" | "from">): SwapReviewSummary["zuniaFee"] {
+  const { fee, from } = review;
+  return fee.fee > 0n
+    ? { amount: tickerAmount(fee.fee, from.identity, "confirm"), rate: feeRateText(fee.bps) }
+    : null;
+}
+
+/**
+ * The summary of a swap through the crosschain-swaps contract. The minimum is
+ * the one the message carries (`minimumTerms`): a number when it sets one, the
+ * TWAP rule with today's estimate when it does not; nothing when the message
+ * cannot be read, which the problems above it say.
+ */
+export function contractReviewSummary(
+  review: ReviewedSwap,
+  facts: SwapMessageFacts | null,
+): SwapReviewSummary {
+  const { from, to } = review;
+  const quote = review.price.quote;
+  const view = quote ? swapQuoteView(quote, from, to) : null;
+  const terms = facts ? minimumTerms(facts.swap, boughtIdentity(facts.swap.outputDenom, to), quote) : null;
+  return {
+    from,
+    to,
+    pay: tickerAmount(review.amountUnits, from.identity, "confirm"),
+    receive: view ? `≈ ${view.outputAmount} ${view.outputSymbol}` : NO_VALUE,
+    receiveLine: tokenLocationText(to.identity, "delivered"),
+    minimum: terms ? { value: terms.exact ?? terms.rule, note: terms.exact ? null : terms.estimate } : null,
+    rate: view?.rate ?? null,
+    zuniaFee: zuniaFeeFact(review),
+  };
+}
+
+/**
+ * The summary of a swap in Osmosis's pools. On Osmosis the user receives about
+ * the quote, and at least the message's floor. Delivered elsewhere, the
+ * transfer sends exactly the floor, so that is what they receive there, said
+ * as exact, with what stays behind on Osmosis.
+ */
+export function poolReviewSummary(review: ReviewedPoolSwap, facts: PoolSwapFacts | null): SwapReviewSummary {
+  const { from, to } = review;
+  const quote = review.price.quote;
+  const view = swapQuoteView(quote, from, to);
+  const floor = facts?.minOut ?? review.minOut;
+  const bought = boughtIdentity(review.venueOutputDenom, to);
+  const base = {
+    from,
+    to,
+    pay: tickerAmount(review.amountUnits, from.identity, "confirm"),
+    rate: view.rate ?? null,
+    zuniaFee: zuniaFeeFact(review),
+  };
+  if (review.path === "pool") {
+    return {
+      ...base,
+      receive: `≈ ${view.outputAmount} ${view.outputSymbol}`,
+      receiveLine: tokenLocationText(to.identity, "delivered"),
+      minimum: { value: tickerAmount(floor, bought, "confirm"), note: null },
+    };
+  }
+  const rest = BigInt(quote.outputAmount) - BigInt(floor);
+  return {
+    ...base,
+    receive: tickerAmount(floor, bought, "confirm"),
+    receiveLine:
+      rest > 0n
+        ? `${tokenLocationText(to.identity, "delivered")} · about ${tickerAmount(rest, bought, "confirm")} more stays on Osmosis`
+        : tokenLocationText(to.identity, "delivered"),
+    minimum: null,
+  };
+}
+
+/**
+ * The top of a swap's confirm screen: what the user pays, what they get back
+ * and where, the minimum, the rate, the fees, and how long the price holds.
+ * Everything else about the transaction is in the folded sections under it.
+ */
+export function SwapReviewCard({
+  summary,
+  networkFee,
+  feeNote = null,
+  clock,
+  priceError = null,
+}: {
+  summary: SwapReviewSummary;
+  /** The network fee line, with its own way to change the speed. */
+  networkFee: ReactNode;
+  /** Under the network fee: why it is an estimate, when it is one. */
+  feeNote?: string | null;
+  /** The price's countdown and its refresh. */
+  clock: ReactNode;
+  /** Why there is no current price, when there is none. */
+  priceError?: string | null;
+}) {
+  const { minimum, rate, zuniaFee } = summary;
+  return (
+    <section className="rounded-[14px] border border-[var(--z-line)] bg-[var(--z-glass)] px-3 py-3">
+      <ReviewSide
+        label="You pay"
+        option={summary.from}
+        amount={summary.pay}
+        line={tokenLocationText(summary.from.identity, "held")}
+      />
+      <div className="my-2.5 flex items-center" aria-hidden="true">
+        <span className="h-px flex-1 bg-[var(--z-line)]" />
+        <span className="mx-2 flex size-6 items-center justify-center rounded-full border border-[var(--z-line)] bg-[var(--z-surface)] text-fg-muted">
+          <IconChevronDown width={13} height={13} />
+        </span>
+        <span className="h-px flex-1 bg-[var(--z-line)]" />
+      </div>
+      <ReviewSide label="You receive" option={summary.to} amount={summary.receive} line={summary.receiveLine} />
+      <div className="mt-3 flex flex-col gap-1.5 border-t border-[var(--z-line)] pt-2.5">
+        {minimum ? (
+          <ReviewFact label="Minimum received" note={minimum.note}>
+            {minimum.value}
+          </ReviewFact>
+        ) : null}
+        {rate ? <ReviewFact label="Rate">{rate}</ReviewFact> : null}
+        {zuniaFee ? <ReviewFact label={`Zunia fee (${zuniaFee.rate})`}>{zuniaFee.amount}</ReviewFact> : null}
+        {networkFee}
+        {feeNote ? <p className="text-right text-[10px] leading-snug text-fg-dim">{feeNote}</p> : null}
+      </div>
+      {clock}
+      {priceError ? <p className="mt-1.5 text-[10px] leading-snug text-[var(--z-warning)]">{priceError}</p> : null}
+    </section>
+  );
+}
+
+/** What stops the signature, said where it cannot be missed: above the folded details, never inside them. */
+export function ReviewProblems({ problems }: { problems: readonly string[] }) {
+  if (problems.length === 0) return null;
+  return (
+    <Callout compact tone="danger" title="Zunia will not sign this">
+      <ul className="flex flex-col gap-0.5">
+        {problems.map((problem) => (
+          <li key={problem} className="text-[10.5px] leading-snug">
+            {problem}
+          </li>
+        ))}
+      </ul>
+    </Callout>
+  );
+}
+
+/**
+ * The transaction for whoever wants to check it by hand: the chain, the memo,
+ * the fee and every message as it is handed to the kernel. A contract call's
+ * base64 ExecuteMsg is shown decoded beside it, so it can be read.
+ */
+export function reviewJson(
+  chainId: string,
+  msgs: readonly BuiltMsg[],
+  preview: Pick<TxPreview, "fee"> & { readonly preview: Pick<TxPreview["preview"], "memo"> },
+): string {
+  const readable = msgs.map((msg) => {
+    if (msg.typeUrl !== EXECUTE_CONTRACT_TYPE_URL) return msg;
+    const decoded = canonicalJson(base64Utf8(msg.value.msg));
+    return decoded === undefined ? msg : { ...msg, decodedMsg: decoded };
+  });
+  return JSON.stringify(
+    { chain_id: chainId, memo: preview.preview.memo, fee: preview.fee, messages: readable },
+    null,
+    2,
+  );
+}
+
+/** The raw transaction, folded: monospace, scrollable, selectable. */
+export function ReviewJson({ json }: { json: string }) {
+  return (
+    <ReviewDisclosure title="Raw transaction" hint="JSON">
+      <pre className="max-h-[220px] overflow-auto whitespace-pre-wrap break-words rounded-[8px] bg-[var(--z-surface-sunken)] p-2 font-mono text-[10px] leading-snug text-fg">
+        {json}
+      </pre>
+    </ReviewDisclosure>
+  );
+}
+
+/** The kernel's own line for each message, exactly as it will be signed. */
+export function ExactMessages({ summaries, memo }: { summaries: readonly string[]; memo: string }) {
+  return (
+    <div className="min-w-0">
+      <p className="font-mono text-[9px] uppercase tracking-[0.12em] text-fg-dim">
+        {summaries.length > 1 ? "Exact messages" : "Exact message"}
+      </p>
+      {summaries.map((line, index) => (
+        <p
+          key={index}
+          className="mt-0.5 min-w-0 break-words font-mono text-[10.5px] leading-snug text-fg [overflow-wrap:anywhere]"
+        >
+          {line}
+        </p>
+      ))}
+      {memo ? (
+        <div className="mt-1.5">
+          <KeyValueRow label="Memo" value={memo} />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/** Back and Sign, with the reason Sign is off as its label when it is. */
+export function ConfirmFooter({
+  busy,
+  label,
+  disabled,
+  onBack,
+  onSign,
+}: {
+  busy: boolean;
+  /** The short reason signing is blocked; `null` when it is not. */
+  label: string | null;
+  disabled: boolean;
+  onBack: () => void;
+  onSign: () => void;
+}) {
+  return (
+    <div className="flex gap-2">
+      <Button variant="secondary" className="flex-1" disabled={busy} onClick={onBack}>
+        Back
+      </Button>
+      <Button className="flex-1" disabled={busy || disabled} onClick={onSign}>
+        {busy ? "Signing…" : (label ?? "Sign and send")}
+      </Button>
+    </div>
+  );
+}
+
+/**
+ * The confirm screen's other warnings, short, under the summary: a review the
+ * form no longer stands behind, a balance that cannot cover the network fee,
+ * and a signing error.
+ */
+function ReviewAlerts({
+  drift,
+  feeShort,
+  error,
+  onBack,
+}: {
+  drift: string | null;
+  feeShort: boolean;
+  error: string | null;
+  onBack: () => void;
+}) {
+  return (
+    <>
+      {drift ? (
+        <Callout compact tone="warning" title="This review is out of date">
+          {drift} Nothing was signed.{" "}
+          <button type="button" onClick={onBack} className={cn("underline underline-offset-2", focusRing)}>
+            Review the swap again
+          </button>
+        </Callout>
+      ) : null}
+      {feeShort ? (
+        <Callout compact tone="danger" title="Not enough left for the network fee">
+          Lower the amount or the gas speed. The chain takes the fee first, then the swap.
+        </Callout>
+      ) : null}
+      {error ? (
+        <Callout compact tone="danger" title="Could not sign">
+          {error}
+        </Callout>
+      ) : null}
+    </>
+  );
+}
+
 /** How long the shown price stays current, and a way to fetch a new one now. */
-function QuoteClock({
+export function QuoteClock({
   secondsLeft,
   refreshing,
   onRefresh,
@@ -2024,7 +2291,8 @@ function QuoteClock({
         onClick={onRefresh}
         disabled={refreshing}
         className={cn(
-          "shrink-0 rounded-full px-1.5 py-0.5 font-mono text-[9.5px] text-accent",
+          // The label lines up with the values above it; the pill's padding hangs outside.
+          "-mr-1.5 shrink-0 rounded-full px-1.5 py-0.5 font-mono text-[9.5px] text-accent",
           "transition-colors duration-[var(--z-duration-base)] hover:bg-[var(--z-state-hover)]",
           "disabled:cursor-not-allowed disabled:opacity-40",
           focusRing,
@@ -3280,15 +3548,7 @@ export function SwapScreen({
   if (phase === "confirm" && pending && preview && poolReview) {
     const target = poolReview;
     const feeChain = chains.find((chain) => chain.chainId === pending.chainId);
-    const targetQuote = swapQuoteView(target.price.quote, target.from, target.to);
     const secondsLeft = Math.max(0, Math.ceil((QUOTE_TTL_MS - Math.max(0, now - target.price.at)) / 1000));
-    // The floor as the message carries it, once it reads whole; the review's otherwise.
-    const minimum = tickerAmount(
-      poolFacts?.minOut ?? target.minOut,
-      boughtIdentity(target.venueOutputDenom, target.to),
-      "confirm",
-    );
-    const breakdown = payBreakdown(target);
     const back = () => {
       setPhase(tracked ? "sent" : "form");
       setError(null);
@@ -3298,120 +3558,61 @@ export function SwapScreen({
         title={pending.title}
         onBack={back}
         footer={
-          <div className="flex gap-2">
-            <Button variant="secondary" className="flex-1" disabled={busy} onClick={back}>
-              Back
-            </Button>
-            <Button
-              className="flex-1"
-              disabled={busy || signBlock !== null}
-              onClick={() => void signPending()}
-            >
-              {busy ? "Signing…" : (signBlock?.label ?? "Sign and send")}
-            </Button>
-          </div>
+          <ConfirmFooter
+            busy={busy}
+            label={signBlock?.label ?? null}
+            disabled={signBlock !== null}
+            onBack={back}
+            onSign={() => void signPending()}
+          />
         }
       >
         <div className="flex min-w-0 flex-col gap-2 pt-1 [overflow-wrap:anywhere]">
-          <section className="rounded-[14px] border border-[var(--z-line)] bg-[var(--z-glass)] px-3 py-2.5">
-            <p className="font-mono text-[9px] uppercase tracking-[0.12em] text-fg-dim">
-              {breakdown ? "You pay" : "You swap"}
-            </p>
-            <HeroSide
-              option={target.from}
-              amount={tickerAmount(target.amountUnits, target.from.identity, "confirm")}
-              line={tokenLocationText(target.from.identity, "held")}
-              detail={breakdown}
-            />
-            <div className="my-1.5 h-px bg-[var(--z-line)]" />
-            <p className="font-mono text-[9px] uppercase tracking-[0.12em] text-fg-dim">For about</p>
-            <HeroSide
-              option={target.to}
-              amount={`${targetQuote.outputAmount} ${targetQuote.outputSymbol}`}
-              line={poolDeliveryLine(target, minimum)}
-            />
-            <div className="mt-2">
+          {/* The review, frozen when this screen opened, read from the messages it signs. */}
+          <SwapReviewCard
+            summary={poolReviewSummary(target, poolFacts)}
+            networkFee={
+              <GasFeePrefs
+                variant="fact"
+                feeAmount={feeCoin?.amount}
+                feeDecimals={feeChain?.entry.feeDecimals ?? 6}
+                feeSymbol={feeChain ? feeTicker(feeChain.entry) : (feeCoin?.denom ?? "")}
+                onChanged={() => void reprice(pending)}
+              />
+            }
+            feeNote={preview.feeNote ?? null}
+            clock={
               <QuoteClock
                 confirm
                 secondsLeft={secondsLeft}
                 refreshing={poolRefreshing}
                 onRefresh={() => void refreshPoolReview(target)}
               />
-            </div>
-          </section>
-
-          {poolDrift && poolProblems.length === 0 ? (
-            <Callout compact tone="warning" title="This review is out of date">
-              {poolDrift} Nothing was signed.{" "}
-              <button
-                type="button"
-                onClick={back}
-                className={cn("underline underline-offset-2", focusRing)}
-              >
-                Review the swap again
-              </button>
-            </Callout>
-          ) : null}
-
-          <section className="min-w-0 rounded-[12px] border border-[var(--z-line)] px-2.5 py-2">
-            <p className="min-w-0 text-[11.5px] leading-snug text-fg [overflow-wrap:anywhere]">
-              {poolSwapSentence(tickerAmount(target.fee.net, target.from.identity, "confirm"), target, minimum)}
-              {poolFeeMsg ? ` ${feePaidSentence(poolFeeMsg, target.from)}` : null}
-            </p>
-            <p className="mt-1.5 font-mono text-[9px] uppercase tracking-[0.12em] text-fg-dim">
-              {preview.preview.summaries.length > 1 ? "Exact messages" : "Exact message"}
-            </p>
-            {preview.preview.summaries.map((line, index) => (
-              <p
-                key={index}
-                className="mt-0.5 min-w-0 break-words font-mono text-[10.5px] leading-snug text-fg [overflow-wrap:anywhere]"
-              >
-                {line}
-              </p>
-            ))}
-          </section>
-
-          <PoolSwapTerms
-            facts={poolFacts}
-            review={target}
-            problems={poolProblems}
-            onCopy={(denom) => void copyDenom(denom)}
-            fee={poolFeeMsg}
-            transfer={poolTransfer}
-            onCopyAddress={(address) => void copyAddress(address)}
+            }
           />
 
-          <section className="min-w-0 rounded-[12px] border border-[var(--z-line)] px-2.5 py-2">
-            <GasFeePrefs
-              feeAmount={feeCoin?.amount}
-              feeDecimals={feeChain?.entry.feeDecimals ?? 6}
-              feeSymbol={feeChain ? feeTicker(feeChain.entry) : (feeCoin?.denom ?? "")}
-              onChanged={() => void reprice(pending)}
+          <ReviewProblems problems={poolProblems} />
+          <ReviewAlerts
+            drift={poolProblems.length === 0 ? poolDrift : null}
+            feeShort={feeShort}
+            error={error}
+            onBack={back}
+          />
+
+          <ReviewDisclosure title="Transaction details" hint="pools, addresses, messages">
+            <PoolSwapTerms
+              framed={false}
+              facts={poolFacts}
+              review={target}
+              problems={[]}
+              onCopy={(denom) => void copyDenom(denom)}
+              fee={poolFeeMsg}
+              transfer={poolTransfer}
+              onCopyAddress={(address) => void copyAddress(address)}
             />
-            {preview.preview.memo ? (
-              <div className="mt-1.5">
-                <KeyValueRow label="Memo" value={preview.preview.memo} />
-              </div>
-            ) : null}
-          </section>
-
-          {feeShort ? (
-            <Callout compact tone="danger" title="Not enough left for the fee">
-              Lower the amount or the gas speed. The chain takes the fee first, then the swap.
-            </Callout>
-          ) : null}
-
-          {preview.feeNote ? (
-            <Callout compact tone="warning" title="Fee is an estimate">
-              {preview.feeNote}
-            </Callout>
-          ) : null}
-
-          {error ? (
-            <Callout compact tone="danger" title="Could not sign">
-              {error}
-            </Callout>
-          ) : null}
+            <ExactMessages summaries={preview.preview.summaries} memo={preview.preview.memo} />
+          </ReviewDisclosure>
+          <ReviewJson json={reviewJson(pending.chainId, pending.msgs, preview)} />
         </div>
       </ScreenScaffold>
     );
@@ -3512,180 +3713,100 @@ export function SwapScreen({
 
   if (phase === "confirm" && pending && preview) {
     const feeChain = chains.find((chain) => chain.chainId === pending.chainId);
-    const reviewQuote = review?.price.quote ?? null;
-    const reviewQuoteView = review && reviewQuote ? swapQuoteView(reviewQuote, review.from, review.to) : null;
-    const reviewSecondsLeft = review
-      ? Math.max(0, Math.ceil((QUOTE_TTL_MS - Math.max(0, now - review.price.at)) / 1000))
-      : 0;
-    const reviewMinimum =
-      review && reviewFacts
-        ? minimumTerms(
-            reviewFacts.swap,
-            boughtIdentity(reviewFacts.swap.outputDenom, review.to),
-            reviewQuote,
-          )
-        : null;
-    // With a Zunia fee the hero says what is paid in all, and what it is made of.
-    const reviewBreakdown = review ? payBreakdown(review) : null;
     const back = () => {
       setPhase(tracked ? "sent" : "form");
       setError(null);
     };
-    return (
-      <ScreenScaffold
-        title={pending.title}
+    const footer = (
+      <ConfirmFooter
+        busy={busy}
+        label={signBlock?.label ?? null}
+        disabled={signBlock !== null}
         onBack={back}
-        footer={
-          <div className="flex gap-2">
-            <Button variant="secondary" className="flex-1" disabled={busy} onClick={back}>
-              Back
-            </Button>
-            <Button
-              className="flex-1"
-              disabled={busy || signBlock !== null}
-              onClick={() => void signPending()}
-            >
-              {busy ? "Signing…" : (signBlock?.label ?? "Sign and send")}
-            </Button>
-          </div>
-        }
-      >
-        <div className="flex min-w-0 flex-col gap-2 pt-1 [overflow-wrap:anywhere]">
-          {review ? (
-            // The review, frozen when this screen opened: never the form's
-            // current rows, amount or price.
-            <section className="rounded-[14px] border border-[var(--z-line)] bg-[var(--z-glass)] px-3 py-2.5">
-              <p className="font-mono text-[9px] uppercase tracking-[0.12em] text-fg-dim">
-                {reviewBreakdown ? "You pay" : "You swap"}
-              </p>
-              <HeroSide
-                option={review.from}
-                amount={tickerAmount(review.amountUnits, review.from.identity, "confirm")}
-                line={tokenLocationText(review.from.identity, "held")}
-                detail={reviewBreakdown}
-              />
-              <div className="my-1.5 h-px bg-[var(--z-line)]" />
-              <p className="font-mono text-[9px] uppercase tracking-[0.12em] text-fg-dim">
-                For about
-              </p>
-              <HeroSide
-                option={review.to}
-                amount={
-                  reviewQuoteView
-                    ? `${reviewQuoteView.outputAmount} ${reviewQuoteView.outputSymbol}`
-                    : NO_VALUE
-                }
-                line={deliveryLine(review.to, reviewMinimum?.exact ?? null)}
-              />
-              <div className="mt-2">
-                <QuoteClock
-                  confirm
-                  secondsLeft={reviewQuote ? reviewSecondsLeft : 0}
-                  refreshing={reviewRefreshing}
-                  onRefresh={() => void refreshReviewPrice(review)}
-                />
-              </div>
-              {reviewPriceError && !reviewRefreshing ? (
-                <p className="mt-1.5 text-[10px] leading-snug text-[var(--z-warning)]">
-                  {reviewPriceError}
-                </p>
-              ) : null}
-            </section>
-          ) : (
-            <section className="rounded-[14px] border border-[var(--z-line)] bg-[var(--z-glass)] px-3 py-2.5">
-              <p className="font-mono text-[9px] uppercase tracking-[0.12em] text-fg-dim">
-                Recover
-              </p>
-              <p className="mt-1 text-[13px] font-semibold tracking-tight text-fg">
-                Claim stranded swap output
-              </p>
+        onSign={() => void signPending()}
+      />
+    );
+    const networkFee = (
+      <GasFeePrefs
+        variant="fact"
+        feeAmount={feeCoin?.amount}
+        feeDecimals={feeChain?.entry.feeDecimals ?? 6}
+        feeSymbol={feeChain ? feeTicker(feeChain.entry) : (feeCoin?.denom ?? "")}
+        onChanged={() => void reprice(pending)}
+      />
+    );
+    const json = reviewJson(pending.chainId, pending.msgs, preview);
+
+    if (!review) {
+      // The recovery of a swap's stranded output: one contract call, no price.
+      return (
+        <ScreenScaffold title={pending.title} onBack={back} footer={footer}>
+          <div className="flex min-w-0 flex-col gap-2 pt-1 [overflow-wrap:anywhere]">
+            <section className="rounded-[14px] border border-[var(--z-line)] bg-[var(--z-glass)] px-3 py-3">
+              <p className="font-mono text-[9px] uppercase tracking-[0.12em] text-fg-dim">Recover</p>
+              <p className="mt-1 text-[15px] font-semibold tracking-tight text-fg">Claim stranded swap output</p>
               <p className="mt-0.5 text-[11px] leading-snug text-fg-muted">
-                Contract call on the venue chain, not another transfer.
+                Asks the Osmosis swap contract to pay the output it kept to your recovery address.
               </p>
+              <div className="mt-3 flex flex-col gap-1.5 border-t border-[var(--z-line)] pt-2.5">
+                {networkFee}
+                {preview.feeNote ? (
+                  <p className="text-right text-[10px] leading-snug text-fg-dim">{preview.feeNote}</p>
+                ) : null}
+              </div>
             </section>
-          )}
+            <ReviewAlerts drift={null} feeShort={false} error={error} onBack={back} />
+            <ReviewDisclosure title="Transaction details" hint="message">
+              <ExactMessages summaries={preview.preview.summaries} memo={preview.preview.memo} />
+            </ReviewDisclosure>
+            <ReviewJson json={json} />
+          </div>
+        </ScreenScaffold>
+      );
+    }
 
-          {review && drift && reviewProblems.length === 0 ? (
-            <Callout compact tone="warning" title="This review is out of date">
-              {drift} Nothing was signed.{" "}
-              <button
-                type="button"
-                onClick={back}
-                className={cn("underline underline-offset-2", focusRing)}
-              >
-                Review the swap again
-              </button>
-            </Callout>
-          ) : null}
+    const reviewQuote = review.price.quote;
+    const reviewSecondsLeft = Math.max(0, Math.ceil((QUOTE_TTL_MS - Math.max(0, now - review.price.at)) / 1000));
+    return (
+      <ScreenScaffold title={pending.title} onBack={back} footer={footer}>
+        <div className="flex min-w-0 flex-col gap-2 pt-1 [overflow-wrap:anywhere]">
+          {/* The review, frozen when this screen opened: never the form's current rows, amount or price. */}
+          <SwapReviewCard
+            summary={contractReviewSummary(review, reviewFacts)}
+            networkFee={networkFee}
+            feeNote={preview.feeNote ?? null}
+            clock={
+              <QuoteClock
+                confirm
+                secondsLeft={reviewQuote ? reviewSecondsLeft : 0}
+                refreshing={reviewRefreshing}
+                onRefresh={() => void refreshReviewPrice(review)}
+              />
+            }
+            priceError={reviewPriceError && !reviewRefreshing ? reviewPriceError : null}
+          />
 
-          <section className="min-w-0 rounded-[12px] border border-[var(--z-line)] px-2.5 py-2">
-            {/* Plain words first; the kernel's own text, unchanged, is what gets signed. */}
-            <p className="min-w-0 text-[11.5px] leading-snug text-fg [overflow-wrap:anywhere]">
-              {review
-                ? swapSentence(
-                    tickerAmount(review.fee.net, review.from.identity, "confirm"),
-                    review.from,
-                    review.to,
-                  )
-                : "Asks the Osmosis swap contract to pay the output it kept to your recovery address."}
-              {review && reviewFee ? ` ${feePaidSentence(reviewFee, review.from)}` : null}
-            </p>
-            <p className="mt-1.5 font-mono text-[9px] uppercase tracking-[0.12em] text-fg-dim">
-              {preview.preview.summaries.length > 1 ? "Exact messages" : "Exact message"}
-            </p>
-            {preview.preview.summaries.map((line, index) => (
-              <p
-                key={index}
-                className="mt-0.5 min-w-0 break-words font-mono text-[10.5px] leading-snug text-fg [overflow-wrap:anywhere]"
-              >
-                {line}
-              </p>
-            ))}
-          </section>
+          <ReviewProblems problems={reviewProblems} />
+          <ReviewAlerts
+            drift={reviewProblems.length === 0 ? drift : null}
+            feeShort={feeShort}
+            error={error}
+            onBack={back}
+          />
 
-          {review ? (
+          <ReviewDisclosure title="Transaction details" hint="route, contract, addresses">
             <SwapTerms
+              framed={false}
               facts={reviewFacts}
               review={review}
-              problems={reviewProblems}
+              problems={[]}
               onCopy={(denom) => void copyDenom(denom)}
               fee={reviewFee}
               onCopyAddress={(address) => void copyAddress(address)}
             />
-          ) : null}
-
-          <section className="min-w-0 rounded-[12px] border border-[var(--z-line)] px-2.5 py-2">
-            <GasFeePrefs
-              feeAmount={feeCoin?.amount}
-              feeDecimals={feeChain?.entry.feeDecimals ?? 6}
-              feeSymbol={feeChain ? feeTicker(feeChain.entry) : (feeCoin?.denom ?? "")}
-              onChanged={() => void reprice(pending)}
-            />
-            {preview.preview.memo ? (
-              <div className="mt-1.5">
-                <KeyValueRow label="Memo" value={preview.preview.memo} />
-              </div>
-            ) : null}
-          </section>
-
-          {feeShort ? (
-            <Callout compact tone="danger" title="Not enough left for the fee">
-              Lower the amount or the gas speed. The chain takes the fee first,
-              then the swap.
-            </Callout>
-          ) : null}
-
-          {preview.feeNote ? (
-            <Callout compact tone="warning" title="Fee is an estimate">
-              {preview.feeNote}
-            </Callout>
-          ) : null}
-
-          {error ? (
-            <Callout compact tone="danger" title="Could not sign">
-              {error}
-            </Callout>
-          ) : null}
+            <ExactMessages summaries={preview.preview.summaries} memo={preview.preview.memo} />
+          </ReviewDisclosure>
+          <ReviewJson json={json} />
         </div>
       </ScreenScaffold>
     );

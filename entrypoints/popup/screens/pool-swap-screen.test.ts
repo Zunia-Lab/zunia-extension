@@ -17,15 +17,18 @@ import live from "../../../lib/__tests__/fixtures/swap/xcs-route-table.json";
 import {
   EXTRA_MESSAGES,
   PoolSwapTerms,
+  ReviewDisclosure,
+  ReviewProblems,
+  SwapReviewCard,
   UNREADABLE_DELIVERY,
   UNREADABLE_SWAP,
-  poolDeliveryLine,
+  poolReviewSummary,
   poolFeeOutcome,
   poolQuoteText,
   poolReviewDrift,
-  poolSwapSentence,
   poolSwapTermsProblems,
   poolSwapTxMsgs,
+  reviewJson,
   type LivePoolSwap,
   type ReviewedPoolSwap,
 } from "./SwapScreen";
@@ -288,13 +291,20 @@ describe("the words", () => {
   });
 
   it("says where the output ends up, and what becomes of the rest", () => {
-    expect(poolSwapSentence("9.95 OSMO", review("pool"), "0.349331 USDC.inj")).toBe(
-      "Swaps 9.95 OSMO in Osmosis's own pools for USDC.inj (Injective USDC), paid to your address on Osmosis.",
-    );
-    expect(poolSwapSentence("9.95 OSMO", review("pool-deliver"), "0.349331 USDC.inj")).toMatch(
-      /then sends 0\.349331 USDC\.inj of it to your address on Injective\. Anything the swap pays above that stays in your Osmosis account\.$/,
-    );
-    expect(poolDeliveryLine(review("pool-deliver"), "0.349331 USDC.inj")).toMatch(/exactly 0\.349331 USDC\.inj, the rest stays on Osmosis$/);
+    // On Osmosis: about the quote, at least the floor.
+    expect(poolReviewSummary(review("pool"), null)).toMatchObject({
+      pay: "10 OSMO",
+      receive: "≈ 0.35286 USDC.inj",
+      receiveLine: "Delivered on Osmosis",
+      minimum: { value: "0.349331 USDC.inj", note: null },
+      zuniaFee: { amount: "0.05 OSMO", rate: "0.5%" },
+    });
+    // Home to Injective: exactly the floor arrives, and the rest is named.
+    expect(poolReviewSummary(review("pool-deliver"), null)).toMatchObject({
+      receive: "0.349331 USDC.inj",
+      receiveLine: "Delivered on Injective · about 0.003529 USDC.inj more stays on Osmosis",
+      minimum: null,
+    });
     expect(poolFeeOutcome("pool")).toMatch(/no fee is taken/);
     expect(poolFeeOutcome("pool-deliver")).toMatch(/none of them happens/);
   });
@@ -341,5 +351,73 @@ describe("the terms panel", () => {
       createElement(PoolSwapTerms, { facts: null, review: review("pool"), problems: [], onCopy: () => undefined }),
     );
     expect(html).toContain(UNREADABLE_SWAP.replace(/'/g, "&#x27;"));
+  });
+});
+
+describe("the confirm screen's layout", () => {
+  const text = (html: string) => html.replace(/<[^>]+>/g, " ").replace(/&#x27;/g, "'").replace(/\s+/g, " ");
+
+  it("leads with what is paid, what comes back, the minimum, the rate and the fees", () => {
+    const html = renderToStaticMarkup(
+      createElement(SwapReviewCard, {
+        summary: poolReviewSummary(review("pool"), null),
+        networkFee: createElement("span", null, "Network fee 0.004 OSMO"),
+        clock: createElement("span", null, "Price valid for 18s"),
+      }),
+    );
+    const shown = text(html);
+    for (const piece of [
+      "You pay",
+      "10 OSMO",
+      "Held on Osmosis",
+      "You receive",
+      "≈ 0.35286 USDC.inj",
+      "Delivered on Osmosis",
+      "Minimum received",
+      "0.349331 USDC.inj",
+      "Rate",
+      "Zunia fee (0.5%)",
+      "0.05 OSMO",
+      "Network fee 0.004 OSMO",
+      "Price valid for 18s",
+    ]) {
+      expect(shown).toContain(piece);
+    }
+    // Nothing about contracts, pools, addresses or messages up there.
+    expect(shown).not.toMatch(/pool 3498|osmo1|Exact message|MsgSplit/);
+  });
+
+  it("folds the details and the JSON away, closed until the user opens them", () => {
+    const html = renderToStaticMarkup(
+      createElement(ReviewDisclosure, { title: "Transaction details", hint: "pools, addresses, messages", children: "inside" }),
+    );
+    expect(html).toMatch(/^<details class="group/);
+    expect(html).not.toMatch(/<details[^>]* open/);
+    expect(text(html)).toContain("Transaction details");
+    expect(html).toContain("inside");
+  });
+
+  it("never folds away what stops the signature", () => {
+    expect(renderToStaticMarkup(createElement(ReviewProblems, { problems: [] }))).toBe("");
+    const html = renderToStaticMarkup(createElement(ReviewProblems, { problems: [UNREADABLE_SWAP, EXTRA_MESSAGES] }));
+    expect(html).not.toContain("<details");
+    expect(text(html)).toContain("Zunia will not sign this");
+    expect(text(html)).toContain(UNREADABLE_SWAP);
+    expect(text(html)).toContain(EXTRA_MESSAGES);
+  });
+
+  it("puts the whole transaction in the JSON, a contract call's message decoded beside it", () => {
+    const msgs = signed(review("pool-deliver"));
+    const preview = { fee: { amount: [{ denom: "uosmo", amount: "4000" }], gas: "400000" }, preview: { memo: "Swap OSMO to USDC.inj · by Zunia-wallet" } };
+    const parsed = JSON.parse(reviewJson("osmosis-1", msgs, preview as never)) as { chain_id: string; memo: string; messages: unknown[] };
+    expect(parsed.chain_id).toBe("osmosis-1");
+    expect(parsed.memo).toBe("Swap OSMO to USDC.inj · by Zunia-wallet");
+    expect(parsed.messages).toEqual(JSON.parse(JSON.stringify(msgs)));
+    const call: BuiltMsg = {
+      typeUrl: "/cosmwasm.wasm.v1.MsgExecuteContract",
+      value: { sender: ME, contract: STRANGER, msg: Buffer.from('{"osmosis_swap":{}}').toString("base64"), funds: [] },
+    };
+    const withCall = JSON.parse(reviewJson("osmosis-1", [call], preview as never)) as { messages: { decodedMsg?: unknown }[] };
+    expect(withCall.messages[0]?.decodedMsg).toEqual({ osmosis_swap: {} });
   });
 });
