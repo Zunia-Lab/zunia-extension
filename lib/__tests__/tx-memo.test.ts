@@ -7,6 +7,7 @@ import { bech32 } from "@scure/base";
 import { afterEach, describe, expect, it } from "vitest";
 import { msgDelegate, msgSend, msgVote, msgWithdrawReward } from "../amino-tx";
 import { CHAIN_CATALOG, setCustomCatalogEntries, type CatalogEntry } from "../chain-catalog";
+import { buildSwapFeeMsg } from "../swap-fee";
 import { ZUNIA_WALLET_TAG, defaultTxMemo, resolveTxMemo, type MemoSourceMsg } from "../tx-memo";
 
 const ME = "cosmos1qyqszqgpqyqszqgpqyqszqgpqyqszqgpgq2rsw";
@@ -407,6 +408,42 @@ describe("a swap signed as one contract call on Osmosis", () => {
   });
 });
 
+describe("a swap with Zunia's fee signed after it", () => {
+  const TREASURY_OSMO = bech32.encode("osmo", bech32.toWords(new Uint8Array(20).fill(0x5a)));
+  const TREASURY_HUB = bech32.encode("cosmos", bech32.toWords(new Uint8Array(20).fill(0x5a)));
+  const fee = (sender: string, recipient: string, denom: string, amount: bigint) =>
+    buildSwapFeeMsg({ sender, recipient, denom, amount }) as MemoSourceMsg;
+
+  it("names the swap, never the fee: 'Swap OSMO to ATOM', 'Swap ATOM'", () => {
+    const call = swapCall("uosmo", ATOM_ON_OSMOSIS, { funds: [{ denom: "uosmo", amount: "62685000" }] });
+    const osmoFee = fee("osmo1sender00000000000000000000000000000000", TREASURY_OSMO, "uosmo", 315_000n);
+    expect(resolveTxMemo("", [call, osmoFee], "osmosis-1")).toBe(`Swap OSMO to ATOM · ${ZUNIA_WALLET_TAG}`);
+    // The same memo as the swap alone: the fee changes nothing in it.
+    expect(resolveTxMemo("", [call, osmoFee], "osmosis-1")).toBe(resolveTxMemo("", [call], "osmosis-1"));
+    // On its own the fee would read as a send; beside the swap it is not named.
+    expect(resolveTxMemo("", [osmoFee], "osmosis-1")).toBe(`Send OSMO · ${ZUNIA_WALLET_TAG}`);
+
+    const transfer = JSON.parse(XCS_TRANSFER) as MemoSourceMsg;
+    const hubFee = fee("cosmos1sender0000000000000000000000000000000", TREASURY_HUB, "uatom", 5_000n);
+    expect(resolveTxMemo("", [transfer, hubFee], "cosmoshub-4")).toBe(`Swap ATOM · ${ZUNIA_WALLET_TAG}`);
+    // A swap the memo cannot name keeps its generic words; the fee never stands in for it.
+    const unnamed = swapCall("uosmo", UNLISTED);
+    expect(resolveTxMemo("", [unnamed, osmoFee], "osmosis-1")).toBe(`Contract call · ${ZUNIA_WALLET_TAG}`);
+    // A memo the user wrote is kept as it is.
+    expect(resolveTxMemo(" mine ", [call, osmoFee], "osmosis-1")).toBe("mine");
+  });
+
+  it("reads both messages and writes to neither", () => {
+    const msgs = deepFreeze([
+      swapCall("uosmo", ATOM_ON_OSMOSIS),
+      fee("osmo1sender00000000000000000000000000000000", TREASURY_OSMO, "uosmo", 315_000n),
+    ]);
+    const before = JSON.stringify(msgs);
+    expect(resolveTxMemo("", msgs, "osmosis-1")).toBe(`Swap OSMO to ATOM · ${ZUNIA_WALLET_TAG}`);
+    expect(JSON.stringify(msgs)).toBe(before);
+  });
+});
+
 describe("Earn memos without a chain", () => {
   const stake = (denom: string): MemoSourceMsg => ({ type: "cosmos-sdk/MsgDelegate", value: { amount: { denom } } });
 
@@ -527,5 +564,39 @@ describe("the transaction a default memo goes into", () => {
       expect(decoded.memo).toBe(memoText);
       expect(signed).toContain(hexOf(packetMemo));
     }
+  });
+
+  it("signs a swap and its Zunia fee in one body, the swap first, under the swap's memo", async () => {
+    const core = await loadCore();
+    const hub = address("cosmos", 1);
+    const xcs = address("osmo", 9, 32);
+    const treasury = address("cosmos", 0x5a);
+    const msgs = [
+      {
+        typeUrl: "/ibc.applications.transfer.v1.MsgTransfer",
+        value: {
+          source_port: "transfer",
+          source_channel: "channel-141",
+          token: { denom: "uatom", amount: "995000" },
+          sender: hub,
+          receiver: xcs,
+          timeout_height: { revision_number: "0", revision_height: "0" },
+          timeout_timestamp: "1791202200000000000",
+          memo: XCS_PACKET_MEMO,
+        },
+      },
+      buildSwapFeeMsg({ sender: hub, recipient: treasury, denom: "uatom", amount: 5_000n }),
+    ];
+    const memo = resolveTxMemo("", msgs, "cosmoshub-4");
+    expect(memo).toBe(`Swap ATOM · ${ZUNIA_WALLET_TAG}`);
+    const signed = core.buildSignBytes("cosmoshub-4", JSON.stringify(msgs), FEE, memo, 1n, 2n, PUBKEY, false, "direct");
+    const decoded = core.decodeDirectTx(signed);
+    // Both messages, in order: the transfer that runs the swap, then the fee.
+    expect(decoded.summaries).toEqual([
+      `IBC transfer 995000 uatom to ${xcs} over channel-141`,
+      `Send 5000 uatom to ${treasury}`,
+    ]);
+    expect(decoded.memo).toBe(memo);
+    expect(signed).toContain(hexOf(XCS_PACKET_MEMO));
   });
 });

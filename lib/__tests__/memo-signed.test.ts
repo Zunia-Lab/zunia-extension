@@ -7,11 +7,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  * Zunia-wallet` for Noble USDC on Noble, `IBC transfer USDC.n` for its
  * voucher on Osmosis).
  *
- * Both signing paths run for real: lib/tx-kernel.ts (Send's transfers, Swap,
- * NFTs) through the Rust kernel built from its wasm, and lib/wallet-tx.ts
- * (same-chain Send, Earn, Governance) through the amino encoder. Only the
- * network, the session and the settings are stood in for. Each test reads
- * the memo back out of what was signed or broadcast.
+ * Both signing paths run for real: lib/tx-kernel.ts (Send's transfers, Swap
+ * with its Zunia fee signed after it, NFTs) through the Rust kernel built from
+ * its wasm, and lib/wallet-tx.ts (same-chain Send, Earn, Governance) through
+ * the amino encoder. Only the network, the session and the settings are stood
+ * in for. Each test reads the memo back out of what was signed or broadcast.
  */
 
 const { calls, net, TEST_MNEMONIC } = vi.hoisted(() => ({
@@ -134,6 +134,7 @@ import { msgDelegate, msgUndelegate, msgVote, msgWithdrawReward, type AminoMsg, 
 import { CHAIN_CATALOG } from "../chain-catalog";
 import { chainJsonFor } from "../chains";
 import { createLocalKernel } from "../kernel";
+import { buildSwapFeeMsg } from "../swap-fee";
 import { identityOf } from "../token-identity";
 import { previewTx, signAndBroadcastTx, type TxPreview, type TxRequest } from "../tx-kernel";
 import { ZUNIA_WALLET_TAG, resolveTxMemo, type MemoSourceMsg } from "../tx-memo";
@@ -168,6 +169,12 @@ function addressOn(chainId: string): string {
 function otherOn(chainId: string): string {
   const { prefix } = bech32.decode(addressOn(chainId) as `${string}1${string}`);
   return bech32.encode(prefix, bech32.toWords(new Uint8Array(20).fill(7)));
+}
+
+/** A test Zunia treasury on a chain, with that chain's own prefix. */
+function treasuryOn(chainId: string): string {
+  const { prefix } = bech32.decode(addressOn(chainId) as `${string}1${string}`);
+  return bech32.encode(prefix, bech32.toWords(new Uint8Array(20).fill(0x5a)));
 }
 
 /** The Osmosis crosschain-swaps contract, as a 32-byte contract address. */
@@ -344,6 +351,72 @@ describe("tx-kernel: a default memo names the token on the signing chain, and is
     if (typeof executeMsg === "string") {
       expect(directTxHex(0)).toContain(Buffer.from(executeMsg, "base64").toString("hex"));
     }
+  });
+
+  it.each([
+    {
+      what: "OSMO swapped into ATOM from funds on Osmosis, Zunia's fee signed after the call",
+      chainId: "osmosis-1",
+      swap: () => swapCall("osmosis-1", "uosmo", ATOM_ON_OSMOSIS, addressOn("cosmoshub-4")),
+      fee: { denom: "uosmo", amount: 315_000n },
+      memo: tagged("Swap OSMO to ATOM"),
+    },
+    {
+      what: "Noble USDC swapped over IBC, Zunia's fee paid on Noble after the transfer",
+      chainId: "noble-1",
+      swap: () => transfer("noble-1", "channel-1", "uusdc", XCS, XCS_PACKET_MEMO),
+      fee: { denom: "uusdc", amount: 12_500n },
+      memo: tagged("Swap USDC.n"),
+    },
+  ])("$what: one transaction, shown and signed as `$memo`", async ({ chainId, swap, fee, memo }) => {
+    const treasury = treasuryOn(chainId);
+    const msgs = [swap(), buildSwapFeeMsg({ sender: addressOn(chainId), recipient: treasury, ...fee })];
+    const request: TxRequest = { chainId, signerAddress: addressOn(chainId), msgs };
+    // The memo names the swap, exactly as for the swap alone.
+    expect(resolveTxMemo("", msgs, chainId)).toBe(resolveTxMemo("", [msgs[0]!], chainId));
+
+    const preview = await previewTx(request);
+    expect(preview.preview.memo).toBe(memo);
+    // Simulated with both messages, so the gas covers the fee's send too.
+    expect(calls.simulate).toEqual([memo]);
+    expect(calls.preview).toEqual([memo]);
+    // The confirm screen lists the kernel's lines for both, the swap first.
+    expect(preview.preview.summaries).toHaveLength(2);
+    expect(preview.preview.summaries[1]).toBe(`Send ${fee.amount} ${fee.denom} to ${treasury}`);
+
+    const result = await signAndBroadcastTx(signRequest(request, preview));
+    expect(result.success).toBe(true);
+    expect(calls.sign).toEqual([memo]);
+    expect(net.direct).toHaveLength(1);
+    // One body: the swap's bytes (its packet memo or its ExecuteMsg), then the
+    // fee's recipient and amount, under the one memo.
+    const tx = directTxHex(0);
+    expect(tx).toContain(hexOf(memo));
+    const packetMemo = (msgs[0]?.value as { memo?: string }).memo;
+    if (packetMemo) expect(tx).toContain(hexOf(packetMemo));
+    const executeMsg = (msgs[0]?.value as { msg?: unknown }).msg;
+    if (typeof executeMsg === "string") expect(tx).toContain(Buffer.from(executeMsg, "base64").toString("hex"));
+    expect(tx).toContain(hexOf(treasury));
+    expect(tx.indexOf(hexOf(treasury))).toBeGreaterThan(tx.indexOf(hexOf(XCS)));
+  });
+
+  it("refuses, in the kernel itself, a fee to another chain's address, and broadcasts nothing", async () => {
+    // A Hub address on Osmosis: what a fee to a wrong-chain treasury would be.
+    // The release test and lib/swap-fee.ts keep one from being configured; the
+    // kernel refuses it at signing all the same.
+    const chainId = "osmosis-1";
+    const wrongChain = treasuryOn("cosmoshub-4");
+    const request: TxRequest = {
+      chainId,
+      signerAddress: addressOn(chainId),
+      msgs: [
+        swapCall(chainId, "uosmo", ATOM_ON_OSMOSIS, addressOn("cosmoshub-4")),
+        buildSwapFeeMsg({ sender: addressOn(chainId), recipient: wrongChain, denom: "uosmo", amount: 315_000n }),
+      ],
+    };
+    const preview = await previewTx(request);
+    await expect(signAndBroadcastTx(signRequest(request, preview))).rejects.toThrow(/invalid for this chain/);
+    expect(net.direct).toEqual([]);
   });
 
   it("names the same default at both ends when the screen sends no memo to sign either", async () => {

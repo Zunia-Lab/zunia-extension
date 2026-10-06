@@ -7,14 +7,21 @@
  * with `@zunialab/interchain` (unwinding a wrapped denom, discovering and
  * verifying channels, composing the ibc-hooks memo with a packet-forward hop
  * before or after when Osmosis is not adjacent) prices the pool against the
- * Osmosis router, and hands one message to `@zunialab/core` to sign: a
+ * Osmosis router, and hands one swap message to `@zunialab/core` to sign: a
  * `MsgTransfer`, or a `MsgExecuteContract` on Osmosis when the funds are
  * already there.
+ *
+ * Zunia's fee (config/fees.ts, lib/swap-fee.ts) rides in the same
+ * transaction, right after the swap message: a bank send of the token sold to
+ * the treasury configured for the signing chain. The amount typed (or Max) is
+ * what the user spends in all; the swap sells what is left after the fee. A
+ * chain with no treasury configured signs the swap message alone.
  *
  * Every control on this screen is enabled only when its whole path works, and
  * the first thing that does not work is named on the button. The confirm
  * screen shows a frozen review ({@link ReviewedSwap}) and, read out of the
- * message itself, what the swap contract will do ({@link readSwapMessage}).
+ * messages themselves, what the swap contract will do ({@link readSwapMessage})
+ * and what the fee pays ({@link readSwapFeeMsg}).
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -89,6 +96,18 @@ import {
   sellOptions,
   type AssetOption,
 } from "../../../lib/swap-assets";
+import {
+  buildSwapFeeMsg,
+  feeRateText,
+  readSwapFeeMsg,
+  sameSwapFee,
+  swapFeeFor,
+  swapFeeIssues,
+  type SwapFee,
+  type SwapFeeIssue,
+  type SwapFeeMessage,
+  type SwapFeeRecipients,
+} from "../../../lib/swap-fee";
 import { amountFieldText, canTypeAmount, formatTokenAmount } from "../../../lib/token-amount";
 import { identityOf, shortDenom, type TokenIdentity } from "../../../lib/token-identity";
 import type { TxPreview } from "../../../lib/tx-kernel";
@@ -152,8 +171,15 @@ export interface ReviewedSwap {
   readonly id: number;
   readonly from: AssetOption;
   readonly to: AssetOption;
-  /** Base units sold. */
+  /** Base units the user spends in all: the amount typed (or Max), the Zunia fee included. */
   readonly amountUnits: bigint;
+  /**
+   * The Zunia fee on {@link amountUnits} (lib/swap-fee.ts): what the second
+   * message pays, and `fee.net`, what the swap message sells, the amount the
+   * plan and its price were made for, and the amount tracking follows. With no
+   * fee, `fee.fee` is 0 and `fee.net` is the whole amount.
+   */
+  readonly fee: SwapFee;
   /** The plan the message was built from, and the one tracking follows. */
   readonly plan: RoutePlanView;
   /** The planner request {@link plan} answered ({@link swapPlanKey}). */
@@ -403,12 +429,16 @@ export function swapPlanRequest(args: {
  * identities' venue check included. A plan belongs to exactly one key, so an
  * answer for inputs since edited is never shown as current, and a review
  * whose key the form no longer produces is no longer what the form would
- * sign ({@link reviewDrift}).
+ * sign ({@link reviewDrift}). The Zunia fee is part of it: the plan sells
+ * what is left after the fee, and the transaction pays the fee beside it.
  */
 export function swapPlanKey(args: {
   readonly from: Pick<AssetOption, "chainId" | "denom" | "identity">;
   readonly to: Pick<AssetOption, "chainId" | "denom" | "identity">;
+  /** Base units the swap sells: what is left after the Zunia fee. */
   readonly amountUnits: bigint;
+  /** The Zunia fee paid beside the swap; none when absent or 0. */
+  readonly fee?: Pick<SwapFee, "fee" | "recipient"> | null;
   readonly slippage: number;
   readonly manual: readonly ManualChannel[];
   /** The swap contract the venue check names. */
@@ -423,6 +453,7 @@ export function swapPlanKey(args: {
     args.to.chainId,
     args.to.denom,
     args.amountUnits.toString(),
+    args.fee && args.fee.fee > 0n ? `${args.fee.fee}>${args.fee.recipient ?? ""}` : "",
     args.slippage,
     args.manual.map((m) => `${m.fromChainId}>${m.toChainId}:${m.channelId}`).join("|"),
     args.contract,
@@ -447,6 +478,111 @@ export function swapSentence(amount: string, from: AssetOption, to: AssetOption)
 }
 
 /* -------------------------------------------------------------------------- *
+ * The Zunia fee
+ * -------------------------------------------------------------------------- */
+
+/**
+ * What a reviewed swap signs, in order: the swap message for the amount left
+ * after the Zunia fee, then the bank send that pays the fee, when one is due.
+ * With no fee (no treasury for the signing chain, or an amount too small to
+ * carry one) it is the one message the swap signed before the fee existed,
+ * byte for byte. The swap stays first: the confirm screen reads it there.
+ */
+export function swapTxMsgs(args: {
+  readonly view: RoutePlanView;
+  /** The signer on the From's chain: the swap and the fee both leave its account. */
+  readonly sender: string;
+  /** The From's exact bank denom: the fee is paid in the token sold. */
+  readonly denom: string;
+  readonly fee: SwapFee;
+}): BuiltMsg[] {
+  const swap = buildTransferMsgFromPlan({
+    view: args.view,
+    sender: args.sender,
+    amountBaseUnits: args.fee.net.toString(),
+  });
+  if (args.fee.fee <= 0n || args.fee.recipient === null) return [swap];
+  return [
+    swap,
+    buildSwapFeeMsg({
+      sender: args.sender,
+      recipient: args.fee.recipient,
+      denom: args.denom,
+      amount: args.fee.fee,
+    }),
+  ];
+}
+
+/**
+ * The form's fee line, under the quote: `Zunia fee` and `0.5% · 0.05 OSMO`,
+ * read together as `Zunia fee 0.5% · 0.05 OSMO`. `null` when no fee applies,
+ * and then no line is drawn.
+ */
+export function swapFeeLine(
+  fee: SwapFee | null,
+  from: Pick<AssetOption, "identity">,
+): { readonly label: string; readonly value: string } | null {
+  if (!fee || fee.fee <= 0n) return null;
+  return {
+    label: "Zunia fee",
+    value: `${feeRateText(fee.bps)} · ${tickerAmount(fee.fee, from.identity, "confirm")}`,
+  };
+}
+
+/**
+ * The confirm hero's breakdown of what the user pays: `62.685 OSMO swapped +
+ * 0.315 OSMO Zunia fee (0.5%)`. `null` when no fee applies: what is paid is
+ * then what is swapped.
+ */
+export function payBreakdown(review: Pick<ReviewedSwap, "from" | "fee">): string | null {
+  const { fee, from } = review;
+  if (fee.fee <= 0n) return null;
+  const swapped = tickerAmount(fee.net, from.identity, "confirm");
+  return `${swapped} swapped + ${tickerAmount(fee.fee, from.identity, "confirm")} Zunia fee (${feeRateText(fee.bps)})`;
+}
+
+/**
+ * An amount with every digit its token has (`0.000123456789 INJ`, never cut to
+ * six decimals), or in base units when its decimals are unknown.
+ */
+function exactTickerAmount(amount: string | bigint, identity: TokenIdentity): string {
+  return identity.decimalsKnown
+    ? `${amountFieldText(amount, identity)} ${identity.ticker}`
+    : tickerAmount(amount, identity, "confirm");
+}
+
+/** What a fee coin is named: the From's token when it is the denom sold, else whatever its chain calls it. */
+function feeIdentity(denom: string, from: AssetOption): TokenIdentity {
+  return denom === from.denom ? from.identity : identityOf(from.chainId, denom);
+}
+
+/**
+ * The confirm screen's plain words for the fee message, read out of it: what
+ * it pays and to whom (`In the same transaction, it pays the Zunia fee: 0.315
+ * OSMO to osmo1zunia…00000000.`). Whether that is Zunia's address is for the
+ * terms panel to say, and to refuse.
+ */
+export function feePaidSentence(paid: SwapFeeMessage, from: AssetOption): string {
+  const amount = exactTickerAmount(paid.amount, feeIdentity(paid.denom, from));
+  return `In the same transaction, it pays the Zunia fee: ${amount} to ${truncateAddress(paid.to, 10, 8)}.`;
+}
+
+/**
+ * What becomes of the fee if the swap fails, by how the swap message reaches
+ * the contract. A contract call and the fee are one transaction on Osmosis, so
+ * a failed swap undoes both. A transfer pays the fee on its own chain when it
+ * is sent: a swap that then fails on Osmosis sends the amount swapped back,
+ * and the fee stays paid.
+ */
+export function swapFeeOutcome(via: SwapMessageFacts["via"], bps: number): string {
+  if (via === "contract-call") {
+    return "The swap and the fee are one transaction: if the swap fails, no fee is taken.";
+  }
+  const rate = bps > 0 ? ` ${feeRateText(bps)}` : "";
+  return `If the swap fails on Osmosis, the amount swapped comes back to you, but the${rate} Zunia fee does not.`;
+}
+
+/* -------------------------------------------------------------------------- *
  * What the signed message says
  * -------------------------------------------------------------------------- */
 
@@ -456,6 +592,10 @@ const TRANSFER_TYPE_URL = "/ibc.applications.transfer.v1.MsgTransfer";
 /** Said, and signing refused, when the message cannot be read whole. */
 export const UNREADABLE_SWAP =
   "Zunia could not read what this swap message does, so it will not ask you to sign it.";
+
+/** Said, and signing refused, when the transaction carries more than the swap and its fee. */
+export const EXTRA_MESSAGES =
+  "This transaction carries more than the swap and the Zunia fee, so Zunia will not ask you to sign it.";
 
 /** A coin exactly as a message carries it. */
 export interface MessageCoin {
@@ -672,27 +812,70 @@ export function minimumTerms(
 }
 
 /**
- * Everything the message does that the review did not say, in the words the
- * confirm screen shows; any of it refuses the signature. Empty when the
- * message spends the reviewed coin and amount, calls the swap contract the
- * venue check verified (a transfer landing on it), buys the reviewed token,
- * pays this wallet's own address, and sets this wallet's recovery address.
+ * One way the transaction's fee message is not the Zunia fee the review
+ * shows (lib/swap-fee.ts `swapFeeIssues`), in the words the confirm screen
+ * shows.
+ */
+export function swapFeeProblem(issue: SwapFeeIssue, review: Pick<ReviewedSwap, "from">): string {
+  const { from } = review;
+  const amount = (units: string | bigint, denom: string) => exactTickerAmount(units, feeIdentity(denom, from));
+  switch (issue.kind) {
+    case "unreadable":
+      return "Zunia could not read the transaction's second message as its fee, so it will not ask you to sign it.";
+    case "not-due":
+      return `Zunia charges no fee on this swap, yet the transaction pays ${amount(issue.paid.amount, issue.paid.denom)} to ${truncateAddress(issue.paid.to, 10, 8)}.`;
+    case "missing":
+      return `The transaction leaves out the ${amount(issue.due.fee, from.denom)} Zunia fee this review shows.`;
+    case "sender":
+      return `The Zunia fee would be paid from ${truncateAddress(issue.paid.from, 10, 8)}, not from the account signing this swap.`;
+    case "recipient":
+      return `The Zunia fee would go to ${truncateAddress(issue.paid.to, 10, 8)}, which is not Zunia's fee address on ${from.chainName}.`;
+    case "denom":
+      return `The Zunia fee is paid in ${shortDenom(issue.paid.denom)}, not in the ${from.identity.ticker} you sell.`;
+    case "amount":
+      return `The Zunia fee is ${amount(issue.paid.amount, issue.paid.denom)}, not the ${amount(issue.due.fee, from.denom)} you reviewed.`;
+  }
+}
+
+/**
+ * Everything the transaction does that the review did not say, in the words
+ * the confirm screen shows; any of it refuses the signature. Empty when it
+ * is exactly the swap message (`facts`, read from its first message) and, when
+ * a Zunia fee is due, the one bank send that pays it:
+ *
+ * - the swap spends the reviewed coin, and the amount left after the fee;
+ *   calls the swap contract the venue check verified (a transfer landing on
+ *   it); buys the reviewed token; pays this wallet's own address; and sets this
+ *   wallet's recovery address;
+ * - the fee is the one the review shows and the one Zunia charges on the
+ *   signing chain, paid from the signer to that chain's treasury, in the token
+ *   sold, for exactly that amount; with no fee due, there is no second message;
+ * - nothing else: a third message refuses the signature.
  */
 export function swapTermsProblems(
   facts: SwapMessageFacts | null,
   review: ReviewedSwap,
-  signing: { readonly chainId: string; readonly msgCount: number },
+  signing: {
+    readonly chainId: string;
+    /** The account that signs: the fee must leave it. */
+    readonly signerAddress: string;
+    /** Every message the transaction signs, the swap first. */
+    readonly msgs: readonly BuiltMsg[];
+    /** The fee treasuries; the compiled-in map unless a test passes its own. */
+    readonly recipients?: SwapFeeRecipients;
+  },
 ): string[] {
-  if (!facts || signing.msgCount !== 1) return [UNREADABLE_SWAP];
+  if (!facts) return [UNREADABLE_SWAP];
+  if (signing.msgs.length > 2) return [EXTRA_MESSAGES];
   const { from, to } = review;
   const problems: string[] = [];
   if (signing.chainId !== from.chainId || facts.sold.denom !== from.denom) {
     problems.push(
       `The message spends ${shortDenom(facts.sold.denom)}, not the ${from.identity.ticker} on ${from.chainName} you reviewed.`,
     );
-  } else if (facts.sold.amount !== review.amountUnits.toString()) {
+  } else if (facts.sold.amount !== review.fee.net.toString()) {
     problems.push(
-      `The message spends ${tickerAmount(facts.sold.amount, from.identity, "confirm")}, not the ${tickerAmount(review.amountUnits, from.identity, "confirm")} you reviewed.`,
+      `The message spends ${tickerAmount(facts.sold.amount, from.identity, "confirm")}, not the ${tickerAmount(review.fee.net, from.identity, "confirm")} you reviewed.`,
     );
   }
   if (facts.contract !== review.contract) {
@@ -736,6 +919,22 @@ export function swapTermsProblems(
       `The recovery address ${truncateAddress(failed.address, 10, 8)} is not your address on Osmosis.`,
     );
   }
+  // The fee the review shows must be the fee Zunia charges here, worked out
+  // again from the configuration; the second message must pay exactly it.
+  const due = swapFeeFor(signing.chainId, review.amountUnits, signing.recipients);
+  if (!sameSwapFee(review.fee, due)) {
+    problems.push(
+      `The Zunia fee in this review is not the one Zunia charges on ${from.chainName}, so Zunia will not ask you to sign it.`,
+    );
+  }
+  const issues = swapFeeIssues(signing.msgs[1], {
+    chainId: signing.chainId,
+    signer: signing.signerAddress,
+    denom: from.denom,
+    amountUnits: review.amountUnits,
+    ...(signing.recipients ? { recipients: signing.recipients } : {}),
+  });
+  problems.push(...issues.map((issue) => swapFeeProblem(issue, review)));
   return problems;
 }
 
@@ -747,7 +946,10 @@ export function swapTermsProblems(
 export interface LiveSwap {
   readonly from: AssetOption | undefined;
   readonly to: AssetOption | undefined;
+  /** What the form spends in all, the Zunia fee included. */
   readonly amountUnits: bigint | null;
+  /** The Zunia fee the form works out on {@link amountUnits}; `null` when it has no amount. */
+  readonly fee: SwapFee | null;
   /** {@link swapPlanKey} of the form's inputs; `""` when it cannot plan. */
   readonly planKey: string;
   readonly plan: RoutePlanView | null;
@@ -778,7 +980,7 @@ function planFingerprint(view: RoutePlanView): string {
  * keeps showing the review and signing waits for a new one.
  */
 export function reviewDrift(
-  review: Pick<ReviewedSwap, "from" | "to" | "amountUnits" | "planKey" | "plan">,
+  review: Pick<ReviewedSwap, "from" | "to" | "amountUnits" | "fee" | "planKey" | "plan">,
   live: LiveSwap,
 ): string | null {
   if (live.from?.key !== review.from.key) {
@@ -789,6 +991,9 @@ export function reviewDrift(
   }
   if (live.amountUnits !== review.amountUnits) {
     return `The amount on the swap form is no longer ${tickerAmount(review.amountUnits, review.from.identity, "confirm")}.`;
+  }
+  if (!live.fee || !sameSwapFee(live.fee, review.fee)) {
+    return "The Zunia fee on the swap form is no longer the one you reviewed.";
   }
   if (live.planKey !== review.planKey) {
     return (live.planKey === "" ? live.blockedReason : null) ?? "The swap's settings changed after this review.";
@@ -861,7 +1066,18 @@ function routeChainIds(view: RoutePlanView): string[] {
  * it is on, the amount, and where it is held or delivered. The proven seal is
  * drawn on the logo and said in words to assistive tech.
  */
-function HeroSide({ option, amount, line }: { option: AssetOption; amount: string; line: string }) {
+function HeroSide({
+  option,
+  amount,
+  line,
+  detail = null,
+}: {
+  option: AssetOption;
+  amount: string;
+  line: string;
+  /** Under the line: what the amount is made of (the swap and the Zunia fee). */
+  detail?: string | null;
+}) {
   const identity = shownIdentity(option);
   const seal = provenanceLabel(identity);
   return (
@@ -874,6 +1090,11 @@ function HeroSide({ option, amount, line }: { option: AssetOption; amount: strin
         <p className="mt-0.5 text-[10.5px] leading-snug text-fg-dim [overflow-wrap:anywhere]">
           {line}
         </p>
+        {detail ? (
+          <p className="mt-0.5 text-[10.5px] leading-snug tabular-nums text-fg-muted [overflow-wrap:anywhere]">
+            {detail}
+          </p>
+        ) : null}
         {seal ? <span className="sr-only">{seal}</span> : null}
       </div>
     </div>
@@ -999,6 +1220,67 @@ function ownerNote(address: string, review: ReviewedSwap): { text: string; tone:
   return { text: `Your address on ${chainName}`, tone: "plain" };
 }
 
+/**
+ * The terms panel's "Zunia fee" value, read out of the fee message that is
+ * signed: the exact amount, its rate of what the user pays, and the address
+ * it goes to (short on screen, whole in its tooltip, to assistive tech and in
+ * the clipboard) with whose that address is. The rate is said only when the
+ * message pays exactly the fee reviewed; anything else reads in danger, and
+ * {@link swapTermsProblems} refuses the signature for it.
+ */
+function FeeValue({
+  paid,
+  review,
+  onCopy,
+}: {
+  paid: SwapFeeMessage;
+  review: ReviewedSwap;
+  onCopy: (address: string) => void;
+}) {
+  const { fee, from } = review;
+  const asReviewed = fee.fee > 0n && paid.denom === from.denom && paid.amount === fee.fee.toString();
+  const ours = fee.recipient !== null && paid.to === fee.recipient;
+  return (
+    <span className="flex min-w-0 flex-col items-end gap-0.5 break-normal text-right font-sans">
+      <span className="max-w-full text-[11.5px] font-medium leading-snug tabular-nums text-fg [overflow-wrap:anywhere]">
+        {exactTickerAmount(paid.amount, feeIdentity(paid.denom, from))}
+      </span>
+      <span
+        className={cn(
+          "text-[10.5px] leading-snug [overflow-wrap:anywhere]",
+          asReviewed ? "text-fg-muted" : "text-[var(--z-danger)]",
+        )}
+      >
+        {asReviewed
+          ? `${feeRateText(fee.bps)} of the ${tickerAmount(review.amountUnits, from.identity, "confirm")} you pay`
+          : "Not the fee you reviewed"}
+      </span>
+      <button
+        type="button"
+        onClick={() => onCopy(paid.to)}
+        title={paid.to}
+        aria-label={`Copy the address the fee goes to: ${paid.to}`}
+        className={cn(
+          "inline-flex max-w-full items-center gap-1 rounded-[6px] font-mono text-[10px] text-fg-muted",
+          "transition-colors duration-[var(--z-duration-base)] hover:text-fg",
+          focusRing,
+        )}
+      >
+        <span className="min-w-0 [overflow-wrap:anywhere]">To {truncateAddress(paid.to, 10, 8)}</span>
+        <IconCopy width={11} height={11} className="shrink-0" aria-hidden />
+      </button>
+      <span
+        className={cn(
+          "text-[10.5px] leading-snug [overflow-wrap:anywhere]",
+          ours ? "text-fg-muted" : "text-[var(--z-danger)]",
+        )}
+      >
+        {ours ? `Zunia's fee address on ${from.chainName}` : "Not Zunia's fee address"}
+      </span>
+    </span>
+  );
+}
+
 /** The panel's opening line: how the message reaches the contract, from the message. */
 function termsLead(facts: SwapMessageFacts, venueName: string): string {
   if (facts.via === "contract-call") {
@@ -1011,25 +1293,36 @@ function termsLead(facts: SwapMessageFacts, venueName: string): string {
 
 const TERMS_BOX = "min-w-0 rounded-[12px] border border-[var(--z-line)] px-2.5 py-2";
 
+/** The terms panel's copy action when its caller passes none. */
+const COPY_NOTHING = (): void => undefined;
+
 /**
  * What the swap contract will do, read out of the message that is signed
  * ({@link readSwapMessage}), the same for a contract call and a transfer's
  * memo: what is sold and what is bought (the exact denom to copy), whom it
  * pays and whether that is this wallet, the least it may pay out, where the
- * output waits if delivery fails, and the contract. Nothing here comes from
- * the plan or the form. What the message does that the review did not say
- * is listed under it ({@link swapTermsProblems}), and refuses the signature.
+ * output waits if delivery fails, and the contract. Under them, when the
+ * transaction pays one, the Zunia fee as its own message says it
+ * ({@link readSwapFeeMsg}), and what becomes of the fee if the swap fails.
+ * Nothing here comes from the plan or the form. What the messages do that the
+ * review did not say is listed under it ({@link swapTermsProblems}), and
+ * refuses the signature.
  */
 export function SwapTerms({
   facts,
   review,
   problems,
   onCopy,
+  fee = null,
+  onCopyAddress = COPY_NOTHING,
 }: {
   facts: SwapMessageFacts | null;
   review: ReviewedSwap;
   problems: readonly string[];
   onCopy: (denom: string) => void;
+  /** The transaction's fee message, read out of it; `null` when it signs none. */
+  fee?: SwapFeeMessage | null;
+  onCopyAddress?: (address: string) => void;
 }) {
   const venueName = findCatalogEntry(VENUE_CHAIN_ID)?.chainName ?? VENUE_CHAIN_ID;
   if (!facts) {
@@ -1129,7 +1422,21 @@ export function SwapTerms({
             </Fact>
           }
         />
+        {fee ? (
+          <>
+            <div aria-hidden="true" className="h-px bg-[var(--z-line)]" />
+            <KeyValueRow
+              label="Zunia fee"
+              value={<FeeValue paid={fee} review={review} onCopy={onCopyAddress} />}
+            />
+          </>
+        ) : null}
       </div>
+      {fee ? (
+        <p className="mt-1.5 min-w-0 text-[10.5px] leading-snug text-fg [overflow-wrap:anywhere]">
+          {swapFeeOutcome(facts.via, review.fee.bps)}
+        </p>
+      ) : null}
       {facts.warnings.map((warning) => (
         <p key={warning} className="mt-1 text-[10px] leading-snug text-[var(--z-warning)]">
           {warning}
@@ -1292,7 +1599,16 @@ export function SwapScreen({
   const sourceAccount = chains.find((chain) => chain.chainId === from?.chainId);
   const destAccount = chains.find((chain) => chain.chainId === to?.chainId);
 
+  // What the user spends in all, typed or Max. The Zunia fee comes out of it,
+  // and the swap is planned, priced and signed for what is left (`net`).
+  // Memoized for what it is to the compiler, not for its cost: the plan key,
+  // and so the memoized price refresh, are derived from it, and a fee object
+  // made afresh each render would read as one that could still change.
   const amountUnits = amountUnitsOf(from, amount);
+  const swapFee = useMemo(
+    () => (from && amountUnits !== null && amountUnits > 0n ? swapFeeFor(from.chainId, amountUnits) : null),
+    [from, amountUnits],
+  );
   const available = from ? BigInt(from.amount) : null;
   const feeReserve = from
     ? reservedFeeUnits(from.chainId, from.denom, settings)
@@ -1425,13 +1741,15 @@ export function SwapScreen({
   // their identities (lib/swap-assets.ts). The planner refuses a route that
   // would trade another variant, one that only shares the ticker, as
   // `venue-denom-mismatch`, so a plan is always checked against the
-  // identities on screen.
+  // identities on screen. The plan sells what is left after the Zunia fee,
+  // and the fee itself is part of the key.
   const planKey =
-    canPlan && from && to && amountUnits !== null
+    canPlan && from && to && swapFee
       ? swapPlanKey({
           from,
           to,
-          amountUnits,
+          amountUnits: swapFee.net,
+          fee: swapFee,
           slippage,
           manual,
           contract: venue.check?.contractAddress,
@@ -1449,7 +1767,7 @@ export function SwapScreen({
         swapPlanRequest({
           from: from!,
           to: to!,
-          amountUnits: amountUnits!,
+          amountUnits: swapFee!.net,
           sender: sourceAccount!.address,
           recipient: destAddress!,
           recoveryAddress: recoveryAddress!,
@@ -1514,7 +1832,8 @@ export function SwapScreen({
   const venueContract = result?.venue?.contractAddress ?? null;
   const venueInputDenom = result?.venueInputDenom ?? null;
   const venueOutputDenom = result?.venueOutputDenom ?? null;
-  const amountBase = amountUnits?.toString() ?? null;
+  // The price is for what the swap sells: the amount less the Zunia fee.
+  const amountBase = swapFee ? swapFee.net.toString() : null;
   const canRequote = Boolean(
     planKey && venueChainId && venueContract && venueInputDenom && venueOutputDenom && amountBase,
   );
@@ -1674,19 +1993,31 @@ export function SwapScreen({
    * The review on the confirm screen
    * ---------------------------------------------------------------- */
 
-  // What the message that is signed says, read from the message itself.
+  // What the messages that are signed say, read from the messages themselves:
+  // the swap first, then the Zunia fee when the transaction pays one.
   const reviewFacts = review ? readSwapMessage(pending?.msgs[0]) : null;
+  const reviewFee = review ? readSwapFeeMsg(pending?.msgs[1]) : null;
   const reviewProblems =
     review && pending
       ? swapTermsProblems(reviewFacts, review, {
           chainId: pending.chainId,
-          msgCount: pending.msgs.length,
+          signerAddress: pending.signerAddress,
+          msgs: pending.msgs,
         })
       : [];
   // The form keeps planning under the confirm screen; the review stands only
-  // while the form would still sign the swap that was reviewed.
+  // while the form would still sign the swap that was reviewed, its fee included.
   const drift = review
-    ? reviewDrift(review, { from, to, amountUnits, planKey, plan, planning, blockedReason })
+    ? reviewDrift(review, {
+        from,
+        to,
+        amountUnits,
+        fee: swapFee,
+        planKey,
+        plan,
+        planning,
+        blockedReason,
+      })
     : null;
   const reviewRefreshing = review !== null && reviewRequoting === review.id;
   const reviewPriceError = review
@@ -1833,18 +2164,20 @@ export function SwapScreen({
       } else {
         // Everything recorded is the review's: the plan signed, its contract
         // and recovery address, and the two tokens as the screen named them.
+        // The amount is what the swap message moves (the fee stays behind on
+        // the source chain), which is what tracking matches packets on.
         const signed = pending.review;
         const record: PendingTransfer = {
           kind: "swap",
           txHash: broadcastResult.txhash,
           chainId: pending.chainId,
           plan: signed.plan.plan,
-          amountBaseUnits: signed.amountUnits.toString(),
+          amountBaseUnits: signed.fee.net.toString(),
           swapContract: signed.contract,
           recoveryAddress: signed.recoveryAddress,
           // Activity and the OS notification say this: both tokens and both
           // chains, `10 OSMO (Osmosis) → USDC.axl (Axelar)`.
-          label: swapRouteLabel(signed.amountUnits, signed.from.identity, signed.to.identity),
+          label: swapRouteLabel(signed.fee.net, signed.from.identity, signed.to.identity),
           startedAt: Date.now(),
         };
         // Persisted before the screen changes: if the popup closes on the next
@@ -1866,9 +2199,9 @@ export function SwapScreen({
 
   /**
    * Price the swap again, build what gets signed against that price, and
-   * freeze it all as the review: the From and To rows, the amount, the plan,
-   * the price, and the addresses the plan was made for. Everything here is
-   * this render's, the one whose button was pressed.
+   * freeze it all as the review: the From and To rows, the amount and the
+   * Zunia fee on it, the plan, the price, and the addresses the plan was made
+   * for. Everything here is this render's, the one whose button was pressed.
    */
   async function reviewSwap() {
     const contract = venue.check?.venue?.contractAddress;
@@ -1878,6 +2211,7 @@ export function SwapScreen({
       !to ||
       !sourceAccount ||
       amountUnits === null ||
+      !swapFee ||
       !destAddress ||
       !recoveryAddress ||
       !contract
@@ -1913,19 +2247,15 @@ export function SwapScreen({
       kind: "swap",
       chainId: from.chainId,
       signerAddress: sourceAccount.address,
-      msgs: [
-        buildTransferMsgFromPlan({
-          view: plan,
-          sender: sourceAccount.address,
-          amountBaseUnits: amountUnits.toString(),
-        }),
-      ],
+      // The swap for what is left after the fee, then the fee when one is due.
+      msgs: swapTxMsgs({ view: plan, sender: sourceAccount.address, denom: from.denom, fee: swapFee }),
       title: "Confirm swap",
       review: {
         id: reviewCount.current,
         from,
         to,
         amountUnits,
+        fee: swapFee,
         plan,
         planKey,
         requote: priced.input,
@@ -1946,6 +2276,16 @@ export function SwapScreen({
       toast("Denom copied");
     } catch {
       toast("Could not copy the denom", { tone: "danger" });
+    }
+  }
+
+  /** Copy an address a message pays, whole: the Zunia fee's, for checking on an explorer. */
+  async function copyAddress(address: string) {
+    try {
+      await navigator.clipboard.writeText(address);
+      toast("Address copied");
+    } catch {
+      toast("Could not copy the address", { tone: "danger" });
     }
   }
 
@@ -2045,6 +2385,8 @@ export function SwapScreen({
             reviewQuote,
           )
         : null;
+    // With a Zunia fee the hero says what is paid in all, and what it is made of.
+    const reviewBreakdown = review ? payBreakdown(review) : null;
     const back = () => {
       setPhase(tracked ? "sent" : "form");
       setError(null);
@@ -2074,12 +2416,13 @@ export function SwapScreen({
             // current rows, amount or price.
             <section className="rounded-[14px] border border-[var(--z-line)] bg-[var(--z-glass)] px-3 py-2.5">
               <p className="font-mono text-[9px] uppercase tracking-[0.12em] text-fg-dim">
-                You swap
+                {reviewBreakdown ? "You pay" : "You swap"}
               </p>
               <HeroSide
                 option={review.from}
                 amount={tickerAmount(review.amountUnits, review.from.identity, "confirm")}
                 line={tokenLocationText(review.from.identity, "held")}
+                detail={reviewBreakdown}
               />
               <div className="my-1.5 h-px bg-[var(--z-line)]" />
               <p className="font-mono text-[9px] uppercase tracking-[0.12em] text-fg-dim">
@@ -2140,14 +2483,15 @@ export function SwapScreen({
             <p className="min-w-0 text-[11.5px] leading-snug text-fg [overflow-wrap:anywhere]">
               {review
                 ? swapSentence(
-                    tickerAmount(review.amountUnits, review.from.identity, "confirm"),
+                    tickerAmount(review.fee.net, review.from.identity, "confirm"),
                     review.from,
                     review.to,
                   )
                 : "Asks the Osmosis swap contract to pay the output it kept to your recovery address."}
+              {review && reviewFee ? ` ${feePaidSentence(reviewFee, review.from)}` : null}
             </p>
             <p className="mt-1.5 font-mono text-[9px] uppercase tracking-[0.12em] text-fg-dim">
-              Exact message
+              {preview.preview.summaries.length > 1 ? "Exact messages" : "Exact message"}
             </p>
             {preview.preview.summaries.map((line, index) => (
               <p
@@ -2165,6 +2509,8 @@ export function SwapScreen({
               review={review}
               problems={reviewProblems}
               onCopy={(denom) => void copyDenom(denom)}
+              fee={reviewFee}
+              onCopyAddress={(address) => void copyAddress(address)}
             />
           ) : null}
 
@@ -2333,6 +2679,9 @@ export function SwapScreen({
       ? `${quoteView.poolFee.toFixed(quoteView.poolFee >= 1 ? 2 : 3)}%`
       : null;
   const feesLine = [feeText, poolFeeText].filter(Boolean).join(" + ") || "—";
+  // Zunia's own fee, on its own line under the network and pool fees: it
+  // comes out of the amount typed, in the token sold.
+  const zuniaFee = from ? swapFeeLine(swapFee, from) : null;
   // Exact up to six decimals and cut, never rounded up: Max never reads more
   // than it signs. Without decimals the balance reads in base units.
   const maxLabel =
@@ -2460,28 +2809,39 @@ export function SwapScreen({
           onMax={applyMax}
         />
 
-        <button
-          type="button"
-          onClick={() => setSettingsOpen(true)}
-          className={cn(
-            "flex w-full items-center justify-between gap-2 px-0.5 py-0.5 text-left",
-            focusRing,
-          )}
-        >
-          <span className="flex items-center gap-1.5 text-[12px] text-fg-muted">
-            Fees
-            <span
-              className={cn(
-                "size-1.5 rounded-full",
-                estimatedFee ? "bg-[var(--z-success)]" : "bg-[var(--z-line-strong)]",
-              )}
-              aria-hidden
-            />
-          </span>
-          <span className="font-mono text-[11px] tabular-nums text-fg">
-            {feesLine}
-          </span>
-        </button>
+        <div className="flex flex-col gap-1">
+          <button
+            type="button"
+            onClick={() => setSettingsOpen(true)}
+            className={cn(
+              "flex w-full items-center justify-between gap-2 px-0.5 py-0.5 text-left",
+              focusRing,
+            )}
+          >
+            <span className="flex items-center gap-1.5 text-[12px] text-fg-muted">
+              Fees
+              <span
+                className={cn(
+                  "size-1.5 rounded-full",
+                  estimatedFee ? "bg-[var(--z-success)]" : "bg-[var(--z-line-strong)]",
+                )}
+                aria-hidden
+              />
+            </span>
+            <span className="font-mono text-[11px] tabular-nums text-fg">
+              {feesLine}
+            </span>
+          </button>
+          {zuniaFee ? (
+            // Read as one line: "Zunia fee 0.5% · 0.05 OSMO".
+            <p className="flex w-full items-center justify-between gap-2 px-0.5 py-0.5">
+              <span className="text-[12px] text-fg-muted">{zuniaFee.label}</span>{" "}
+              <span className="min-w-0 text-right font-mono text-[11px] tabular-nums text-fg [overflow-wrap:anywhere]">
+                {zuniaFee.value}
+              </span>
+            </p>
+          ) : null}
+        </div>
 
         {quote && quoteSecondsLeft !== null ? (
           <QuoteClock

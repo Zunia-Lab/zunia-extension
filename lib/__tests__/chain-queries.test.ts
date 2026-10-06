@@ -1,3 +1,4 @@
+import { bech32 } from "@scure/base";
 import { describe, expect, it } from "vitest";
 import { messageActivityGlyph } from "../../../zunia-ui/packages/ui/src/wallet/activity";
 
@@ -6,6 +7,7 @@ import {
   coinDisplay,
   describeMessage,
   formatCoin,
+  isSwapTx,
   parseTxDetail,
   pickMessage,
   validatorWebsite,
@@ -235,6 +237,120 @@ describe("parseTxDetail", () => {
 
   it("returns null for a body with no transaction in it", () => {
     expect(parseTxDetail({ code: 5, message: "tx not found" }, "osmosis-1", ME)).toBeNull();
+  });
+});
+
+describe("a swap's Zunia fee in the history", () => {
+  const XCS = "osmo1uwk8xc6q0s6t5qcpr6rht3sczu6du83xq8pwxjua0hfj5hzcnh3sqxwvxs";
+  const treasury = (prefix: string) => bech32.encode(prefix, bech32.toWords(new Uint8Array(20).fill(0x5a)));
+  const OSMO_TREASURY = treasury("osmo");
+  const HUB_TREASURY = treasury("cosmos");
+  /** The test's own treasuries: the shipped map is empty until the owner fills it. */
+  const FEES = { "osmosis-1": OSMO_TREASURY, "cosmoshub-4": HUB_TREASURY };
+  const swap = { output_denom: "uatom", receiver: HUB_SENDER, on_failed_delivery: "do_nothing" };
+  /** A swap from funds on Osmosis, as a node returns it: the ExecuteMsg as JSON. */
+  const swapCall = {
+    "@type": "/cosmwasm.wasm.v1.MsgExecuteContract",
+    sender: ME,
+    contract: XCS,
+    msg: { osmosis_swap: swap },
+    funds: [{ denom: "uosmo", amount: "62685000" }],
+  };
+  /** A swap from the Hub: a transfer whose memo calls the contract. */
+  const swapTransfer = {
+    "@type": "/ibc.applications.transfer.v1.MsgTransfer",
+    source_channel: "channel-141",
+    sender: HUB_SENDER,
+    receiver: XCS,
+    token: { denom: "uatom", amount: "995000" },
+    memo: JSON.stringify({ wasm: { contract: XCS, msg: { osmosis_swap: swap } } }),
+  };
+  const send = (from: string, to: string, denom: string, amount: string) => ({
+    "@type": "/cosmos.bank.v1beta1.MsgSend",
+    from_address: from,
+    to_address: to,
+    amount: [{ denom, amount }],
+  });
+  const short = (address: string) => `${address.slice(0, 12)}…${address.slice(-6)}`;
+
+  it("reads a send to the treasury inside a swap as 'Zunia fee'", () => {
+    const fee = send(ME, OSMO_TREASURY, "uosmo", "315000");
+    expect(describeMessage(fee, ME, "osmosis-1", { swapTx: true, feeRecipients: FEES })).toEqual({
+      kind: "sent",
+      title: "Zunia fee",
+      subtitle: `to ${OSMO_TREASURY}`,
+      amount: "-315000",
+      denom: "uosmo",
+      decimals: 6,
+      symbol: "OSMO",
+      decimalsKnown: true,
+      provenance: expect.any(String),
+      proven: true,
+      from: ME,
+      to: OSMO_TREASURY,
+      summary: `Zunia fee: 0.315 OSMO to ${short(OSMO_TREASURY)}`,
+    });
+    // On the Hub, the fee of a swap sent from there.
+    const hubFee = send(HUB_SENDER, HUB_TREASURY, "uatom", "5000");
+    expect(describeMessage(hubFee, HUB_SENDER, "cosmoshub-4", { swapTx: true, feeRecipients: FEES })).toMatchObject({
+      title: "Zunia fee",
+      summary: `Zunia fee: 0.005 ATOM to ${short(HUB_TREASURY)}`,
+    });
+  });
+
+  it("leaves every other send a send: outside a swap, to another address, or on another chain's treasury", () => {
+    const fee = send(ME, OSMO_TREASURY, "uosmo", "315000");
+    // The same send in a transaction that swaps nothing.
+    expect(describeMessage(fee, ME, "osmosis-1", { swapTx: false, feeRecipients: FEES }).title).toBe("Send OSMO");
+    expect(describeMessage(fee, ME, "osmosis-1", { feeRecipients: FEES }).title).toBe("Send OSMO");
+    // Beside a swap, to an address that is not the treasury.
+    expect(describeMessage(send(ME, OTHER, "uosmo", "315000"), ME, "osmosis-1", { swapTx: true, feeRecipients: FEES }).title).toBe(
+      "Send OSMO",
+    );
+    // No treasury on the chain.
+    expect(describeMessage(fee, ME, "osmosis-1", { swapTx: true, feeRecipients: {} }).title).toBe("Send OSMO");
+  });
+
+  it("finds a swap whichever way it was signed, and nothing else", () => {
+    expect(isSwapTx([swapCall, send(ME, OSMO_TREASURY, "uosmo", "1")])).toBe(true);
+    expect(isSwapTx([swapTransfer])).toBe(true);
+    // The ExecuteMsg as base64, and a transfer forwarded before the swap.
+    expect(isSwapTx([{ ...swapCall, msg: Buffer.from(JSON.stringify({ osmosis_swap: swap })).toString("base64") }])).toBe(true);
+    const forwarded = JSON.stringify({
+      forward: { receiver: "pfm", port: "transfer", channel: "channel-1", next: JSON.parse(swapTransfer.memo) as unknown },
+    });
+    expect(isSwapTx([{ ...swapTransfer, memo: forwarded }])).toBe(true);
+    // A send, a plain transfer, another call on the same contract, a memo that is not JSON.
+    expect(isSwapTx([send(ME, OTHER, "uosmo", "1")])).toBe(false);
+    expect(isSwapTx([{ ...swapTransfer, memo: "" }])).toBe(false);
+    expect(isSwapTx([{ ...swapTransfer, memo: "thanks" }])).toBe(false);
+    expect(isSwapTx([{ ...swapCall, msg: { recover: {} } }])).toBe(false);
+    expect(isSwapTx([])).toBe(false);
+  });
+
+  it("lists the fee as 'Zunia fee' in the transaction's detail, after the swap", () => {
+    const body = (messages: unknown[]) => ({
+      tx: { body: { memo: "Swap OSMO to ATOM · by Zunia-wallet", messages } },
+      tx_response: { txhash: "FEE1", height: "1", code: 0, timestamp: "2026-10-06T10:00:00Z", events: [] },
+    });
+    const detail = parseTxDetail(body([swapCall, send(ME, OSMO_TREASURY, "uosmo", "315000")]), "osmosis-1", ME, FEES);
+    expect(detail?.memo).toBe("Swap OSMO to ATOM · by Zunia-wallet");
+    expect(detail?.messages.map((message) => [message.type, message.kind, message.title])).toEqual([
+      ["MsgExecuteContract", "swap", "Call osmosis_swap"],
+      ["MsgSend", "sent", "Zunia fee"],
+    ]);
+    expect(detail?.messages[1]?.summary).toBe(`Zunia fee: 0.315 OSMO to ${short(OSMO_TREASURY)}`);
+    // From the Hub: the transfer, then the fee paid there.
+    const hub = parseTxDetail(
+      body([swapTransfer, send(HUB_SENDER, HUB_TREASURY, "uatom", "5000")]),
+      "cosmoshub-4",
+      HUB_SENDER,
+      FEES,
+    );
+    expect(hub?.messages.map((message) => message.title)).toEqual(["Send ATOM over IBC", "Zunia fee"]);
+    // The same send with no swap beside it stays a send.
+    const plain = parseTxDetail(body([send(ME, OSMO_TREASURY, "uosmo", "315000")]), "osmosis-1", ME, FEES);
+    expect(plain?.messages[0]?.title).toBe("Send OSMO");
   });
 });
 

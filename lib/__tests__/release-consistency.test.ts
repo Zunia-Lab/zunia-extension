@@ -12,18 +12,29 @@
  * - No code outside the deprecated naming shims and their tests uses them.
  * - The Safari app carries package.json's version.
  * - scripts/check-build.mjs refuses a stale SDK dist and a new permission.
+ * - Zunia's swap fee is 50 basis points, compiled in, and every treasury it
+ *   pays decodes with its own chain's prefix.
  */
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import { bech32 } from "@scure/base";
 import { SEED_CHANNEL_ROUTES } from "@zunialab/interchain";
 import ts from "typescript";
 import { afterAll, describe, expect, it } from "vitest";
 
+import { SWAP_FEE_BPS, SWAP_FEE_RECIPIENTS } from "../../config/fees";
 import { swapPlanRequest } from "../../entrypoints/popup/screens/SwapScreen";
-import { allCatalogEntries, currenciesOf, denomsMatch, findCatalogEntry } from "../chain-catalog";
+import {
+  CHAIN_CATALOG,
+  allCatalogEntries,
+  currenciesOf,
+  denomsMatch,
+  findCatalogEntry,
+} from "../chain-catalog";
+import { swapFeeRecipient } from "../swap-fee";
 import { IBC_CHANNEL_ROWS, IBC_CHANNELS_COMMIT } from "../ibc-channels.generated";
 import { osmosisSwapAssets, type OsmosisListing } from "../osmosis-assets";
 import { buyOptions, sellOptions, type AssetOption } from "../swap-assets";
@@ -277,6 +288,112 @@ describe("the deprecated naming helpers", () => {
       .map((fn) => fn.name!.text)
       .sort();
     expect(marked).toEqual([...DEPRECATED].sort());
+  });
+});
+
+/* -------------------------------------------------------------------------- *
+ * Zunia's swap fee
+ * -------------------------------------------------------------------------- */
+
+/**
+ * Why each entry of a treasury map cannot be paid, as `chainId: reason`: the
+ * chain must be one the release bundles, and the address must decode as
+ * bech32, checksum included, in lowercase, with exactly the prefix the
+ * catalog gives that chain, holding an account's 20 bytes or a contract's 32.
+ *
+ * And no coin type 60 chain's treasury may carry the same bytes as another
+ * coin type's: Injective and the other Ethereum-key chains hash their keys
+ * another way, so those bytes can only be another chain's address re-encoded
+ * with a new prefix, an account nobody can spend from.
+ *
+ * Written here on its own, apart from lib/swap-fee.ts, so the release does not
+ * check the code with itself.
+ */
+function treasuryProblems(map: Readonly<Record<string, string>>): string[] {
+  const problems: string[] = [];
+  const decodedRows: { chainId: string; coinType: number; hex: string }[] = [];
+  for (const [chainId, address] of Object.entries(map)) {
+    const entry = CHAIN_CATALOG.find((row) => row.chainId === chainId);
+    if (!entry) {
+      problems.push(`${chainId}: not a bundled chain`);
+      continue;
+    }
+    let decoded: { prefix: string; bytes: Uint8Array };
+    try {
+      decoded = bech32.decodeToBytes(address);
+    } catch (error) {
+      problems.push(`${chainId}: ${address} does not decode (${(error as Error).message})`);
+      continue;
+    }
+    if (decoded.prefix !== entry.bech32Prefix) {
+      problems.push(`${chainId}: ${address} has the prefix ${decoded.prefix}, the chain's is ${entry.bech32Prefix}`);
+    }
+    if (address !== address.toLowerCase()) problems.push(`${chainId}: ${address} is not lowercase`);
+    if (decoded.bytes.length !== 20 && decoded.bytes.length !== 32) {
+      problems.push(`${chainId}: ${address} holds ${decoded.bytes.length} bytes`);
+    }
+    decodedRows.push({ chainId, coinType: entry.coinType, hex: Buffer.from(decoded.bytes).toString("hex") });
+  }
+  for (const row of decodedRows) {
+    if (row.coinType !== 60) continue;
+    const twin = decodedRows.find((other) => other.coinType !== 60 && other.hex === row.hex);
+    if (twin) problems.push(`${row.chainId}: re-encodes ${twin.chainId}'s treasury, which no coin type 60 key can spend`);
+  }
+  return problems;
+}
+
+describe("Zunia's swap fee", () => {
+  it("is 50 basis points of the amount sold", () => {
+    expect(SWAP_FEE_BPS).toBe(50);
+  });
+
+  it("pays only treasuries that decode with their own chain's prefix", () => {
+    expect(treasuryProblems(SWAP_FEE_RECIPIENTS)).toEqual([]);
+    // And the wallet pays each one exactly as configured: none is dropped as
+    // invalid at run time, which would silently charge nothing there.
+    for (const [chainId, address] of Object.entries(SWAP_FEE_RECIPIENTS)) {
+      expect(swapFeeRecipient(chainId), chainId).toBe(address);
+    }
+  });
+
+  it("would refuse a wrong-chain, mistyped, re-encoded or unbundled treasury", () => {
+    const bytes = (fill: number) => bech32.toWords(new Uint8Array(20).fill(fill));
+    const osmo = bech32.encode("osmo", bytes(0x5a));
+    // One key on two coin type 118 chains is one account: the same bytes are fine there.
+    expect(
+      treasuryProblems({
+        "osmosis-1": osmo,
+        "cosmoshub-4": bech32.encode("cosmos", bytes(0x5a)),
+        "injective-1": bech32.encode("inj", bytes(0x5b)),
+      }),
+    ).toEqual([]);
+    // Osmosis's treasury re-encoded for Injective: right prefix, unspendable account.
+    expect(treasuryProblems({ "osmosis-1": osmo, "injective-1": bech32.encode("inj", bytes(0x5a)) })).toEqual([
+      "injective-1: re-encodes osmosis-1's treasury, which no coin type 60 key can spend",
+    ]);
+    expect(
+      treasuryProblems({
+        "cosmoshub-4": osmo,
+        "osmosis-1": `${osmo.slice(0, -1)}${osmo.endsWith("q") ? "p" : "q"}`,
+        "noble-1": bech32.encode("noble", bech32.toWords(new Uint8Array(16).fill(1))),
+        "my-chain-1": osmo,
+      }).map((problem) => problem.split(":")[0]),
+    ).toEqual(["cosmoshub-4", "osmosis-1", "noble-1", "my-chain-1"]);
+  });
+
+  it("is compiled in: config/fees.ts imports nothing and lib/swap-fee.ts reads no network or storage", () => {
+    const imports = (file: string) => {
+      const source = parse(file, fs.readFileSync(path.join(ROOT, file), "utf8"));
+      return source.statements
+        .filter(ts.isImportDeclaration)
+        .map((statement) => (statement.moduleSpecifier as ts.StringLiteral).text);
+    };
+    expect(imports("config/fees.ts")).toEqual([]);
+    expect(imports("lib/swap-fee.ts").sort()).toEqual(
+      ["../config/fees", "./chain-catalog", "@scure/base", "@zunialab/interchain"].sort(),
+    );
+    const fee = fs.readFileSync(path.join(ROOT, "lib/swap-fee.ts"), "utf8");
+    expect(fee).not.toMatch(/\bfetch\(|\bbrowser\.|\bchrome\.|localStorage|getSettings/);
   });
 });
 

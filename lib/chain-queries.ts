@@ -21,6 +21,7 @@ import { coinDisplay, type CoinDisplay } from "./coin-display";
 import { shortAddress, shortDenom } from "./format";
 import { IBC_CHANNEL_ROWS } from "./ibc-channels.generated";
 import { getSettings } from "./settings";
+import { swapFeeRecipient, type SwapFeeRecipients } from "./swap-fee";
 import {
   amountFieldText,
   amountUnit,
@@ -794,6 +795,65 @@ export interface DescribedMessage {
   vote?: string;
 }
 
+/** What {@link describeMessage} knows of the transaction around a message. */
+export interface MessageContext {
+  /** The transaction swaps through the crosschain-swaps contract ({@link isSwapTx}). */
+  readonly swapTx?: boolean;
+  /** Zunia's fee treasuries (config/fees.ts); the compiled-in map unless a test passes its own. */
+  readonly feeRecipients?: SwapFeeRecipients;
+}
+
+/** How deep a packet-forward memo's `next` is followed: further than any route Swap signs. */
+const MAX_FORWARD_DEPTH = 4;
+
+/** Whether a packet memo, or a forward it nests, calls `osmosis_swap` through ibc-hooks. */
+function memoCallsSwap(memo: unknown, depth = 0): boolean {
+  if (depth > MAX_FORWARD_DEPTH) return false;
+  let parsed: Record<string, unknown> | null;
+  if (typeof memo === "string") {
+    try {
+      parsed = asRecord(JSON.parse(memo) as unknown);
+    } catch {
+      return false;
+    }
+  } else {
+    parsed = asRecord(memo);
+  }
+  if (!parsed) return false;
+  const call = asRecord(asRecord(parsed.wasm)?.msg);
+  if (call && Object.hasOwn(call, "osmosis_swap")) return true;
+  return memoCallsSwap(asRecord(parsed.forward)?.next, depth + 1);
+}
+
+/** A contract call's ExecuteMsg as a node returns it: JSON, or base64 of JSON. */
+function executeMsgOf(raw: unknown): Record<string, unknown> | null {
+  const json = asRecord(raw);
+  if (json) return json;
+  if (typeof raw !== "string" || raw === "") return null;
+  try {
+    return asRecord(JSON.parse(decodeBase64Utf8(raw)) as unknown);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Whether a transaction swaps through the crosschain-swaps contract, the two
+ * ways Swap signs one: a contract call to `osmosis_swap` (funds already on
+ * Osmosis), or an ICS20 transfer whose memo calls it when it arrives (funds
+ * on another chain).
+ */
+export function isSwapTx(messages: readonly Record<string, unknown>[]): boolean {
+  return messages.some((message) => {
+    const type = typeUrlOf(message);
+    if (type.endsWith(".MsgExecuteContract")) {
+      const call = executeMsgOf(message.msg);
+      return call !== null && Object.hasOwn(call, "osmosis_swap");
+    }
+    return type.endsWith(".MsgTransfer") && memoCallsSwap(message.memo);
+  });
+}
+
 /**
  * Read one message into words. Unknown messages keep their type name.
  *
@@ -801,11 +861,16 @@ export interface DescribedMessage {
  * (`Send USDC.n`), the summary and the amount fields come from one identity
  * and always agree. A coin nothing names keeps its short denom in prose and
  * its amount in base units, never a guessed issuer or exponent.
+ *
+ * Inside a swap transaction (`context.swapTx`), a bank send to the Zunia
+ * treasury configured for `chainId` is Zunia's fee, and reads `Zunia fee`
+ * rather than a send to some address.
  */
 export function describeMessage(
   message: Record<string, unknown>,
   address: string,
   chainId: string,
+  context: MessageContext = {},
 ): DescribedMessage {
   const type = typeUrlOf(message);
   const nativeDenom = findCatalogEntry(chainId)?.coinMinimalDenom ?? "";
@@ -830,6 +895,19 @@ export function describeMessage(
     const to = text(message.to_address);
     const outgoing = from === address;
     const { words, ...coin } = withCoin(firstCoin(message.amount), outgoing ? "-" : "");
+    if (context.swapTx && to !== "" && to === swapFeeRecipient(chainId, context.feeRecipients)) {
+      return {
+        kind: outgoing ? "sent" : "received",
+        title: "Zunia fee",
+        subtitle: outgoing ? `to ${to}` : `from ${from}`,
+        ...coin,
+        from,
+        to,
+        summary: outgoing
+          ? `Zunia fee: ${words} to ${shortAddress(to)}`
+          : `Zunia fee: ${words} from ${shortAddress(from)}`,
+      };
+    }
     return {
       kind: outgoing ? "sent" : "received",
       title: `${outgoing ? "Send" : "Receive"} ${coin.symbol}`,
@@ -1110,7 +1188,7 @@ export async function fetchActivity(
         proposalId: _proposalId,
         vote: _vote,
         ...described
-      } = describeMessage(message, address, chainId);
+      } = describeMessage(message, address, chainId, { swapTx: isSwapTx(messages) });
       items.push({
         chainId,
         hash,
@@ -1326,12 +1404,15 @@ const MAX_ERROR_CHARS = 400;
 
 /**
  * Read `/cosmos/tx/v1beta1/txs/{hash}` into what the detail screen shows.
- * `null` when the body is not a transaction.
+ * `null` when the body is not a transaction. A swap's Zunia fee reads as
+ * such ({@link describeMessage}), with `feeRecipients` as the treasuries; the
+ * compiled-in map unless a test passes its own.
  */
 export function parseTxDetail(
   body: unknown,
   chainId: string,
   address: string,
+  feeRecipients?: SwapFeeRecipients,
 ): TxDetailInfo | null {
   const root = asRecord(body);
   const response = asRecord(root?.tx_response) ?? root;
@@ -1345,6 +1426,10 @@ export function parseTxDetail(
   const messages = (Array.isArray(txBody?.messages) ? txBody.messages : [])
     .map(asRecord)
     .filter((message): message is Record<string, unknown> => message !== null);
+  const context: MessageContext = {
+    swapTx: isSwapTx(messages),
+    ...(feeRecipients ? { feeRecipients } : {}),
+  };
 
   return {
     chainId,
@@ -1364,7 +1449,7 @@ export function parseTxDetail(
     gasWanted: text(response.gas_wanted) || null,
     gasUsed: text(response.gas_used) || null,
     messages: messages.map((message) => {
-      const described = describeMessage(message, address, chainId);
+      const described = describeMessage(message, address, chainId, context);
       return {
         type: shortTypeName(typeUrlOf(message)),
         summary: described.summary,

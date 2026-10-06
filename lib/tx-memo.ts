@@ -61,6 +61,13 @@ function withTag(phrase: string): string {
   return `${phrase.slice(0, Math.max(keep, 1))}…${tag}`;
 }
 
+/**
+ * A transaction is named by its first message. Several reward claims read as
+ * one claim. A swap is signed first, with Zunia's fee (a bank send of the
+ * token sold, lib/swap-fee.ts) after it, so its memo names the swap (`Swap
+ * OSMO to ATOM`) and never the fee beside it: the fee is not what the user
+ * set out to do, and the confirm screen shows it on its own row.
+ */
 function phraseFor(msgs: readonly MemoSourceMsg[], chainId: string | undefined): string {
   if (msgs.length === 0) return "Signed";
   const phrases = msgs.map((msg) => phraseForOne(msg, chainId));

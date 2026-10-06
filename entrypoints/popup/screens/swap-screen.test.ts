@@ -1,10 +1,19 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { bech32 } from "@scure/base";
 import { encodeBase64Utf8, type BuiltMsg, type OsmosisSwapQuote } from "@zunialab/interchain";
 
+import { SWAP_FEE_RECIPIENTS } from "../../../config/fees";
 import { QUOTE_TTL_MS } from "../../../config/interchain";
 import { clearInterchainCaches } from "../../../lib/interchain";
+import {
+  buildSwapFeeMsg,
+  readSwapFeeMsg,
+  swapFeeFor,
+  type SwapFee,
+  type SwapFeeRecipients,
+} from "../../../lib/swap-fee";
 import { osmosisSwapAssets, parseOsmosisTokenMetadata } from "../../../lib/osmosis-assets";
 import {
   buildTransferMsgFromPlan,
@@ -30,25 +39,32 @@ import live from "../../../lib/__tests__/fixtures/swap/xcs-route-table.json";
 import { buyListCopy, swapPickerItem } from "../components/SwapPair";
 import { pendingRouteLabel, swapRouteLabel } from "./interchain-ui";
 import {
+  EXTRA_MESSAGES,
   PRICE_EXPIRED,
   SwapTerms,
   UNREADABLE_SWAP,
   amountUnitsOf,
   boughtIdentity,
   deliveryLine,
+  feePaidSentence,
   minimumTerms,
   ownerOf,
+  payBreakdown,
   pickTo,
   priceExpired,
   quoteBlockText,
   readSwapMessage,
   reviewDrift,
   scaleOf,
+  swapFeeLine,
+  swapFeeOutcome,
   swapPlanKey,
   swapPlanRequest,
   swapQuoteView,
+  swapSentence,
   swapSignBlock,
   swapTermsProblems,
+  swapTxMsgs,
   type LiveSwap,
   type ReviewedSwap,
 } from "./SwapScreen";
@@ -64,10 +80,20 @@ import {
  * signed for the same pair and amount. It fails if a signed denom, amount,
  * channel or memo changes.
  *
- * The last two blocks are the confirm screen: what it says the swap contract
- * will do, read out of the message that is signed (a contract call from funds
- * on Osmosis, and a transfer whose memo calls it), and the review it freezes
- * when it opens, which stops standing once the form would sign anything else.
+ * The Zunia fee block holds the same line for the commission: with no
+ * treasury for the signing chain the transaction is those bytes and nothing
+ * else; with one, the swap message sells the amount less the fee and a bank
+ * send pays the fee right after it, in both paths.
+ *
+ * The last blocks are the confirm screen: what it says the swap contract will
+ * do and what the fee pays, read out of the messages that are signed (a
+ * contract call from funds on Osmosis, and a transfer whose memo calls it),
+ * and the review it freezes when it opens, which stops standing once the form
+ * would sign anything else.
+ *
+ * Every treasury map here is the test's own: the shipped one (config/fees.ts)
+ * ships empty until the owner fills it, and nothing here may change meaning
+ * when it is.
  */
 
 /* -------------------------------------------------------------------------- *
@@ -306,6 +332,20 @@ const OSMO_ADDRESS = "osmo1sender00000000000000000000000000000000";
 const RECOVERY = "osmo1recovery000000000000000000000000000000";
 const resolveAddresses = async () => ({});
 
+/** The signer a test request uses on a chain: the one `request()` below sends from. */
+const senderOn = (chainId: string) => (chainId === "osmosis-1" ? OSMO_ADDRESS : HUB_ADDRESS);
+
+/** Test treasuries, real bech32 with each chain's own prefix, injected wherever a fee is due. */
+const treasury = (prefix: string, fill: number) =>
+  bech32.encode(prefix, bech32.toWords(new Uint8Array(20).fill(fill)));
+const OSMO_TREASURY = treasury("osmo", 0x5a);
+const HUB_TREASURY = treasury("cosmos", 0x5a);
+/** A valid Osmosis address that is not the test treasury. */
+const OTHER_OSMO_TREASURY = treasury("osmo", 0x11);
+const TREASURIES: SwapFeeRecipients = { "osmosis-1": OSMO_TREASURY, "cosmoshub-4": HUB_TREASURY };
+/** No treasury anywhere: no fee, the transaction 0.1.3 signed. */
+const NO_TREASURY: SwapFeeRecipients = {};
+
 /* -------------------------------------------------------------------------- *
  * What 0.1.2 signed (the golden bytes of lib/__tests__/swap-plan.test.ts)
  * -------------------------------------------------------------------------- */
@@ -513,6 +553,165 @@ describe("what the screen asks to sign", () => {
       identity: { ...usdcN.identity, decimals: 0, decimalsKnown: false },
     };
     expect(scaleOf(usdcN)).not.toBe(scaleOf(vetoed));
+  });
+});
+
+/* -------------------------------------------------------------------------- *
+ * The Zunia fee in what is signed
+ * -------------------------------------------------------------------------- */
+
+/** The 0.1.3 contract call, its one coin changed to `amount`: the ExecuteMsg names no amount. */
+const osmoToAtomFor = (amount: string) =>
+  OSMO_TO_ATOM_MSG.replace('"funds":[{"denom":"uosmo","amount":"63000000"}]', `"funds":[{"denom":"uosmo","amount":"${amount}"}]`);
+/** The 0.1.3 transfer, its token changed to `amount`: the packet memo names no amount. */
+const atomToOsmoFor = (amount: string) =>
+  ATOM_TO_OSMO_MSG.replace('"token":{"denom":"uatom","amount":"1000000"}', `"token":{"denom":"uatom","amount":"${amount}"}`);
+
+describe("the Zunia fee in what the screen signs", () => {
+  beforeEach(() => {
+    install();
+    clearInterchainCaches();
+    resetChannelChecks();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-05T12:00:00Z"));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+    clearInterchainCaches();
+    resetChannelChecks();
+  });
+
+  /**
+   * What the screen signs when `text` is typed on the From, with `recipients`
+   * as the treasury map: the fee on the amount typed, the plan for what is
+   * left, and the messages reviewSwap() builds from them.
+   */
+  async function signs(fromKey: string, toKey: string, text: string, recipients: SwapFeeRecipients) {
+    const from = row(sell, fromKey);
+    const to = row(buy(from), toKey);
+    const total = typed(from, text);
+    const fee = swapFeeFor(from.chainId, total, recipients);
+    const input = request(from, to, fee.net);
+    const result = await planSwap(input);
+    expect(result.error).toBeNull();
+    const view = result.best!;
+    expect(view.blockedReason).toBeNull();
+    const msgs = swapTxMsgs({ view, sender: input.sender, denom: from.denom, fee });
+    return { from, to, total, fee, input, view, msgs, json: JSON.stringify(msgs) };
+  }
+
+  it("signs exactly 0.1.3's bytes, and nothing beside them, when no treasury is configured", async () => {
+    // From funds on Osmosis: the one contract call, under the memo it had.
+    const call = await signs("osmosis-1:uosmo", "cosmoshub-4:uatom", "63", NO_TREASURY);
+    expect(call.fee).toEqual({ bps: 0, fee: 0n, net: 63_000_000n, recipient: null });
+    expect(call.input.amountBaseUnits).toBe("63000000");
+    expect(call.json).toBe(`[${OSMO_TO_ATOM_MSG}]`);
+    expect(resolveTxMemo("", call.msgs, "osmosis-1")).toBe("Swap OSMO to ATOM · by Zunia-wallet");
+    // From the Hub: the one transfer.
+    resetChannelChecks();
+    const transfer = await signs("cosmoshub-4:uatom", "osmosis-1:uosmo", "1", NO_TREASURY);
+    expect(transfer.input.amountBaseUnits).toBe("1000000");
+    expect(transfer.json).toBe(`[${ATOM_TO_OSMO_MSG}]`);
+    expect(resolveTxMemo("", transfer.msgs, "cosmoshub-4")).toBe("Swap ATOM · by Zunia-wallet");
+    // No fee is keyed exactly as a plan made with no fee at all.
+    const { from, to } = call;
+    expect(
+      swapPlanKey({ from, to, amountUnits: call.fee.net, fee: call.fee, slippage: 1, manual: [], contract: XCS, retryToken: 0 }),
+    ).toBe(swapPlanKey({ from, to, amountUnits: 63_000_000n, slippage: 1, manual: [], contract: XCS, retryToken: 0 }));
+  });
+
+  it("signs 0.1.3's bytes on a chain the map leaves out, whatever it lists for others", async () => {
+    const elsewhere: SwapFeeRecipients = { "noble-1": treasury("noble", 0x5a) };
+    expect((await signs("osmosis-1:uosmo", "cosmoshub-4:uatom", "63", elsewhere)).json).toBe(`[${OSMO_TO_ATOM_MSG}]`);
+    resetChannelChecks();
+    expect((await signs("cosmoshub-4:uatom", "osmosis-1:uosmo", "1", elsewhere)).json).toBe(`[${ATOM_TO_OSMO_MSG}]`);
+  });
+
+  it("signs 0.1.3's bytes with the map as shipped, on every chain it does not list", async () => {
+    const cases = [
+      ["osmosis-1:uosmo", "cosmoshub-4:uatom", "63", OSMO_TO_ATOM_MSG],
+      ["cosmoshub-4:uatom", "osmosis-1:uosmo", "1", ATOM_TO_OSMO_MSG],
+    ] as const;
+    // Shipped empty: both run. Once the owner lists a chain, its case is the
+    // fee's (the tests below), and the other still signs the old bytes.
+    const unlisted = cases.filter(([fromKey]) => !Object.hasOwn(SWAP_FEE_RECIPIENTS, fromKey.split(":")[0]!));
+    for (const [fromKey, toKey, text, golden] of unlisted) {
+      resetChannelChecks();
+      expect((await signs(fromKey, toKey, text, SWAP_FEE_RECIPIENTS)).json).toBe(`[${golden}]`);
+    }
+  });
+
+  it("from funds on Osmosis: the contract call sells the amount less the fee, then one bank send pays the fee", async () => {
+    const { total, fee, input, msgs } = await signs("osmosis-1:uosmo", "cosmoshub-4:uatom", "63", TREASURIES);
+    expect(fee).toEqual({ bps: 50, fee: 315_000n, net: 62_685_000n, recipient: OSMO_TREASURY });
+    expect(fee.fee + fee.net).toBe(total);
+    // Planned and priced for what is swapped.
+    expect(input.amountBaseUnits).toBe("62685000");
+    // The swap first, byte for byte the 0.1.3 call but for its one coin.
+    expect(msgs).toHaveLength(2);
+    expect(JSON.stringify(msgs[0])).toBe(osmoToAtomFor("62685000"));
+    expect(readSwapMessage(msgs[0])?.sold).toEqual({ denom: "uosmo", amount: "62685000" });
+    // Then the fee: from the same account, in the token sold, to the treasury.
+    expect(msgs[1]).toEqual({
+      typeUrl: "/cosmos.bank.v1beta1.MsgSend",
+      value: {
+        from_address: OSMO_ADDRESS,
+        to_address: OSMO_TREASURY,
+        amount: [{ denom: "uosmo", amount: "315000" }],
+      },
+    });
+    // The tx-body memo names the swap, never the fee beside it.
+    expect(resolveTxMemo("", msgs, "osmosis-1")).toBe("Swap OSMO to ATOM · by Zunia-wallet");
+  });
+
+  it("from another chain: the transfer carries the amount less the fee, and the fee is paid on that chain", async () => {
+    const { total, fee, input, msgs } = await signs("cosmoshub-4:uatom", "osmosis-1:uosmo", "1", TREASURIES);
+    expect(fee).toEqual({ bps: 50, fee: 5_000n, net: 995_000n, recipient: HUB_TREASURY });
+    expect(fee.fee + fee.net).toBe(total);
+    expect(input.amountBaseUnits).toBe("995000");
+    expect(msgs).toHaveLength(2);
+    expect(JSON.stringify(msgs[0])).toBe(atomToOsmoFor("995000"));
+    expect(readSwapMessage(msgs[0])?.sold).toEqual({ denom: "uatom", amount: "995000" });
+    expect(msgs[1]).toEqual({
+      typeUrl: "/cosmos.bank.v1beta1.MsgSend",
+      value: {
+        from_address: HUB_ADDRESS,
+        to_address: HUB_TREASURY,
+        amount: [{ denom: "uatom", amount: "5000" }],
+      },
+    });
+    expect(resolveTxMemo("", msgs, "cosmoshub-4")).toBe("Swap ATOM · by Zunia-wallet");
+  });
+
+  it("signs a swap too small to carry one base unit of fee on its own", async () => {
+    // 0.000199 OSMO: 50 basis points of it is under one base unit.
+    const { fee, msgs } = await signs("osmosis-1:uosmo", "cosmoshub-4:uatom", "0.000199", TREASURIES);
+    expect(fee).toEqual({ bps: 0, fee: 0n, net: 199n, recipient: null });
+    expect(msgs).toHaveLength(1);
+    expect(readSwapMessage(msgs[0])?.sold.amount).toBe("199");
+  });
+
+  it("takes Max as the whole amount spent: the fee comes out of it, never on top", () => {
+    const osmo = row(sell, "osmosis-1:uosmo");
+    const max = BigInt(osmo.amount);
+    const total = amountUnitsOf(osmo, amountFieldText(max, osmo.identity))!;
+    expect(total).toBe(max);
+    const fee = swapFeeFor(osmo.chainId, total, TREASURIES);
+    expect(fee.fee).toBeGreaterThan(0n);
+    expect(fee.fee + fee.net).toBe(max);
+  });
+
+  it("puts the fee in the plan key, so a review stops standing once the fee would change", () => {
+    const from = row(sell, "osmosis-1:uosmo");
+    const to = row(buy(from), "cosmoshub-4:uatom");
+    const fee = swapFeeFor("osmosis-1", 63_000_000n, TREASURIES);
+    const key = (f: SwapFee) =>
+      swapPlanKey({ from, to, amountUnits: f.net, fee: f, slippage: 1, manual: [], contract: XCS, retryToken: 0 });
+    expect(key(fee)).not.toBe(key(swapFeeFor("osmosis-1", 63_000_000n, NO_TREASURY)));
+    expect(key(fee)).not.toBe(key({ ...fee, recipient: treasury("osmo", 0x11) }));
+    expect(key(fee)).toBe(key({ ...fee }));
   });
 });
 
@@ -814,28 +1013,38 @@ describe("the confirm screen's terms, read from the message that is signed", () 
 
   /**
    * The review the screen captures when its confirm screen opens, for the
-   * real plan: the rows, the typed amount, the plan, a price for it, and the
-   * addresses the plan was asked for.
+   * real plan: the rows, the typed amount and the Zunia fee on it (with
+   * `recipients` as the treasury map; none by default), the plan for what is
+   * left, a price for it, and the addresses the plan was asked for. `msgs` is
+   * what reviewSwap() signs for it; `message` the swap, its first.
    */
-  async function reviewOf(fromKey: string, toKey: string, text: string, price: OsmosisSwapQuote) {
+  async function reviewOf(
+    fromKey: string,
+    toKey: string,
+    text: string,
+    price: OsmosisSwapQuote,
+    recipients: SwapFeeRecipients = NO_TREASURY,
+  ) {
     const from = row(sell, fromKey);
     const to = row(buy(from), toKey);
     const amountUnits = typed(from, text);
-    const input = request(from, to, amountUnits);
+    const fee = swapFeeFor(from.chainId, amountUnits, recipients);
+    const input = request(from, to, fee.net);
     const { view, msg } = await signedBytes(input);
     const review: ReviewedSwap = {
       id: 1,
       from,
       to,
       amountUnits,
+      fee,
       plan: view,
-      planKey: swapPlanKey({ from, to, amountUnits, slippage: 1, manual: [], contract: XCS, retryToken: 0 }),
+      planKey: swapPlanKey({ from, to, amountUnits: fee.net, fee, slippage: 1, manual: [], contract: XCS, retryToken: 0 }),
       requote: {
         venueChainId: "osmosis-1",
         venueContract: XCS,
         venueInputDenom: price.inputDenom,
         venueOutputDenom: price.outputDenom,
-        amountBaseUnits: amountUnits.toString(),
+        amountBaseUnits: fee.net.toString(),
         slippagePercent: 1,
       },
       price: { quote: price, error: null, code: null, at: Date.now() },
@@ -845,17 +1054,35 @@ describe("the confirm screen's terms, read from the message that is signed", () 
       contractLabel: "CrossChainSwaps v1.2",
       ownAddresses: {},
     };
-    return { review, message: JSON.parse(msg) as BuiltMsg, msg };
+    const msgs = swapTxMsgs({ view, sender: input.sender, denom: from.denom, fee });
+    expect(JSON.stringify(msgs[0])).toBe(msg);
+    return { review, message: JSON.parse(msg) as BuiltMsg, msg, msgs };
   }
 
-  /** What the confirm screen reads out of `message` for `review`, and draws. */
-  function confirmTerms(message: BuiltMsg, review: ReviewedSwap) {
-    const facts = readSwapMessage(message);
-    const problems = swapTermsProblems(facts, review, { chainId: review.from.chainId, msgCount: 1 });
+  /**
+   * What the confirm screen reads out of the transaction for `review`, and
+   * draws: the swap from the first message, the fee from the second, and the
+   * problems with the treasury map `recipients` (none by default). One
+   * message stands for a transaction of that message alone.
+   */
+  function confirmTerms(
+    messages: BuiltMsg | readonly BuiltMsg[],
+    review: ReviewedSwap,
+    recipients: SwapFeeRecipients = NO_TREASURY,
+  ) {
+    const msgs: readonly BuiltMsg[] = Array.isArray(messages) ? messages : [messages as BuiltMsg];
+    const facts = readSwapMessage(msgs[0]);
+    const fee = readSwapFeeMsg(msgs[1]);
+    const problems = swapTermsProblems(facts, review, {
+      chainId: review.from.chainId,
+      signerAddress: senderOn(review.from.chainId),
+      msgs,
+      recipients,
+    });
     const html = renderToStaticMarkup(
-      createElement(SwapTerms, { facts, review, problems, onCopy: () => undefined }),
+      createElement(SwapTerms, { facts, review, problems, onCopy: () => undefined, fee }),
     );
-    return { facts, problems, html, rows: termRows(html) };
+    return { facts, fee, problems, html, rows: termRows(html) };
   }
 
   const osmoToAtom = () =>
@@ -1003,8 +1230,13 @@ describe("the confirm screen's terms, read from the message that is signed", () 
 
   it("refuses a message that sells, buys or calls anything but what was reviewed", async () => {
     const { review, message } = await osmoToAtom();
-    expect(confirmTerms(message, { ...review, amountUnits: 62_000_000n }).problems).toEqual([
+    const reviewed62 = { ...review, amountUnits: 62_000_000n, fee: swapFeeFor("osmosis-1", 62_000_000n, NO_TREASURY) };
+    expect(confirmTerms(message, reviewed62).problems).toEqual([
       "The message spends 63 OSMO, not the 62 OSMO you reviewed.",
+    ]);
+    // A review whose amount and fee disagree is refused on its own.
+    expect(confirmTerms(message, { ...review, amountUnits: 62_000_000n }).problems).toEqual([
+      "The Zunia fee in this review is not the one Zunia charges on Osmosis, so Zunia will not ask you to sign it.",
     ]);
     expect(confirmTerms(message, { ...review, from: row(sell, `osmosis-1:${USDC_N_ON_OSMOSIS}`) }).problems).toEqual([
       "The message spends uosmo, not the USDC.n on Osmosis you reviewed.",
@@ -1059,10 +1291,18 @@ describe("the confirm screen's terms, read from the message that is signed", () 
     const spaced = { ...transfer, value: { ...transfer.value, memo: `${ATOM_TO_OSMO_MEMO} ` } };
     expect(readSwapMessage(spaced)).toBeNull();
     expect(readSwapMessage(transfer)).not.toBeNull();
-    // A message that is more than the one swap.
-    expect(swapTermsProblems(readSwapMessage(message), review, { chainId: "osmosis-1", msgCount: 2 })).toEqual([
-      UNREADABLE_SWAP,
+    // A transaction that is more than the one swap: a second message that is
+    // no fee, and anything past a swap and its fee.
+    const signing = (msgs: readonly BuiltMsg[]) => ({ chainId: "osmosis-1", signerAddress: OSMO_ADDRESS, msgs, recipients: NO_TREASURY });
+    expect(swapTermsProblems(readSwapMessage(message), review, signing([message, message]))).toEqual([
+      "Zunia could not read the transaction's second message as its fee, so it will not ask you to sign it.",
     ]);
+    expect(swapTermsProblems(readSwapMessage(message), review, signing([message, message, message]))).toEqual([
+      EXTRA_MESSAGES,
+    ]);
+    // The swap must come first: a fee before it leaves nothing read as the swap.
+    const fee = buildSwapFeeMsg({ sender: OSMO_ADDRESS, recipient: OSMO_TREASURY, denom: "uosmo", amount: 1n });
+    expect(swapTermsProblems(readSwapMessage(fee), review, signing([fee, message]))).toEqual([UNREADABLE_SWAP]);
   });
 
   it("refuses a transfer the contract would not receive: the swap would never run", async () => {
@@ -1148,6 +1388,228 @@ describe("the confirm screen's terms, read from the message that is signed", () 
     const unpriced = { ...review, price: { ...review.price, quote: null } };
     expect(confirmTerms(message, unpriced).rows["Minimum received"]).toEqual(["The 10-second average price, less 1%"]);
   });
+
+  /* ------------------------------------------------------------------------ *
+   * The Zunia fee, as the signed fee message says it
+   * ------------------------------------------------------------------------ */
+
+  /** `truncateAddress(address, 10, 8)`, as the panel shortens an address. */
+  const short = (address: string) => `${address.slice(0, 10)}…${address.slice(-8)}`;
+
+  /** 63 OSMO paid from funds on Osmosis, with a treasury there: 62.685 OSMO swapped. */
+  const osmoToAtomWithFee = () =>
+    reviewOf(
+      "osmosis-1:uosmo",
+      "cosmoshub-4:uatom",
+      "63",
+      quote({
+        inputAmount: "62685000",
+        outputDenom: ATOM_ON_OSMOSIS,
+        outputAmount: "15671250",
+        minReceived: "15514537",
+        route: [{ poolId: "1", tokenOutDenom: ATOM_ON_OSMOSIS }],
+      }),
+      TREASURIES,
+    );
+
+  it("a swap from funds on Osmosis with a fee: the fee as the signed message says it, its rate and treasury", async () => {
+    const { review, msgs } = await osmoToAtomWithFee();
+    expect(review.fee).toEqual({ bps: 50, fee: 315_000n, net: 62_685_000n, recipient: OSMO_TREASURY });
+    const { facts, fee, problems, html, rows } = confirmTerms(msgs, review, TREASURIES);
+    expect(problems).toEqual([]);
+    // Read out of the two messages: the swap sells what is left, the fee pays the rest.
+    expect(facts?.sold).toEqual({ denom: "uosmo", amount: "62685000" });
+    expect(fee).toEqual({ from: OSMO_ADDRESS, to: OSMO_TREASURY, denom: "uosmo", amount: "315000" });
+    expect(rows.Sells).toEqual(["62.685 OSMO", "Held on Osmosis"]);
+    // The exact amount, the rate of what is paid, and the treasury to copy.
+    expect(rows["Zunia fee"]).toEqual([
+      "0.315 OSMO",
+      "0.5% of the 63 OSMO you pay",
+      `To ${short(OSMO_TREASURY)}`,
+      "Zunia's fee address on Osmosis",
+    ]);
+    expect(html).toContain(`aria-label="Copy the address the fee goes to: ${OSMO_TREASURY}"`);
+    expect(html).toContain(`title="${OSMO_TREASURY}"`);
+    // One transaction on Osmosis: a failed swap takes no fee.
+    const text = shownText(html);
+    expect(text).toContain("The swap and the fee are one transaction: if the swap fails, no fee is taken.");
+    expect(text).not.toContain("comes back");
+    // The hero, the form's line and the plain words, all from the same numbers.
+    expect(payBreakdown(review)).toBe("62.685 OSMO swapped + 0.315 OSMO Zunia fee (0.5%)");
+    const line = swapFeeLine(review.fee, review.from);
+    expect(line).toEqual({ label: "Zunia fee", value: "0.5% · 0.315 OSMO" });
+    expect(`${line?.label} ${line?.value}`).toBe("Zunia fee 0.5% · 0.315 OSMO");
+    expect(swapSentence("62.685 OSMO", review.from, review.to)).toBe(
+      "Sends 62.685 OSMO from Osmosis to the Osmosis swap contract, which buys ATOM and delivers it to your address on Cosmos Hub.",
+    );
+    expect(feePaidSentence(fee!, review.from)).toBe(
+      `In the same transaction, it pays the Zunia fee: 0.315 OSMO to ${short(OSMO_TREASURY)}.`,
+    );
+  });
+
+  it("a swap from another chain with a fee: says plainly that a failed swap returns the amount swapped and not the fee", async () => {
+    const { review, msgs } = await reviewOf(
+      "cosmoshub-4:uatom",
+      "osmosis-1:uosmo",
+      "1",
+      quote({
+        inputDenom: ATOM_ON_OSMOSIS,
+        inputAmount: "995000",
+        outputDenom: "uosmo",
+        outputAmount: "3980000",
+        minReceived: "3940200",
+        route: [{ poolId: "1", tokenOutDenom: "uosmo" }],
+      }),
+      TREASURIES,
+    );
+    const { facts, fee, problems, html, rows } = confirmTerms(msgs, review, TREASURIES);
+    expect(problems).toEqual([]);
+    expect(facts?.via).toBe("transfer");
+    expect(fee).toEqual({ from: HUB_ADDRESS, to: HUB_TREASURY, denom: "uatom", amount: "5000" });
+    expect(rows.Sells).toEqual(["0.995 ATOM", "Held on Cosmos Hub"]);
+    expect(rows["Zunia fee"]).toEqual([
+      "0.005 ATOM",
+      "0.5% of the 1 ATOM you pay",
+      `To ${short(HUB_TREASURY)}`,
+      "Zunia's fee address on Cosmos Hub",
+    ]);
+    const text = shownText(html);
+    expect(text).toContain(
+      "If the swap fails on Osmosis, the amount swapped comes back to you, but the 0.5% Zunia fee does not.",
+    );
+    expect(text).not.toContain("no fee is taken");
+    expect(payBreakdown(review)).toBe("0.995 ATOM swapped + 0.005 ATOM Zunia fee (0.5%)");
+    expect(swapFeeOutcome("transfer", 50)).toBe(
+      "If the swap fails on Osmosis, the amount swapped comes back to you, but the 0.5% Zunia fee does not.",
+    );
+  });
+
+  it("shows no fee, and says nothing about one, when none is due", async () => {
+    const { review, msgs } = await osmoToAtom();
+    expect(msgs).toHaveLength(1);
+    const { fee, html, rows } = confirmTerms(msgs, review);
+    expect(fee).toBeNull();
+    expect(rows["Zunia fee"]).toBeUndefined();
+    expect(shownText(html)).not.toMatch(/Zunia fee|no fee is taken|comes back/);
+    expect(payBreakdown(review)).toBeNull();
+    expect(swapFeeLine(review.fee, review.from)).toBeNull();
+    expect(swapFeeLine(null, review.from)).toBeNull();
+  });
+
+  it("refuses a fee to another address, in another denom, of another amount, or from another account", async () => {
+    const { review, msgs } = await osmoToAtomWithFee();
+    const [swap] = msgs;
+    const paying = (overrides: Partial<{ sender: string; recipient: string; denom: string; amount: bigint }>) => [
+      swap!,
+      buildSwapFeeMsg({ sender: OSMO_ADDRESS, recipient: OSMO_TREASURY, denom: "uosmo", amount: 315_000n, ...overrides }),
+    ];
+    const elsewhere = confirmTerms(paying({ recipient: OTHER_OSMO }), review, TREASURIES);
+    expect(elsewhere.problems).toEqual([
+      `The Zunia fee would go to ${short(OTHER_OSMO)}, which is not Zunia's fee address on Osmosis.`,
+    ]);
+    expect(elsewhere.rows["Zunia fee"]).toEqual([
+      "0.315 OSMO",
+      "0.5% of the 63 OSMO you pay",
+      `To ${short(OTHER_OSMO)}`,
+      "Not Zunia's fee address",
+    ]);
+    expect(confirmTerms(paying({ denom: "uion" }), review, TREASURIES).problems).toEqual([
+      "The Zunia fee is paid in uion, not in the OSMO you sell.",
+    ]);
+    const more = confirmTerms(paying({ amount: 630_000n }), review, TREASURIES);
+    expect(more.problems).toEqual(["The Zunia fee is 0.63 OSMO, not the 0.315 OSMO you reviewed."]);
+    expect(more.rows["Zunia fee"]?.slice(0, 2)).toEqual(["0.63 OSMO", "Not the fee you reviewed"]);
+    expect(confirmTerms(paying({ amount: 314_999n }), review, TREASURIES).problems).toEqual([
+      "The Zunia fee is 0.314999 OSMO, not the 0.315 OSMO you reviewed.",
+    ]);
+    expect(confirmTerms(paying({ sender: OTHER_OSMO }), review, TREASURIES).problems).toEqual([
+      `The Zunia fee would be paid from ${short(OTHER_OSMO)}, not from the account signing this swap.`,
+    ]);
+    // Each refuses the signature, in the panel's words.
+    for (const overrides of [{ recipient: OTHER_OSMO }, { denom: "uion" }, { amount: 1n }, { sender: OTHER_OSMO }]) {
+      const { problems } = confirmTerms(paying(overrides), review, TREASURIES);
+      expect(problems).toHaveLength(1);
+      expect(
+        swapSignBlock({
+          problem: problems[0] ?? null,
+          drift: null,
+          price: review.price,
+          priceError: null,
+          refreshing: false,
+          feeShort: false,
+          now: Date.now(),
+        }),
+      ).toEqual({ label: "Cannot sign", reason: problems[0] });
+    }
+  });
+
+  it("refuses a fee when none is configured, a missing fee, and anything else beside the swap", async () => {
+    // No treasury on Osmosis, yet the transaction pays one: refused.
+    const { review, message } = await osmoToAtom();
+    const unasked = buildSwapFeeMsg({ sender: OSMO_ADDRESS, recipient: OSMO_TREASURY, denom: "uosmo", amount: 315_000n });
+    const surprise = confirmTerms([message, unasked], review);
+    expect(surprise.problems).toEqual([
+      `Zunia charges no fee on this swap, yet the transaction pays 0.315 OSMO to ${short(OSMO_TREASURY)}.`,
+    ]);
+    // Shown for what it is, never as Zunia's fee.
+    expect(surprise.rows["Zunia fee"]).toEqual([
+      "0.315 OSMO",
+      "Not the fee you reviewed",
+      `To ${short(OSMO_TREASURY)}`,
+      "Not Zunia's fee address",
+    ]);
+    // A fee is due and the transaction leaves it out: not what was reviewed.
+    const withFee = await osmoToAtomWithFee();
+    expect(confirmTerms([withFee.msgs[0]!], withFee.review, TREASURIES).problems).toEqual([
+      "The transaction leaves out the 0.315 OSMO Zunia fee this review shows.",
+    ]);
+    // A second message that is not a plain bank send of one coin.
+    const twoCoins: BuiltMsg = {
+      typeUrl: "/cosmos.bank.v1beta1.MsgSend",
+      value: {
+        from_address: OSMO_ADDRESS,
+        to_address: OSMO_TREASURY,
+        amount: [
+          { denom: "uosmo", amount: "315000" },
+          { denom: "uion", amount: "1" },
+        ],
+      },
+    };
+    const unread = confirmTerms([withFee.msgs[0]!, twoCoins], withFee.review, TREASURIES);
+    expect(unread.problems).toEqual([
+      "Zunia could not read the transaction's second message as its fee, so it will not ask you to sign it.",
+    ]);
+    expect(unread.rows["Zunia fee"]).toBeUndefined();
+    // Anything past the swap and its fee.
+    expect(confirmTerms([...withFee.msgs, withFee.msgs[1]!], withFee.review, TREASURIES).problems).toEqual([
+      EXTRA_MESSAGES,
+    ]);
+  });
+
+  it("refuses a review whose fee is not the one Zunia charges", async () => {
+    const { review, msgs } = await osmoToAtomWithFee();
+    // The same transaction, checked against another treasury map: the fee the
+    // review shows and the address it pays are no longer Zunia's.
+    const moved: SwapFeeRecipients = { "osmosis-1": OTHER_OSMO_TREASURY };
+    expect(confirmTerms(msgs, review, moved).problems).toEqual([
+      "The Zunia fee in this review is not the one Zunia charges on Osmosis, so Zunia will not ask you to sign it.",
+      `The Zunia fee would go to ${short(OSMO_TREASURY)}, which is not Zunia's fee address on Osmosis.`,
+    ]);
+    // A review that shows a fee where none is charged.
+    expect(confirmTerms(msgs, review, NO_TREASURY).problems).toEqual([
+      "The Zunia fee in this review is not the one Zunia charges on Osmosis, so Zunia will not ask you to sign it.",
+      `Zunia charges no fee on this swap, yet the transaction pays 0.315 OSMO to ${short(OSMO_TREASURY)}.`,
+    ]);
+  });
+
+  it("refuses a swap message that sells the whole amount when a fee is due", async () => {
+    const { review, msgs } = await osmoToAtomWithFee();
+    // The fee paid, and the swap selling the 63 OSMO as well: 63.315 OSMO would leave.
+    const whole = { ...msgs[0]!, value: { ...msgs[0]!.value, funds: [{ denom: "uosmo", amount: "63000000" }] } };
+    expect(confirmTerms([whole, msgs[1]!], review, TREASURIES).problems).toEqual([
+      "The message spends 63 OSMO, not the 62.685 OSMO you reviewed.",
+    ]);
+  });
 });
 
 /* -------------------------------------------------------------------------- *
@@ -1179,12 +1641,14 @@ describe("the review the confirm screen signs", () => {
     const to = pickTo(buy(from), null);
     if (!to) throw new Error("no To to review");
     const amountUnits = typed(from, "1");
+    const fee = swapFeeFor(from.chainId, amountUnits, NO_TREASURY);
     const { view, msg } = await signedBytes(request(from, to, amountUnits));
-    const review = { from, to, amountUnits, plan: view, planKey: keyOf(from, to, amountUnits) };
+    const review = { from, to, amountUnits, fee, plan: view, planKey: keyOf(from, to, amountUnits) };
     const live: LiveSwap = {
       from,
       to,
       amountUnits,
+      fee,
       planKey: review.planKey,
       plan: view,
       planning: false,
@@ -1257,6 +1721,26 @@ describe("the review the confirm screen signs", () => {
     );
   });
 
+  it("stops standing once the Zunia fee the form would sign is not the one reviewed", async () => {
+    const { review, live } = await reviewWithAutoTo();
+    // The same amount, and a fee the review did not show.
+    const charged = swapFeeFor(review.from.chainId, review.amountUnits, TREASURIES);
+    expect(charged.fee).toBe(5_000n);
+    expect(reviewDrift(review, { ...live, fee: charged })).toBe(
+      "The Zunia fee on the swap form is no longer the one you reviewed.",
+    );
+    // A fee to another treasury, or none worked out at all.
+    const reviewed = { ...review, fee: charged };
+    expect(reviewDrift(reviewed, { ...live, fee: { ...charged, recipient: OTHER_OSMO_TREASURY } })).toBe(
+      "The Zunia fee on the swap form is no longer the one you reviewed.",
+    );
+    expect(reviewDrift(reviewed, { ...live, fee: null })).toBe(
+      "The Zunia fee on the swap form is no longer the one you reviewed.",
+    );
+    // The same fee, worked out again, still stands.
+    expect(reviewDrift(reviewed, { ...live, fee: { ...charged } })).toBeNull();
+  });
+
   it("signs only while the review stands and its price is fresh", () => {
     const price = { quote: quote(), error: null, code: null, at: Date.now() };
     const base = { problem: null, drift: null, price, priceError: null, refreshing: false, feeShort: false, now: Date.now() };
@@ -1285,7 +1769,8 @@ describe("the review the confirm screen signs", () => {
     const to = row(buy(from), "cosmoshub-4:uatom");
     const amountUnits = typed(from, "63");
     const reviewed = await signedBytes(request(from, to, amountUnits));
-    const review = { from, to, amountUnits, plan: reviewed.view, planKey: keyOf(from, to, amountUnits) };
+    const fee = swapFeeFor(from.chainId, amountUnits, NO_TREASURY);
+    const review = { from, to, amountUnits, fee, plan: reviewed.view, planKey: keyOf(from, to, amountUnits) };
     // The form moves on to 64 OSMO and plans that.
     resetChannelChecks();
     const next = await signedBytes(request(from, to, typed(from, "64")));
@@ -1294,6 +1779,7 @@ describe("the review the confirm screen signs", () => {
       from,
       to,
       amountUnits: typed(from, "64"),
+      fee: swapFeeFor(from.chainId, typed(from, "64"), NO_TREASURY),
       planKey: keyOf(from, to, typed(from, "64")),
       plan: next.view,
       planning: false,
