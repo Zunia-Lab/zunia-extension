@@ -165,8 +165,15 @@ describe("notification preferences", () => {
     const prefs = { transfers: false, unbonding: false, governance: false, rewards: "off" as const };
     const rows = feed([chain("cosmoshub-4", "9")], raised, { approvals: [approval], proposals: [proposal], prefs });
     expect(rows.map((row) => row.kind)).toEqual(["approval"]);
-    const all = feed([chain("cosmoshub-4", "9")], raised, { approvals: [approval], proposals: [proposal], prefs: DEFAULT_NOTIFY_PREFS });
+    const everything = { transfers: true, unbonding: true, governance: true, rewards: "once" as const };
+    const all = feed([chain("cosmoshub-4", "9")], raised, { approvals: [approval], proposals: [proposal], prefs: everything });
     expect(all.map((row) => row.kind).sort()).toEqual(["approval", "governance", "rewards"]);
+  });
+
+  it("is quiet by default: transfers and one rewards notice, no governance or unbonding", () => {
+    expect(DEFAULT_NOTIFY_PREFS).toEqual({ transfers: true, unbonding: false, governance: false, rewards: "once" });
+    const rows = feed([chain("cosmoshub-4", "9")], raised, { approvals: [approval], proposals: [proposal], prefs: DEFAULT_NOTIFY_PREFS });
+    expect(rows.map((row) => row.kind).sort()).toEqual(["approval", "rewards"]);
   });
 
   it("parses stored preferences field by field", () => {

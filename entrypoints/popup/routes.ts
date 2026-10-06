@@ -28,6 +28,7 @@ export type PopupRoute =
   | "nft-token"
   | "governance"
   | "notifications"
+  | "notification-settings"
   | "address-book"
   | "settings"
   | "security"

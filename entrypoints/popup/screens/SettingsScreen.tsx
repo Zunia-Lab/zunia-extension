@@ -140,7 +140,7 @@ export function SettingsScreen({
             title="Notifications"
             description="Which notifications show, and reward reminders"
             meta={NOTIFY_LABELS[settings.notify.rewards]}
-            onClick={() => onNavigate("notifications")}
+            onClick={() => onNavigate("notification-settings")}
           />
         </SettingsGroup>
 

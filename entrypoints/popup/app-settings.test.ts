@@ -685,6 +685,13 @@ async function openNotifications(): Promise<void> {
   expect(byText("h1", "Notifications")).toBeDefined();
 }
 
+/** Settings → Notifications, reached here through the list's settings button. */
+async function openNotificationSettings(): Promise<void> {
+  await openNotifications();
+  await click(byLabel("Notification settings"));
+  expect(byText("h1", "Notification settings")).toBeDefined();
+}
+
 /* -------------------------------------------------------------------------- *
  * Lifecycle
  * -------------------------------------------------------------------------- */
@@ -744,12 +751,12 @@ describe("a saved preference applies in place", () => {
     expect(byText("button", "Open notifications")).toBeDefined();
   });
 
-  it("keeps Notifications mounted and scrolled while Staking rewards and a Show switch change", async () => {
-    await openNotifications();
-    const title = byText("h1", "Notifications");
+  it("keeps Notification settings mounted and scrolled while Staking rewards and a Show switch change", async () => {
+    await openNotificationSettings();
+    const title = byText("h1", "Notification settings");
     const scrolling = scroller();
     expect(scrolling?.textContent).toContain("Staking rewards");
-    // Where the review measured it: the settings sit below the fold.
+    // Where the 0.1.3 review measured it: a scrolled settings screen.
     if (scrolling) scrolling.scrollTop = 142;
     const daily = byText("button", "Daily");
     expect(daily?.getAttribute("aria-selected")).toBe("false");
@@ -766,7 +773,7 @@ describe("a saved preference applies in place", () => {
     expect(screenText()).not.toContain("Opening wallet");
     // The same nodes, not a new screen: nothing unmounted.
     expect(title?.isConnected).toBe(true);
-    expect(byText("h1", "Notifications")).toBe(title);
+    expect(byText("h1", "Notification settings")).toBe(title);
     expect(scroller()).toBe(scrolling);
     expect(scroller()?.scrollTop).toBe(142);
     // The saved value shows before the re-read lands.
@@ -774,23 +781,24 @@ describe("a saved preference applies in place", () => {
     expect(screenText()).toContain("Reminds you once a day while rewards are waiting to be claimed.");
 
     await release();
-    expect(byText("h1", "Notifications")).toBe(title);
+    expect(byText("h1", "Notification settings")).toBe(title);
     expect(scroller()?.scrollTop).toBe(142);
     expect(daily?.getAttribute("aria-selected")).toBe("true");
 
     // A switch in the Show group, the review's other case.
     const governance = switchFor("Governance");
-    expect(governance?.getAttribute("aria-checked")).toBe("true");
+    // Off by default: governance is the noisiest kind.
+    expect(governance?.getAttribute("aria-checked")).toBe("false");
     hold(SNAPSHOT_READS);
     await click(governance);
-    expect(worker.settings.notify.governance).toBe(false);
+    expect(worker.settings.notify.governance).toBe(true);
     expect(screenText()).not.toContain("Opening wallet");
     expect(switchFor("Governance")).toBe(governance);
-    expect(governance?.getAttribute("aria-checked")).toBe("false");
+    expect(governance?.getAttribute("aria-checked")).toBe("true");
     expect(scroller()?.scrollTop).toBe(142);
     await release();
 
-    expect(byText("h1", "Notifications")).toBe(title);
+    expect(byText("h1", "Notification settings")).toBe(title);
     expect(scroller()?.scrollTop).toBe(142);
     // Not even for one commit: nothing drew the boot view after the screen opened.
     expect(doc.texts.slice(shown).filter((text) => text.includes("Opening wallet"))).toEqual([]);

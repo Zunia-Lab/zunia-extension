@@ -38,10 +38,16 @@ export interface NotifyPrefs {
   rewards: RewardReminder;
 }
 
+/**
+ * Quiet by default: tokens arriving and one staking-rewards notice per cycle.
+ * Governance lists every open proposal on every enabled network, and unbonding
+ * repeats what the user just did, so both stay off until someone asks for them
+ * in Settings → Notifications. Approvals are not a choice: they always show.
+ */
 export const DEFAULT_NOTIFY_PREFS: NotifyPrefs = {
   transfers: true,
-  unbonding: true,
-  governance: true,
+  unbonding: false,
+  governance: false,
   rewards: "once",
 };
 

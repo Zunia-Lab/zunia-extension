@@ -3,7 +3,6 @@ import {
   Button,
   EmptyState,
   ScreenScaffold,
-  Segmented,
   cn,
   focusRing,
 } from "@zunialab/ui";
@@ -13,8 +12,7 @@ import type { ApprovalRequest } from "../../../lib/approvals";
 import type { ChainBalance } from "../../../lib/balances";
 import type { ActivityKind } from "../../../lib/chain-queries";
 import { relativeTime } from "../../../lib/format";
-import type { NotifyPrefs, RewardReminder } from "../../../lib/settings";
-import { SettingsGroup, SettingsToggle, SettingsValue } from "../components/SettingsList";
+import type { NotifyPrefs } from "../../../lib/settings";
 import type { ChainAccountView } from "../hooks/useChainAccounts";
 import {
   useActivity,
@@ -26,10 +24,9 @@ import {
   type Notice,
   type NoticeKind,
 } from "../hooks/useNotifications";
-import { useBrowserAlerts } from "../hooks/useBrowserAlerts";
 import { usePrefs } from "../state/Prefs";
 import type { PopupRoute } from "../routes";
-import { IconBell } from "./icons";
+import { IconBell, IconSettings } from "./icons";
 
 const NOTICE_FILTERS: ReadonlyArray<{ id: "all" | NoticeKind; label: string }> = [
   { id: "all", label: "All" },
@@ -55,20 +52,6 @@ function kindEnabled(kind: "all" | NoticeKind, prefs: NotifyPrefs): boolean {
       return true;
   }
 }
-
-const REWARD_REMINDERS: ReadonlyArray<{ value: RewardReminder; label: string }> = [
-  { value: "once", label: "Once" },
-  { value: "daily", label: "Daily" },
-  { value: "weekly", label: "Weekly" },
-  { value: "off", label: "Off" },
-];
-
-const REWARD_REMINDER_HINT: Record<RewardReminder, string> = {
-  once: "One notification when rewards can be claimed. After you claim, the next one waits until a whole token is ready.",
-  daily: "Reminds you once a day while rewards are waiting to be claimed.",
-  weekly: "Reminds you once a week while rewards are waiting to be claimed.",
-  off: "No notifications for staking rewards. Earn still shows what you can claim.",
-};
 
 function noticeActivityKind(kind: NoticeKind): ActivityKind {
   switch (kind) {
@@ -154,11 +137,10 @@ export function NotificationsScreen({
   onBack: () => void;
   onNavigate: (route: PopupRoute, chainId?: string) => void;
 }) {
-  const { settings, update } = usePrefs();
-  const alerts = useBrowserAlerts();
+  const { settings } = usePrefs();
   const live = readsLive;
+  // What shows is chosen in Settings → Notifications; this screen only reads it.
   const prefs = settings.notify;
-  const setPrefs = (patch: Partial<NotifyPrefs>) => void update({ notify: { ...prefs, ...patch } });
   const chainIds = useMemo(() => chains.map((c) => c.chainId), [chains]);
   const chainNames = useMemo(
     () => new Map(chains.map((c) => [c.chainId, c.entry.chainName])),
@@ -196,19 +178,34 @@ export function NotificationsScreen({
       title="Notifications"
       onBack={onBack}
       right={
-        unreadCount > 0 ? (
+        <span className="flex items-center gap-1">
+          {unreadCount > 0 ? (
+            <button
+              type="button"
+              onClick={markAllRead}
+              className={cn(
+                "rounded-full px-1.5 py-0.5 font-mono text-[9.5px] text-accent",
+                "transition-colors duration-[var(--z-duration-base)] hover:bg-[var(--z-state-hover)]",
+                focusRing,
+              )}
+            >
+              Mark all read
+            </button>
+          ) : null}
           <button
             type="button"
-            onClick={markAllRead}
+            aria-label="Notification settings"
+            title="Notification settings"
+            onClick={() => onNavigate("notification-settings")}
             className={cn(
-              "rounded-full px-1.5 py-0.5 font-mono text-[9.5px] text-accent",
-              "transition-colors duration-[var(--z-duration-base)] hover:bg-[var(--z-state-hover)]",
+              "flex size-[26px] items-center justify-center rounded-full text-fg-dim",
+              "transition-colors duration-[var(--z-duration-base)] hover:bg-[var(--z-state-hover)] hover:text-fg",
               focusRing,
             )}
           >
-            Mark all read
+            <IconSettings width={14} height={14} />
           </button>
-        ) : undefined
+        </span>
       }
     >
       <div className="flex flex-col gap-3 pt-1">
@@ -283,47 +280,6 @@ export function NotificationsScreen({
           </ul>
         )}
 
-        <SettingsGroup label="Show">
-          <SettingsToggle
-            title="Transfers"
-            description="Tokens arriving in this wallet."
-            checked={prefs.transfers}
-            onCheckedChange={(transfers) => setPrefs({ transfers })}
-          />
-          <SettingsToggle
-            title="Unbonding"
-            description="Stake that is unbonding, and when it is liquid again."
-            checked={prefs.unbonding}
-            onCheckedChange={(unbonding) => setPrefs({ unbonding })}
-          />
-          <SettingsToggle
-            title="Governance"
-            description="Proposals still open for your vote."
-            checked={prefs.governance}
-            onCheckedChange={(governance) => setPrefs({ governance })}
-          />
-          <SettingsValue title="Staking rewards" description={REWARD_REMINDER_HINT[prefs.rewards]}>
-            <Segmented
-              size="sm"
-              value={prefs.rewards}
-              onChange={(rewards) => setPrefs({ rewards: rewards as RewardReminder })}
-              options={REWARD_REMINDERS.map((option) => ({ ...option }))}
-            />
-          </SettingsValue>
-          <p className="px-3 pb-2.5 text-[10.5px] leading-[1.45] text-fg-dim">
-            Approvals always show: a site is waiting on each one.
-          </p>
-        </SettingsGroup>
-
-        <SettingsGroup label="Alerts">
-          <SettingsToggle
-            title="Browser alerts"
-            description={alerts.description}
-            checked={alerts.checked}
-            disabled={alerts.disabled}
-            onCheckedChange={(next) => void alerts.toggle(next)}
-          />
-        </SettingsGroup>
       </div>
     </ScreenScaffold>
   );

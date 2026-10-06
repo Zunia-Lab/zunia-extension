@@ -50,6 +50,7 @@ import { NftScreen } from "./screens/NftScreen";
 import { NftDetailScreen } from "./screens/NftDetailScreen";
 import { GovernanceScreen } from "./screens/GovernanceScreen";
 import { NotificationsScreen } from "./screens/NotificationsScreen";
+import { NotificationSettingsScreen } from "./screens/NotificationSettingsScreen";
 import { useRealtime } from "./hooks/useWalletEvents";
 import { AddressBookScreen } from "./screens/AddressBookScreen";
 import { SettingsScreen } from "./screens/SettingsScreen";
@@ -80,6 +81,7 @@ const UNLOCKED_ROUTES: PopupRoute[] = [
   "nft-token",
   "governance",
   "notifications",
+  "notification-settings",
   "address-book",
   "settings",
   "security",
@@ -688,6 +690,8 @@ function AppBody({ state }: { state: ExtensionState }) {
       ) : null}
 
       {route === "preferences" ? <PreferencesScreen onBack={back} /> : null}
+
+      {route === "notification-settings" ? <NotificationSettingsScreen onBack={back} /> : null}
 
       {route === "wallets" && status ? (
         <WalletsScreen
