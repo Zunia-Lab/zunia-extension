@@ -136,8 +136,20 @@ type SigningMessage = "SIGN_AND_BROADCAST" | "SIGN_AND_BROADCAST_TX";
 export function useSignedSend() {
   const requestPassword = useSigningPassword();
   return useCallback(
-    async <T,>(type: SigningMessage, payload: Record<string, unknown>): Promise<T> => {
+    async <T,>(
+      type: SigningMessage,
+      payload: Record<string, unknown>,
+      hooks?: {
+        /**
+         * Called once the user has approved (the password, when one is asked
+         * for) and the request is on its way: the moment a screen can show
+         * that the transaction is being sent rather than waiting to be signed.
+         */
+        readonly onSending?: () => void;
+      },
+    ): Promise<T> => {
       const password = await requestPassword();
+      hooks?.onSending?.();
       return sendToBackground<T>(
         type,
         password === undefined ? payload : { ...payload, password },

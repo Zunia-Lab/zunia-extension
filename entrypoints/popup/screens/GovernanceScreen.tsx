@@ -7,9 +7,9 @@ import {
   Pill,
   ScreenScaffold,
   SearchField,
+  KeyValueRow,
   cn,
   focusRing,
-  truncateAddress,
 } from "@zunialab/ui";
 import { chainTicker, feeTicker } from "../../../lib/chain-catalog";
 import type { ProposalInfo, ProposalStatus } from "../../../lib/chain-queries";
@@ -20,8 +20,9 @@ import { PickerSheet, type PickerItem } from "../components/PickerSheet";
 import type { ChainAccountView } from "../hooks/useChainAccounts";
 import { useProposals } from "../hooks/useChainQuery";
 import { GasFeePrefs } from "../components/GasFeePrefs";
+import { ResultFooter, ReviewDisclosure, ReviewFact, TxStatusHero, explainTxError } from "../components/TxReview";
+import { explorerTxUrl } from "../../../config/interchain";
 import { usePrefs } from "../state/Prefs";
-import { useToast } from "../state/Toasts";
 import { IconChevronDown, IconGovernance } from "./icons";
 import { signingError, useSignedSend } from "../state/SigningPassword";
 import { CardSkeleton } from "../components/ListSkeleton";
@@ -336,7 +337,6 @@ export function GovernanceScreen({
   onBack: () => void;
 }) {
   const signedSend = useSignedSend();
-  const toast = useToast();
   const { settings } = usePrefs();
   const live = settings.liveBalances;
   const chainIds = useMemo(() => chains.map((c) => c.chainId), [chains]);
@@ -350,6 +350,16 @@ export function GovernanceScreen({
   const [voted, setVoted] = useState<Record<string, VoteOption>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** The vote the user just approved, on its own page until they are done with it. */
+  const [voteResult, setVoteResult] = useState<{
+    readonly state: "sending" | "done" | "failed";
+    readonly proposalId: string;
+    readonly option: VoteOption;
+    readonly chainId: string;
+    readonly chainName: string;
+    readonly txHash: string | null;
+    readonly error: string | null;
+  } | null>(null);
 
   const names = useMemo(
     () => new Map(chains.map((c) => [c.chainId, c.entry.chainName])),
@@ -443,6 +453,15 @@ export function GovernanceScreen({
           option: ballot.option,
         }),
       ];
+      const base = {
+        state: "sending" as const,
+        proposalId: proposal.id,
+        option: ballot.option,
+        chainId: proposal.chainId,
+        chainName: voterChain.entry.chainName,
+        txHash: null,
+        error: null,
+      };
       const result = await signedSend<{ txhash: string }>(
         "SIGN_AND_BROADCAST",
         {
@@ -453,21 +472,52 @@ export function GovernanceScreen({
           fee,
           gasLimit: VOTE_GAS,
         },
+        { onSending: () => setVoteResult(base) },
       );
       setVoted((prev) => ({ ...prev, [ballot.key]: ballot.option }));
       setBallot(null);
-      toast(`Voted ${VOTE_LABELS[ballot.option]} on #${proposal.id}`, {
-        meta: truncateAddress(result.txhash, 10, 8),
-        detail: "Inclusion still depends on the network.",
-        alert: true,
-      });
+      setVoteResult({ ...base, state: "done", txHash: result.txhash });
     } catch (err) {
       const message = signingError(err);
+      // Refused once sent: its own page. Before that, the footer says why.
+      setVoteResult((current) => (current && message ? { ...current, state: "failed", error: message } : null));
       setError(message);
-      if (message) toast(message, { tone: "danger" });
     } finally {
       setBusy(false);
     }
+  }
+
+  if (voteResult) {
+    const url = voteResult.txHash ? explorerTxUrl(voteResult.chainId, voteResult.txHash) : null;
+    const explained = voteResult.state === "failed" ? explainTxError(voteResult.error ?? "") : null;
+    const done = () => {
+      setVoteResult(null);
+      setError(null);
+    };
+    return (
+      <ScreenScaffold
+        title={voteResult.state === "sending" ? "Voting" : voteResult.state === "done" ? "Vote recorded" : "Vote failed"}
+        footer={voteResult.state === "sending" ? undefined : <ResultFooter explorerUrl={url} onDone={done} />}
+      >
+        <TxStatusHero
+          status={voteResult.state === "sending" ? "pending" : voteResult.state === "done" ? "success" : "failed"}
+          title={
+            voteResult.state === "sending" ? "Confirming" : voteResult.state === "done" ? "Vote recorded" : "Not recorded"
+          }
+          amount={VOTE_LABELS[voteResult.option]}
+          line={`Proposal #${voteResult.proposalId} · ${voteResult.chainName}`}
+          message={
+            voteResult.state === "sending"
+              ? `Signed. Waiting for ${voteResult.chainName} to include it.`
+              : voteResult.state === "done"
+                ? "Your vote counts. You can change it until voting ends."
+                : explained?.message
+          }
+          errorDetail={explained?.detail ?? null}
+          txHash={voteResult.txHash}
+        />
+      </ScreenScaffold>
+    );
   }
 
   if (opened) {
@@ -491,30 +541,15 @@ export function GovernanceScreen({
                   {error}
                 </p>
               ) : (
-                <>
-                  <div className="rounded-[12px] border border-[var(--z-line)] px-2.5 py-2">
-                    <GasFeePrefs
-                      feeAmount={fee.amount[0]?.amount}
-                      feeDecimals={voterChain?.entry.feeDecimals ?? 6}
-                      feeSymbol={voterChain ? feeTicker(voterChain.entry) : "ATOM"}
-                    />
-                  </div>
-                  <p className="break-words font-mono text-[9.5px] text-fg-dim [overflow-wrap:anywhere]">
-                    Vote {VOTE_LABELS[choice]}
-                    {" · "}
-                    {resolveTxMemo(
-                      "",
-                      [
-                        msgVote({
-                          proposalId: opened.id,
-                          voter: voterChain?.address ?? "",
-                          option: choice,
-                        }),
-                      ],
-                      opened.chainId,
-                    )}
-                  </p>
-                </>
+                <div className="flex flex-col gap-1.5 rounded-[12px] border border-[var(--z-line)] px-3 py-2">
+                  <ReviewFact label="Your vote">{VOTE_LABELS[choice]}</ReviewFact>
+                  <GasFeePrefs
+                    variant="fact"
+                    feeAmount={fee.amount[0]?.amount}
+                    feeDecimals={voterChain?.entry.feeDecimals ?? 6}
+                    feeSymbol={voterChain ? feeTicker(voterChain.entry) : "ATOM"}
+                  />
+                </div>
               )}
               <Button
                 className="w-full"
@@ -638,6 +673,27 @@ export function GovernanceScreen({
                   </button>
                 ))}
               </div>
+              {choice ? (
+                <div className="mt-2.5">
+                  <ReviewDisclosure title="Transaction details" hint="message, memo">
+                    <KeyValueRow label="Message" value={`MsgVote · ${VOTE_LABELS[choice]} on #${opened.id}`} />
+                    <KeyValueRow
+                      label="Memo"
+                      value={resolveTxMemo(
+                        "",
+                        [
+                          msgVote({
+                            proposalId: opened.id,
+                            voter: voterChain?.address ?? "",
+                            option: choice,
+                          }),
+                        ],
+                        opened.chainId,
+                      )}
+                    />
+                  </ReviewDisclosure>
+                </div>
+              ) : null}
             </section>
           ) : null}
         </div>

@@ -31,6 +31,12 @@ export interface PendingTransfer {
   readonly recoveryAddress?: string;
   /** Display label, e.g. `"1.5 ATOM → OSMO"`. */
   readonly label: string;
+  /**
+   * `pool-deliver`: a swap in Osmosis's own pools whose output is sent on in
+   * the same transaction (lib/pool-swap.ts). `plan` is that transfer, which
+   * is what tracking follows, so only {@link label} names the swap.
+   */
+  readonly path?: "pool-deliver";
   readonly startedAt: number;
 }
 

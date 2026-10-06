@@ -54,12 +54,67 @@ import {
   useValidators,
 } from "../hooks/useChainQuery";
 import { GasFeePrefs } from "../components/GasFeePrefs";
+import {
+  ConfirmFooter,
+  ResultFooter,
+  ReviewAmount,
+  ReviewCard,
+  ReviewDisclosure,
+  ReviewFact,
+  ReviewFacts,
+  TxStatusHero,
+  explainTxError,
+} from "../components/TxReview";
+import { explorerTxUrl } from "../../../config/interchain";
 import { usePrefs } from "../state/Prefs";
 import { ChainSheet } from "../components/ChainSheet";
 import { ListSkeleton } from "../components/ListSkeleton";
 import { IconChevronDown, IconChevronRight, IconCopy, IconRefresh, IconStake } from "./icons";
 import { signingError, useSignedSend } from "../state/SigningPassword";
-import { notifyBroadcastAccepted, useToast } from "../state/Toasts";
+import { useToast } from "../state/Toasts";
+
+/** A stake, an unstake or a claim after the user approved it: being sent, done, or refused. */
+interface EarnResult {
+  readonly kind: "stake" | "unstake" | "claim";
+  readonly state: "sending" | "done" | "failed";
+  readonly chainId: string;
+  readonly chainName: string;
+  /** What moved, as the sheet showed it: `10 ATOM`; `null` for a claim whose total is unknown. */
+  readonly amount: string | null;
+  /** The validator's name, or `3 validators`. */
+  readonly target: string;
+  readonly txHash: string | null;
+  readonly error: string | null;
+  /** Where "Back" returns after a failure: the sheet the transaction came from. */
+  readonly sheet: "delegate" | "undelegate" | "position" | "claim";
+}
+
+const RESULT_WORDS: Record<
+  EarnResult["kind"],
+  { readonly sending: string; readonly done: string; readonly failed: string; readonly doneMessage: string; readonly preposition: string }
+> = {
+  stake: {
+    sending: "Staking",
+    done: "Staked",
+    failed: "Stake failed",
+    doneMessage: "Your stake is active and earns rewards from now on.",
+    preposition: "With",
+  },
+  unstake: {
+    sending: "Unstaking",
+    done: "Unstaking started",
+    failed: "Unstake failed",
+    doneMessage: "The tokens unbond now and are yours to spend when the unbonding period ends.",
+    preposition: "From",
+  },
+  claim: {
+    sending: "Claiming rewards",
+    done: "Rewards claimed",
+    failed: "Claim failed",
+    doneMessage: "The rewards are in your available balance.",
+    preposition: "From",
+  },
+};
 
 const BOND_PILL: Record<
   ValidatorBondState,
@@ -393,6 +448,8 @@ export function EarnScreen({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [validatorQuery, setValidatorQuery] = useState("");
+  /** The transaction the user just approved, shown on its own page until they are done with it. */
+  const [txResult, setTxResult] = useState<EarnResult | null>(null);
 
   const chain = chains.find((c) => c.chainId === chainId) ?? chains[0];
   const decimals = chain?.entry.coinDecimals ?? 6;
@@ -436,6 +493,7 @@ export function EarnScreen({
       : NO_VALUE;
 
   const claimable = chainDelegations.filter((d) => BigInt(d.rewards || "0") > 0n);
+  const claimTotal = claimable.reduce((sum, d) => sum + BigInt(d.rewards || "0"), 0n);
   const pickedValidator = validators.rows.find(
     (v) => v.operatorAddress === picked,
   );
@@ -530,13 +588,28 @@ export function EarnScreen({
     else setUndelegateAmount(next);
   }
 
+  /**
+   * Sign, broadcast and wait for the block, then say how it went on a page of
+   * its own: `Confirming` from the moment the user approves, then done or
+   * refused with the chain's words. A password the user cancels leaves them
+   * on the sheet, as if nothing happened.
+   */
   async function runBroadcast(
     msgs: ReturnType<typeof msgDelegate>[],
     gasLimit: number,
+    what: Pick<EarnResult, "kind" | "amount" | "target" | "sheet">,
   ) {
     if (!chain?.address) throw new Error("No signer address");
     setBusy(true);
     setError(null);
+    const base: EarnResult = {
+      ...what,
+      state: "sending",
+      chainId: chain.chainId,
+      chainName: chain.entry.chainName,
+      txHash: null,
+      error: null,
+    };
     try {
       const result = await signedSend<{ txhash: string }>(
         "SIGN_AND_BROADCAST",
@@ -552,17 +625,20 @@ export function EarnScreen({
           }),
           gasLimit,
         },
+        { onSending: () => setTxResult(base) },
       );
-      notifyBroadcastAccepted(toast, result.txhash);
-      setSheet(null);
+      setTxResult({ ...base, state: "done", txHash: result.txhash });
       setDelegateAmount("");
+      setUndelegateAmount("");
       delegations.reload();
       unbonding.reload();
       onRefreshBalances?.();
     } catch (err) {
       const message = signingError(err);
+      // Refused once it was sent: its own page. Before (a password the user
+      // cancelled, a signer that does not match): the sheet says why.
+      setTxResult((current) => (current && message ? { ...current, state: "failed", error: message } : null));
       setError(message);
-      if (message) toast(message, { tone: "danger" });
     } finally {
       setBusy(false);
     }
@@ -587,6 +663,12 @@ export function EarnScreen({
         }),
       ],
       250_000,
+      {
+        kind: "stake",
+        amount: `${formatUnitsExact(units.toString(), decimals)} ${symbol}`,
+        target: pickedValidator?.moniker ?? truncateAddress(picked, 8, 6),
+        sheet: "delegate",
+      },
     );
   }
 
@@ -600,6 +682,12 @@ export function EarnScreen({
         }),
       ),
       Math.max(250_000, claimable.length * 120_000),
+      {
+        kind: "claim",
+        amount: claimTotal > 0n ? `${formatUnits(claimTotal.toString(), decimals, 6)} ${symbol}` : null,
+        target: claimable.length === 1 ? (claimable[0]?.moniker ?? "1 validator") : `${claimable.length} validators`,
+        sheet: "claim",
+      },
     );
   }
 
@@ -622,12 +710,18 @@ export function EarnScreen({
         }),
       ],
       250_000,
+      {
+        kind: "unstake",
+        amount: `${formatUnitsExact(units.toString(), decimals)} ${symbol}`,
+        target: pickedValidator?.moniker ?? position?.moniker ?? truncateAddress(picked, 8, 6),
+        sheet: "undelegate",
+      },
     );
-    setUndelegateAmount("");
   }
 
   async function confirmClaimOne() {
     if (!chain || !picked) return;
+    const rewards = BigInt(position?.rewards || "0");
     await runBroadcast(
       [
         msgWithdrawReward({
@@ -636,6 +730,65 @@ export function EarnScreen({
         }),
       ],
       250_000,
+      {
+        kind: "claim",
+        amount: rewards > 0n ? `${formatUnits(rewards.toString(), decimals, 6)} ${symbol}` : null,
+        target: pickedValidator?.moniker ?? position?.moniker ?? truncateAddress(picked, 8, 6),
+        sheet: "position",
+      },
+    );
+  }
+
+  if (txResult) {
+    const words = RESULT_WORDS[txResult.kind];
+    const explained = txResult.state === "failed" ? explainTxError(txResult.error ?? "") : null;
+    const url = txResult.txHash ? explorerTxUrl(txResult.chainId, txResult.txHash) : null;
+    const finish = () => {
+      setTxResult(null);
+      setError(null);
+      setSheet(null);
+    };
+    return (
+      <ScreenScaffold
+        title={txResult.state === "sending" ? words.sending : txResult.state === "done" ? words.done : words.failed}
+        footer={
+          txResult.state === "sending" ? undefined : txResult.state === "failed" ? (
+            <div className="flex gap-2">
+              <Button
+                variant="secondary"
+                className="flex-1"
+                onClick={() => {
+                  setSheet(txResult.sheet);
+                  setTxResult(null);
+                }}
+              >
+                Back
+              </Button>
+              <Button className="flex-1" onClick={finish}>
+                Done
+              </Button>
+            </div>
+          ) : (
+            <ResultFooter explorerUrl={url} onDone={finish} />
+          )
+        }
+      >
+        <TxStatusHero
+          status={txResult.state === "sending" ? "pending" : txResult.state === "done" ? "success" : "failed"}
+          title={txResult.state === "sending" ? "Confirming" : txResult.state === "done" ? words.done : "Not done"}
+          amount={txResult.amount}
+          line={`${words.preposition} ${txResult.target} · on ${txResult.chainName}`}
+          message={
+            txResult.state === "sending"
+              ? `Signed. Waiting for ${txResult.chainName} to include it.`
+              : txResult.state === "done"
+                ? words.doneMessage
+                : explained?.message
+          }
+          errorDetail={explained?.detail ?? null}
+          txHash={txResult.txHash}
+        />
+      </ScreenScaffold>
     );
   }
 
@@ -753,86 +906,55 @@ export function EarnScreen({
   }
 
   if (sheet === "delegate" && chain && picked) {
+    const back = () => {
+      setSheet(position ? "position" : "pick");
+      setError(null);
+    };
+    const memo = resolveTxMemo(
+      "",
+      [{ type: "cosmos-sdk/MsgDelegate", value: { amount: { denom: chain.entry.coinMinimalDenom } } }],
+      chain.chainId,
+    );
     return (
       <ScreenScaffold
-        title="Confirm stake"
-        onBack={() => {
-          setSheet(position ? "position" : "pick");
-          setError(null);
-        }}
+        title="Stake"
+        onBack={back}
         footer={
-          <div className="flex gap-2">
-            <Button
-              variant="secondary"
-              className="flex-1"
-              disabled={busy}
-              onClick={() => setSheet(position ? "position" : "pick")}
-            >
-              Back
-            </Button>
-            <Button
-              className="flex-1"
-              disabled={busy || !delegateAmount || delegateError !== null}
-              onClick={() => void confirmDelegate()}
-            >
-              {busy ? "Signing…" : "Sign and broadcast"}
-            </Button>
-          </div>
+          <ConfirmFooter
+            busy={busy}
+            action="Sign stake"
+            disabled={!delegateAmount || delegateError !== null}
+            onBack={back}
+            onSign={() => void confirmDelegate()}
+          />
         }
       >
-        <div className="flex flex-col gap-3 pt-1">
-          {pickedValidator ? (
-            <section className="flex items-center gap-3 rounded-[16px] border border-[var(--z-line)] bg-[var(--z-glass)] px-3.5 py-3">
-              <ValidatorLogo
-                chainId={pickedValidator.chainId}
-                chainName={chain.entry.chainName}
-                logoSlugs={chain.entry.logoSlugs}
-                operatorAddress={pickedValidator.operatorAddress}
-                identity={pickedValidator.identity}
-                logoUrl={pickedValidator.logoUrl}
-                moniker={pickedValidator.moniker}
-                size={40}
-              />
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-1.5">
-                  <p className="min-w-0 truncate text-[13.5px] font-semibold tracking-tight text-fg">
-                    {pickedValidator.moniker}
-                  </p>
-                  <Pill
-                    tone={BOND_PILL[validatorBondState(pickedValidator)].tone}
-                    className="shrink-0 px-1.5 py-0.5 text-[8.5px] tracking-[0.08em]"
-                  >
-                    {BOND_PILL[validatorBondState(pickedValidator)].label}
-                  </Pill>
-                </div>
-                <p className="mt-1 font-mono text-[10px] leading-snug text-fg-dim">
-                  {`${pct(pickedValidator.commission, 0)} comm · ${pct(pickedValidator.votingPower, 2)} power`}
-                </p>
-                <p className="mt-0.5 truncate font-mono text-[9.5px] text-fg-faint">
-                  {truncateAddress(pickedValidator.operatorAddress, 12, 8)}
-                </p>
-              </div>
-            </section>
-          ) : (
-            <KeyValueRow
-              label="Validator"
-              value={truncateAddress(picked, 8, 6)}
+        <div className="flex flex-col gap-2.5 pt-1">
+          <ReviewCard>
+            <ReviewAmount
+              label="Stake with"
+              avatar={
+                pickedValidator ? (
+                  <ValidatorLogo
+                    chainId={pickedValidator.chainId}
+                    chainName={chain.entry.chainName}
+                    logoSlugs={chain.entry.logoSlugs}
+                    operatorAddress={pickedValidator.operatorAddress}
+                    identity={pickedValidator.identity}
+                    logoUrl={pickedValidator.logoUrl}
+                    moniker={pickedValidator.moniker}
+                    size={32}
+                  />
+                ) : null
+              }
+              amount={<span className="text-[15px]">{pickedValidator?.moniker ?? truncateAddress(picked, 8, 6)}</span>}
+              line={
+                pickedValidator
+                  ? `${pct(pickedValidator.commission, 0)} commission · ${BOND_PILL[validatorBondState(pickedValidator)].label} · ${chain.entry.chainName}`
+                  : chain.entry.chainName
+              }
             />
-          )}
-          <KeyValueRow label="Network" value={chain.entry.chainName} />
-          <KeyValueRow
-            label="Memo"
-            value={resolveTxMemo(
-              "",
-              [
-                {
-                  type: "cosmos-sdk/MsgDelegate",
-                  value: { amount: { denom: chain.entry.coinMinimalDenom } },
-                },
-              ],
-              chain.chainId,
-            )}
-          />
+          </ReviewCard>
           <Input
             label={`Amount (${symbol})`}
             inputMode="decimal"
@@ -842,27 +964,39 @@ export function EarnScreen({
             state={delegateError ? "error" : "default"}
             hint={
               delegateError ??
-              (available !== null
-                ? `${formatUnits(available.toString(), decimals)} ${symbol} available`
-                : undefined)
+              (available !== null ? `${formatUnits(available.toString(), decimals)} ${symbol} available` : undefined)
             }
           />
           <PercentRow
             disabled={available === null || available <= 0n}
             onPick={(pct) => fillAmount("delegate", pct)}
           />
-          <section className="rounded-[12px] border border-[var(--z-line)] px-2.5 py-2">
-            <GasFeePrefs
-              feeAmount={fee.amount[0]?.amount}
-              feeDecimals={chain?.entry.feeDecimals ?? 6}
-              feeSymbol={chain ? feeTicker(chain.entry) : "ATOM"}
-            />
-          </section>
+          <ReviewCard className="py-2.5">
+            <div className="flex flex-col gap-1.5">
+              <ReviewFact label="You stake">
+                {delegateUnits !== null && delegateUnits > 0n && !delegateError
+                  ? `${formatUnitsExact(delegateUnits.toString(), decimals)} ${symbol}`
+                  : `— ${symbol}`}
+              </ReviewFact>
+              <GasFeePrefs
+                variant="fact"
+                feeAmount={fee.amount[0]?.amount}
+                feeDecimals={chain?.entry.feeDecimals ?? 6}
+                feeSymbol={chain ? feeTicker(chain.entry) : "ATOM"}
+              />
+            </div>
+          </ReviewCard>
           {error ? (
-            <Callout tone="danger" title="Could not broadcast">
+            <Callout compact tone="danger" title="Could not stake">
               {error}
             </Callout>
           ) : null}
+          <ReviewDisclosure title="Transaction details" hint="validator, memo">
+            <KeyValueRow label="Message" value="MsgDelegate" />
+            <KeyValueRow label="Validator" value={truncateAddress(picked, 12, 8)} />
+            <KeyValueRow label="Network" value={chain.entry.chainName} />
+            <KeyValueRow label="Memo" value={memo} />
+          </ReviewDisclosure>
         </div>
       </ScreenScaffold>
     );
@@ -1063,51 +1197,49 @@ export function EarnScreen({
   }
 
   if (sheet === "undelegate" && chain && picked && position) {
+    const back = () => {
+      setSheet("position");
+      setError(null);
+    };
+    const memo = resolveTxMemo(
+      "",
+      [{ type: "cosmos-sdk/MsgUndelegate", value: { amount: { denom: chain.entry.coinMinimalDenom } } }],
+      chain.chainId,
+    );
     return (
       <ScreenScaffold
         title="Unstake"
-        onBack={() => {
-          setSheet("position");
-          setError(null);
-        }}
+        onBack={back}
         footer={
-          <div className="flex gap-2">
-            <Button
-              variant="secondary"
-              className="flex-1"
-              disabled={busy}
-              onClick={() => setSheet("position")}
-            >
-              Back
-            </Button>
-            <Button
-              className="flex-1"
-              disabled={busy || !undelegateAmount || undelegateError !== null}
-              onClick={() => void confirmUndelegate()}
-            >
-              {busy ? "Signing…" : "Sign unstake"}
-            </Button>
-          </div>
+          <ConfirmFooter
+            busy={busy}
+            action="Sign unstake"
+            disabled={!undelegateAmount || undelegateError !== null}
+            onBack={back}
+            onSign={() => void confirmUndelegate()}
+          />
         }
       >
-        <div className="flex flex-col gap-3 pt-1">
-          <KeyValueRow
-            label="Validator"
-            value={pickedValidator?.moniker ?? position.moniker}
-          />
-          <KeyValueRow
-            label="Memo"
-            value={resolveTxMemo(
-              "",
-              [
-                {
-                  type: "cosmos-sdk/MsgUndelegate",
-                  value: { amount: { denom: chain.entry.coinMinimalDenom } },
-                },
-              ],
-              chain.chainId,
-            )}
-          />
+        <div className="flex flex-col gap-2.5 pt-1">
+          <ReviewCard>
+            <ReviewAmount
+              label="Unstake from"
+              avatar={
+                <ValidatorLogo
+                  chainId={position.chainId}
+                  chainName={chain.entry.chainName}
+                  logoSlugs={chain.entry.logoSlugs}
+                  operatorAddress={position.validatorAddress}
+                  identity={pickedValidator?.identity || position.identity}
+                  logoUrl={pickedValidator?.logoUrl || position.logoUrl}
+                  moniker={pickedValidator?.moniker ?? position.moniker}
+                  size={32}
+                />
+              }
+              amount={<span className="text-[15px]">{pickedValidator?.moniker ?? position.moniker}</span>}
+              line={`${formatUnits(position.amount, decimals)} ${symbol} staked · ${chain.entry.chainName}`}
+            />
+          </ReviewCard>
           <Input
             label={`Amount (${symbol})`}
             inputMode="decimal"
@@ -1115,95 +1247,111 @@ export function EarnScreen({
             value={undelegateAmount}
             onChange={(e) => setUndelegateAmount(e.target.value)}
             state={undelegateError ? "error" : "default"}
-            hint={
-              undelegateError ??
-              `${formatUnits(position.amount, decimals)} ${symbol} staked`
-            }
+            hint={undelegateError ?? `${formatUnits(position.amount, decimals)} ${symbol} staked`}
           />
-          <PercentRow
-            disabled={stakedUnits <= 0n}
-            onPick={(pct) => fillAmount("undelegate", pct)}
-          />
-          <section className="rounded-[12px] border border-[var(--z-line)] px-2.5 py-2">
-            <GasFeePrefs
-              feeAmount={fee.amount[0]?.amount}
-              feeDecimals={chain?.entry.feeDecimals ?? 6}
-              feeSymbol={chain ? feeTicker(chain.entry) : "ATOM"}
-            />
-          </section>
+          <PercentRow disabled={stakedUnits <= 0n} onPick={(pct) => fillAmount("undelegate", pct)} />
+          <ReviewCard className="py-2.5">
+            <div className="flex flex-col gap-1.5">
+              <ReviewFact label="You unstake" note="Liquid again when the unbonding period ends">
+                {undelegateUnits !== null && undelegateUnits > 0n && !undelegateError
+                  ? `${formatUnitsExact(undelegateUnits.toString(), decimals)} ${symbol}`
+                  : `— ${symbol}`}
+              </ReviewFact>
+              <GasFeePrefs
+                variant="fact"
+                feeAmount={fee.amount[0]?.amount}
+                feeDecimals={chain?.entry.feeDecimals ?? 6}
+                feeSymbol={chain ? feeTicker(chain.entry) : "ATOM"}
+              />
+            </div>
+          </ReviewCard>
           {error ? (
-            <Callout tone="danger" title="Could not broadcast">
+            <Callout compact tone="danger" title="Could not unstake">
               {error}
             </Callout>
-          ) : (
-            <p className="text-[11px] leading-snug text-fg-muted">
-              Unbonded stake sits in Unbonding until the chain releases it.
-            </p>
-          )}
+          ) : null}
+          <ReviewDisclosure title="Transaction details" hint="validator, memo">
+            <KeyValueRow label="Message" value="MsgUndelegate" />
+            <KeyValueRow label="Validator" value={truncateAddress(position.validatorAddress, 12, 8)} />
+            <KeyValueRow label="Network" value={chain.entry.chainName} />
+            <KeyValueRow label="Memo" value={memo} />
+          </ReviewDisclosure>
         </div>
       </ScreenScaffold>
     );
   }
 
   if (sheet === "claim" && chain) {
+    const back = () => {
+      setSheet(null);
+      setError(null);
+    };
+    const memo = resolveTxMemo(
+      "",
+      [{ type: "cosmos-sdk/MsgWithdrawDelegationReward", value: {} }],
+      chain.chainId,
+    );
     return (
       <ScreenScaffold
         title="Claim rewards"
-        onBack={() => {
-          setSheet(null);
-          setError(null);
-        }}
+        onBack={back}
         footer={
-          <div className="flex gap-2">
-            <Button
-              variant="secondary"
-              className="flex-1"
-              disabled={busy}
-              onClick={() => setSheet(null)}
-            >
-              Back
-            </Button>
-            <Button
-              className="flex-1"
-              disabled={busy || claimable.length === 0}
-              onClick={() => void confirmClaim()}
-            >
-              {busy ? "Signing…" : `Claim ${claimable.length}`}
-            </Button>
-          </div>
+          <ConfirmFooter
+            busy={busy}
+            action="Sign claim"
+            disabled={claimable.length === 0}
+            onBack={back}
+            onSign={() => void confirmClaim()}
+          />
         }
       >
-        <div className="flex flex-col gap-3 pt-1">
-          <Callout
-            tone="info"
-            title={
-              claimable.length === 1
-                ? "1 validator"
-                : `${claimable.length} validators`
-            }
-          >
-            Withdraws pending rewards with MsgWithdrawDelegationReward.
-          </Callout>
-          <KeyValueRow
-            label="Memo"
-            value={resolveTxMemo(
-              "",
-              [{ type: "cosmos-sdk/MsgWithdrawDelegationReward", value: {} }],
-              chain.chainId,
-            )}
-          />
-          <section className="rounded-[12px] border border-[var(--z-line)] px-2.5 py-2">
-            <GasFeePrefs
-              feeAmount={fee.amount[0]?.amount}
-              feeDecimals={chain?.entry.feeDecimals ?? 6}
-              feeSymbol={chain ? feeTicker(chain.entry) : "ATOM"}
+        <div className="flex flex-col gap-2.5 pt-1">
+          <ReviewCard>
+            <ReviewAmount
+              label="You claim"
+              avatar={
+                <TokenLogo src={chain.iconUrl} symbol={symbol} size={32} verified={chain.entry.inCosmosRegistry} />
+              }
+              amount={
+                claimTotal > 0n ? (
+                  <>
+                    {formatUnits(claimTotal.toString(), decimals, 6)}{" "}
+                    <span className="text-[14px] tracking-[-0.02em] text-fg-muted">{symbol}</span>
+                  </>
+                ) : (
+                  `— ${symbol}`
+                )
+              }
+              line={`From ${claimable.length === 1 ? "1 validator" : `${claimable.length} validators`} · on ${chain.entry.chainName}`}
             />
-          </section>
+            <ReviewFacts>
+              <GasFeePrefs
+                variant="fact"
+                feeAmount={fee.amount[0]?.amount}
+                feeDecimals={chain?.entry.feeDecimals ?? 6}
+                feeSymbol={chain ? feeTicker(chain.entry) : "ATOM"}
+              />
+            </ReviewFacts>
+          </ReviewCard>
           {error ? (
-            <Callout tone="danger" title="Could not broadcast">
+            <Callout compact tone="danger" title="Could not claim">
               {error}
             </Callout>
           ) : null}
+          <ReviewDisclosure title="Transaction details" hint="validators, memo">
+            {claimable.map((d) => (
+              <KeyValueRow
+                key={d.validatorAddress}
+                label={d.moniker}
+                value={`${formatUnits(d.rewards, decimals, 6)} ${symbol}`}
+              />
+            ))}
+            <KeyValueRow
+              label="Messages"
+              value={`${claimable.length} × MsgWithdrawDelegatorReward`}
+            />
+            <KeyValueRow label="Memo" value={memo} />
+          </ReviewDisclosure>
         </div>
       </ScreenScaffold>
     );

@@ -17,6 +17,9 @@ export default defineConfig({
   },
   test: {
     environment: "node",
+    // Radix (behind Button's `asChild`) lives in the UI package's own
+    // node_modules; run it through Vite so it gets the one React above.
+    server: { deps: { inline: [/@radix-ui\//] } },
     include: ["lib/**/*.test.ts", "lib/__tests__/**/*.ts", "entrypoints/**/*.test.ts"],
   },
 });

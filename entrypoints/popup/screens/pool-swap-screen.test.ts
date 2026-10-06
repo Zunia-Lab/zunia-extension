@@ -12,13 +12,12 @@ import { BANK_SEND_TYPE_URL, buildSwapFeeMsg, readSwapFeeMsg, swapFeeFor, type S
 import { buyOptions, sellOptions, type AssetOption, type HeldBalance, type SwapChain } from "../../../lib/swap-assets";
 import { parseRouterState, type XcsRouteTable } from "../../../lib/xcs-routes";
 import sqs from "../../../lib/__tests__/fixtures/swap/sqs-tokens-metadata.json";
+import { ReviewDisclosure, ReviewProblems } from "../components/TxReview";
 import wallet from "../../../lib/__tests__/fixtures/swap/wallet.json";
 import live from "../../../lib/__tests__/fixtures/swap/xcs-route-table.json";
 import {
   EXTRA_MESSAGES,
   PoolSwapTerms,
-  ReviewDisclosure,
-  ReviewProblems,
   SwapReviewCard,
   UNREADABLE_DELIVERY,
   UNREADABLE_SWAP,

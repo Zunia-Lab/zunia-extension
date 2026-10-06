@@ -30,7 +30,6 @@ import {
   Callout,
   IconButton,
   KeyValueRow,
-  PacketTracker,
   Pill,
   RoutePreview,
   ScreenScaffold,
@@ -135,7 +134,6 @@ import { GasFeePrefs } from "../components/GasFeePrefs";
 import { SwapPair, shownIdentity } from "../components/SwapPair";
 import { SwapSettingsDialog } from "../components/SwapSettingsDialog";
 import {
-  TokenAvatar,
   TokenTicker,
   provenanceLabel,
   tokenLocationText,
@@ -150,6 +148,7 @@ import {
   HopChannelList,
   ResumeTrackingBanner,
   SwapContractOverride,
+  pendingRouteLabel,
   swapRouteLabel,
   tickerAmount,
   toBaseUnits,
@@ -162,7 +161,24 @@ import {
   useSwapVenue,
   useXcsRoutes,
 } from "./interchain-ui";
-import { IconCheck, IconChevronDown, IconCopy, IconSettings } from "./icons";
+import { IconCopy, IconSettings } from "./icons";
+import {
+  ConfirmFooter,
+  ExactMessages,
+  RawTxDisclosure,
+  ResultFooter,
+  ReviewAmount,
+  ReviewArrow,
+  ReviewCard,
+  ReviewDisclosure,
+  ReviewFact,
+  ReviewFacts,
+  ReviewProblems,
+  TransferProgress,
+  TxStatusHero,
+  explainTxError,
+  rawTxJson,
+} from "../components/TxReview";
 import { signingError, useSignedSend } from "../state/SigningPassword";
 import { notifyBroadcastAccepted, useToast } from "../state/Toasts";
 
@@ -1870,101 +1886,6 @@ export function PoolSwapTerms({
  * The review, laid out: the essentials first, the rest folded away
  * -------------------------------------------------------------------------- */
 
-/**
- * A section that opens on demand and starts closed: a native `<details>`, so
- * the keyboard and assistive tech open it with no script, and what is inside
- * stays in the page for anyone who wants to read it.
- */
-export function ReviewDisclosure({
-  title,
-  hint = null,
-  children,
-}: {
-  title: string;
-  /** Beside the title, quieter: what is inside, in a word or two. */
-  hint?: string | null;
-  children: ReactNode;
-}) {
-  return (
-    <details className="group min-w-0 rounded-[12px] border border-[var(--z-line)]">
-      <summary
-        className={cn(
-          "flex cursor-pointer select-none list-none items-center justify-between gap-2 rounded-[12px] px-3 py-2.5",
-          "text-[12px] font-medium text-fg-muted transition-colors duration-[var(--z-duration-base)] hover:text-fg",
-          "[&::-webkit-details-marker]:hidden",
-          focusRing,
-        )}
-      >
-        <span className="min-w-0">{title}</span>
-        <span className="flex shrink-0 items-center gap-1.5">
-          {hint ? <span className="text-[10.5px] font-normal text-fg-dim">{hint}</span> : null}
-          <IconChevronDown
-            width={14}
-            height={14}
-            aria-hidden
-            className="transition-transform duration-[var(--z-duration-base)] group-open:rotate-180"
-          />
-        </span>
-      </summary>
-      <div className="flex min-w-0 flex-col gap-2 px-3 pb-3">{children}</div>
-    </details>
-  );
-}
-
-/** One line of the review's summary: what it is on the left, the amount on the right, a quiet note under it. */
-function ReviewFact({
-  label,
-  children,
-  note = null,
-}: {
-  label: string;
-  children: ReactNode;
-  note?: string | null;
-}) {
-  return (
-    <div className="flex min-w-0 items-baseline justify-between gap-3">
-      <span className="shrink-0 text-[11.5px] text-fg-muted">{label}</span>
-      <span className="flex min-w-0 flex-col items-end text-right">
-        <span className="max-w-full text-[11.5px] font-medium tabular-nums text-fg [overflow-wrap:anywhere]">
-          {children}
-        </span>
-        {note ? <span className="text-[10px] leading-snug text-fg-dim [overflow-wrap:anywhere]">{note}</span> : null}
-      </span>
-    </div>
-  );
-}
-
-/** One side of the review: what it is, the token's logo, the amount in large type, and where the token is. */
-function ReviewSide({
-  label,
-  option,
-  amount,
-  line,
-}: {
-  label: string;
-  option: AssetOption;
-  amount: string;
-  line: string;
-}) {
-  const identity = shownIdentity(option);
-  const seal = provenanceLabel(identity);
-  return (
-    <div className="min-w-0">
-      <p className="font-mono text-[9px] uppercase tracking-[0.12em] text-fg-dim">{label}</p>
-      <div className="mt-1.5 flex items-center gap-2.5">
-        <TokenAvatar identity={identity} size={32} locationBadge="always" />
-        <div className="min-w-0 flex-1">
-          <p className="text-[18px] font-semibold leading-tight tracking-[-0.03em] tabular-nums text-fg [overflow-wrap:anywhere]">
-            {amount}
-          </p>
-          <p className="mt-0.5 text-[10.5px] leading-snug text-fg-dim [overflow-wrap:anywhere]">{line}</p>
-          {seal ? <span className="sr-only">{seal}</span> : null}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 /** What the top of a swap's confirm screen says: the two sides, then the few numbers that matter. */
 export interface SwapReviewSummary {
   readonly from: AssetOption;
@@ -2079,23 +2000,26 @@ export function SwapReviewCard({
   priceError?: string | null;
 }) {
   const { minimum, rate, zuniaFee } = summary;
+  const fromIdentity = shownIdentity(summary.from);
+  const toIdentity = shownIdentity(summary.to);
   return (
-    <section className="rounded-[14px] border border-[var(--z-line)] bg-[var(--z-glass)] px-3 py-3">
-      <ReviewSide
+    <ReviewCard>
+      <ReviewAmount
         label="You pay"
-        option={summary.from}
+        identity={fromIdentity}
         amount={summary.pay}
         line={tokenLocationText(summary.from.identity, "held")}
+        srNote={provenanceLabel(fromIdentity)}
       />
-      <div className="my-2.5 flex items-center" aria-hidden="true">
-        <span className="h-px flex-1 bg-[var(--z-line)]" />
-        <span className="mx-2 flex size-6 items-center justify-center rounded-full border border-[var(--z-line)] bg-[var(--z-surface)] text-fg-muted">
-          <IconChevronDown width={13} height={13} />
-        </span>
-        <span className="h-px flex-1 bg-[var(--z-line)]" />
-      </div>
-      <ReviewSide label="You receive" option={summary.to} amount={summary.receive} line={summary.receiveLine} />
-      <div className="mt-3 flex flex-col gap-1.5 border-t border-[var(--z-line)] pt-2.5">
+      <ReviewArrow />
+      <ReviewAmount
+        label="You receive"
+        identity={toIdentity}
+        amount={summary.receive}
+        line={summary.receiveLine}
+        srNote={provenanceLabel(toIdentity)}
+      />
+      <ReviewFacts>
         {minimum ? (
           <ReviewFact label="Minimum received" note={minimum.note}>
             {minimum.value}
@@ -2105,26 +2029,10 @@ export function SwapReviewCard({
         {zuniaFee ? <ReviewFact label={`Zunia fee (${zuniaFee.rate})`}>{zuniaFee.amount}</ReviewFact> : null}
         {networkFee}
         {feeNote ? <p className="text-right text-[10px] leading-snug text-fg-dim">{feeNote}</p> : null}
-      </div>
+      </ReviewFacts>
       {clock}
       {priceError ? <p className="mt-1.5 text-[10px] leading-snug text-[var(--z-warning)]">{priceError}</p> : null}
-    </section>
-  );
-}
-
-/** What stops the signature, said where it cannot be missed: above the folded details, never inside them. */
-export function ReviewProblems({ problems }: { problems: readonly string[] }) {
-  if (problems.length === 0) return null;
-  return (
-    <Callout compact tone="danger" title="Zunia will not sign this">
-      <ul className="flex flex-col gap-0.5">
-        {problems.map((problem) => (
-          <li key={problem} className="text-[10.5px] leading-snug">
-            {problem}
-          </li>
-        ))}
-      </ul>
-    </Callout>
+    </ReviewCard>
   );
 }
 
@@ -2143,73 +2051,7 @@ export function reviewJson(
     const decoded = canonicalJson(base64Utf8(msg.value.msg));
     return decoded === undefined ? msg : { ...msg, decodedMsg: decoded };
   });
-  return JSON.stringify(
-    { chain_id: chainId, memo: preview.preview.memo, fee: preview.fee, messages: readable },
-    null,
-    2,
-  );
-}
-
-/** The raw transaction, folded: monospace, scrollable, selectable. */
-export function ReviewJson({ json }: { json: string }) {
-  return (
-    <ReviewDisclosure title="Raw transaction" hint="JSON">
-      <pre className="max-h-[220px] overflow-auto whitespace-pre-wrap break-words rounded-[8px] bg-[var(--z-surface-sunken)] p-2 font-mono text-[10px] leading-snug text-fg">
-        {json}
-      </pre>
-    </ReviewDisclosure>
-  );
-}
-
-/** The kernel's own line for each message, exactly as it will be signed. */
-export function ExactMessages({ summaries, memo }: { summaries: readonly string[]; memo: string }) {
-  return (
-    <div className="min-w-0">
-      <p className="font-mono text-[9px] uppercase tracking-[0.12em] text-fg-dim">
-        {summaries.length > 1 ? "Exact messages" : "Exact message"}
-      </p>
-      {summaries.map((line, index) => (
-        <p
-          key={index}
-          className="mt-0.5 min-w-0 break-words font-mono text-[10.5px] leading-snug text-fg [overflow-wrap:anywhere]"
-        >
-          {line}
-        </p>
-      ))}
-      {memo ? (
-        <div className="mt-1.5">
-          <KeyValueRow label="Memo" value={memo} />
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-/** Back and Sign, with the reason Sign is off as its label when it is. */
-export function ConfirmFooter({
-  busy,
-  label,
-  disabled,
-  onBack,
-  onSign,
-}: {
-  busy: boolean;
-  /** The short reason signing is blocked; `null` when it is not. */
-  label: string | null;
-  disabled: boolean;
-  onBack: () => void;
-  onSign: () => void;
-}) {
-  return (
-    <div className="flex gap-2">
-      <Button variant="secondary" className="flex-1" disabled={busy} onClick={onBack}>
-        Back
-      </Button>
-      <Button className="flex-1" disabled={busy || disabled} onClick={onSign}>
-        {busy ? "Signing…" : (label ?? "Sign and send")}
-      </Button>
-    </div>
-  );
+  return rawTxJson({ chainId, memo: preview.preview.memo, fee: preview.fee, messages: readable });
 }
 
 /**
@@ -2422,6 +2264,15 @@ export function SwapScreen({
   const [recoverTxHash, setRecoverTxHash] = useState<string | null>(null);
   /** A pool swap just broadcast: one transaction on Osmosis, followed until it is included. */
   const [poolSent, setPoolSent] = useState<{ txHash: string; review: ReviewedPoolSwap } | null>(null);
+  /**
+   * The swap just signed, as its progress page names it: what was sold and
+   * what it buys. A route resumed from an earlier popup has only its label.
+   */
+  const [signedSwap, setSignedSwap] = useState<{
+    txHash: string;
+    headline: string;
+    identity: TokenIdentity;
+  } | null>(null);
   const [routeOpen, setRouteOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [advanced, setAdvanced] = useState(false);
@@ -3232,8 +3083,14 @@ export function SwapScreen({
             plan: signed.delivery.plan,
             amountBaseUnits: signed.minOut,
             label: swapRouteLabel(signed.fee.net, signed.from.identity, signed.to.identity),
+            path: "pool-deliver",
             startedAt: Date.now(),
           };
+          setSignedSwap({
+            txHash: broadcastResult.txhash,
+            headline: `${tickerAmount(signed.fee.net, signed.from.identity, "confirm")} → ${signed.to.identity.ticker}`,
+            identity: shownIdentity(signed.from),
+          });
           await savePendingTransfer(record);
           pendingRoutes.reload();
           setTracked(record);
@@ -3261,6 +3118,11 @@ export function SwapScreen({
           label: swapRouteLabel(signed.fee.net, signed.from.identity, signed.to.identity),
           startedAt: Date.now(),
         };
+        setSignedSwap({
+          txHash: broadcastResult.txhash,
+          headline: `${tickerAmount(signed.fee.net, signed.from.identity, "confirm")} → ${signed.to.identity.ticker}`,
+          identity: shownIdentity(signed.from),
+        });
         // Persisted before the screen changes: if the popup closes on the next
         // frame, the route is still followable.
         await savePendingTransfer(record);
@@ -3612,7 +3474,7 @@ export function SwapScreen({
             />
             <ExactMessages summaries={preview.preview.summaries} memo={preview.preview.memo} />
           </ReviewDisclosure>
-          <ReviewJson json={reviewJson(pending.chainId, pending.msgs, preview)} />
+          <RawTxDisclosure json={reviewJson(pending.chainId, pending.msgs, preview)} />
         </div>
       </ScreenScaffold>
     );
@@ -3631,7 +3493,7 @@ export function SwapScreen({
     const included = Boolean(confirmed?.success);
     const url = explorerTxUrl(VENUE_CHAIN_ID, poolSent.txHash);
     const sentQuote = swapQuoteView(sent.price.quote, sent.from, sent.to);
-    const floor = tickerAmount(sent.minOut, boughtIdentity(sent.venueOutputDenom, sent.to), "confirm");
+    const explained = failed ? explainTxError(confirmed?.error ?? "") : null;
     const done = () => {
       setPhase("form");
       setPoolSent(null);
@@ -3641,68 +3503,25 @@ export function SwapScreen({
     return (
       <ScreenScaffold
         title={failed ? "Swap failed" : included ? "Swapped" : "Swap sent"}
-        footer={
-          <div className="flex gap-2">
-            {url ? (
-              <Button variant="secondary" className="flex-1" asChild>
-                <a href={url} target="_blank" rel="noreferrer">
-                  View on explorer
-                </a>
-              </Button>
-            ) : null}
-            <Button className="flex-1" onClick={done}>
-              Done
-            </Button>
-          </div>
-        }
+        footer={<ResultFooter explorerUrl={url} onDone={done} />}
       >
-        <div className="flex flex-col items-center px-2 pt-8 text-center">
-          {waiting ? (
-            <div className="relative flex size-[76px] items-center justify-center">
-              <span className="absolute inset-0 rounded-full border border-[var(--z-line)]" />
-              <span className="absolute inset-[6px] animate-spin rounded-full border-2 border-transparent border-t-accent" />
-              <Spinner className="size-6 text-accent" />
-            </div>
-          ) : (
-            <div
-              className={cn(
-                "flex size-[76px] items-center justify-center rounded-full",
-                failed
-                  ? "bg-[var(--z-danger-fill)] text-[var(--z-danger)]"
-                  : "bg-[var(--z-success-fill)] text-[var(--z-success)]",
-              )}
-            >
-              {failed ? (
-                <span className="text-[28px] font-semibold leading-none">!</span>
-              ) : (
-                <IconCheck width={32} height={32} />
-              )}
-            </div>
-          )}
-          <p className="mt-5 text-[18px] font-semibold tracking-tight text-fg">
-            {waiting ? "Confirming" : failed ? "Not swapped" : included ? "Swapped on Osmosis" : "Broadcast accepted"}
-          </p>
-          <p className="mt-2 max-w-full text-[13px] font-semibold leading-snug tabular-nums text-fg [overflow-wrap:anywhere]">
-            {tickerAmount(sent.fee.net, sent.from.identity, "confirm")} → about {sentQuote.outputAmount}{" "}
-            {sentQuote.outputSymbol}
-          </p>
-          <p className="mt-1 max-w-[260px] text-[11px] leading-snug text-fg-muted [overflow-wrap:anywhere]">
-            At least {floor}, paid to your address on Osmosis.
-          </p>
-          <p className="mt-1.5 max-w-[260px] text-[12px] leading-snug text-fg-muted">
-            {failed
-              ? confirmed?.error ||
-                "Osmosis included this transaction with an error. Nothing was swapped, and no Zunia fee was taken."
+        <TxStatusHero
+          status={failed ? "failed" : included ? "success" : waiting ? "pending" : "submitted"}
+          title={failed ? "Not swapped" : included ? "Swapped on Osmosis" : waiting ? "Confirming" : "Sent to Osmosis"}
+          amount={`≈ ${sentQuote.outputAmount} ${sentQuote.outputSymbol}`}
+          line={`for ${tickerAmount(sent.fee.net, sent.from.identity, "confirm")} · at least ${tickerAmount(sent.minOut, boughtIdentity(sent.venueOutputDenom, sent.to), "confirm")}`}
+          message={
+            explained
+              ? explained.message
               : included
-                ? "Your Osmosis balance updates in a few seconds."
+                ? "It is in your Osmosis account. Balances update in a few seconds."
                 : waiting
                   ? "Waiting for Osmosis to include it."
-                  : "Osmosis has not confirmed it here yet. Open the explorer to follow it."}
-          </p>
-          <p className="mt-4 break-all font-mono text-[10px] leading-relaxed text-fg-faint">
-            {poolSent.txHash}
-          </p>
-        </div>
+                  : "Osmosis has not confirmed it here yet. The explorer shows it as soon as it is in a block."
+          }
+          errorDetail={explained?.detail ?? null}
+          txHash={poolSent.txHash}
+        />
       </ScreenScaffold>
     );
   }
@@ -3759,7 +3578,7 @@ export function SwapScreen({
             <ReviewDisclosure title="Transaction details" hint="message">
               <ExactMessages summaries={preview.preview.summaries} memo={preview.preview.memo} />
             </ReviewDisclosure>
-            <ReviewJson json={json} />
+            <RawTxDisclosure json={json} />
           </div>
         </ScreenScaffold>
       );
@@ -3806,7 +3625,7 @@ export function SwapScreen({
             />
             <ExactMessages summaries={preview.preview.summaries} memo={preview.preview.memo} />
           </ReviewDisclosure>
-          <ReviewJson json={json} />
+          <RawTxDisclosure json={json} />
         </div>
       </ScreenScaffold>
     );
@@ -3820,33 +3639,34 @@ export function SwapScreen({
     const route = tracking.route;
     const recovery = route?.recovery ?? null;
     const failed = outcome === "failed" || route?.failure === "source-failed";
+    const fresh = signedSwap?.txHash === tracked.txHash ? signedSwap : null;
+    const nameOf = (chainId: string) => findCatalogEntry(chainId)?.chainName ?? chainId;
+    const done = () => {
+      setPhase("form");
+      setTracked(null);
+      setRecoverTxHash(null);
+      setConfirmTx(null);
+      setAmount("");
+      pendingRoutes.reload();
+    };
     return (
       <ScreenScaffold
-        title={failed ? "Swap failed" : "Swap in flight"}
-        footer={
-          <Button
-            className="w-full"
-            variant="secondary"
-            onClick={() => {
-              setPhase("form");
-              setTracked(null);
-              setRecoverTxHash(null);
-              setConfirmTx(null);
-              setAmount("");
-              pendingRoutes.reload();
-            }}
-          >
-            Done
-          </Button>
-        }
+        title={failed ? "Swap failed" : outcome === "delivered" ? "Swap complete" : "Swap in progress"}
+        footer={<ResultFooter explorerUrl={explorerTxUrl(tracked.chainId, tracked.txHash)} onDone={done} />}
       >
-        <div className="flex flex-col gap-3 pt-1">
-          <PacketTracker
-            compact
-            hops={route?.hops ?? []}
-            sourceTxHash={tracked.txHash}
+        <div className="flex flex-col gap-2 pt-1">
+          <TransferProgress
+            amount={fresh?.headline ?? pendingRouteLabel(tracked)}
+            identity={fresh?.identity ?? null}
+            fromChainName={nameOf(tracked.plan.sourceChainId)}
+            toChainName={nameOf(tracked.plan.destChainId)}
+            route={route}
+            loading={tracking.loading}
+            error={tracking.error}
+            onRefresh={tracking.refresh}
+            txHash={tracked.txHash}
             sourceChainId={tracked.chainId}
-            failure={route?.failure ?? null}
+            txUrl={explorerTxUrl}
             recoveryReady={Boolean(recovery?.msg)}
             onRecover={startRecovery}
             recoverDisabledReason={
@@ -3856,17 +3676,10 @@ export function SwapScreen({
                   ? "This swap recorded no recovery address, so the contract has nobody to pay."
                   : null
             }
-            txUrl={explorerTxUrl}
-            loading={tracking.loading && !route}
-            error={tracking.error}
-            onRefresh={tracking.refresh}
-            lastUpdatedAt={route?.updatedAt ?? null}
           />
           {recoverTxHash ? (
-            <Callout tone="success" title="Recovery broadcast">
-              Transaction {recoverTxHash.slice(0, 16)}… was accepted on{" "}
-              {tracked.swapContract ? "Osmosis" : "the venue chain"}. It pays the swap
-              output to your recovery address; check the balance there once it is
+            <Callout compact tone="success" title="Recovery sent">
+              It pays the swap output to your recovery address on Osmosis. Check the balance there once it is
               included.
             </Callout>
           ) : null}
@@ -3877,14 +3690,12 @@ export function SwapScreen({
           ) : null}
           {failed ? (
             <Callout compact tone="danger" title="Transaction failed">
-              {route?.sourceError ||
-                "The source chain rejected this swap. Nothing was transferred."}
+              {route?.sourceError || "The source chain rejected this swap. Nothing was transferred."}
             </Callout>
-          ) : (
-            <Callout compact tone="neutral" title="Runs without the popup">
-              Zunia follows this for a day and lists it on Activity until it
-              arrives. The hash above is the identifier you need meanwhile.
-            </Callout>
+          ) : outcome === "delivered" ? null : (
+            <p className="px-0.5 text-[10.5px] leading-snug text-fg-dim">
+              You can close this window: Zunia keeps following the swap for a day and lists it in Activity.
+            </p>
           )}
         </div>
       </ScreenScaffold>

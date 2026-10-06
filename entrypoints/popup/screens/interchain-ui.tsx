@@ -1356,8 +1356,11 @@ export function transferRouteLabel(
  * Activity and the notification show as well, rather than a hash ticker.
  */
 export function pendingRouteLabel(
-  row: Pick<PendingTransfer, "kind" | "plan" | "amountBaseUnits" | "label">,
+  row: Pick<PendingTransfer, "kind" | "plan" | "amountBaseUnits" | "label" | "path">,
 ): string {
+  // A pool swap's plan is the transfer after it, which would read as a
+  // transfer of what the swap bought; the swap is in the label it was saved with.
+  if (row.path === "pool-deliver") return row.label;
   const { plan } = row;
   // Stored records are checked for their hops only; one without these
   // fields keeps the words it was saved with.

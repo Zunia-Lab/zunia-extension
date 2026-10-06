@@ -32,7 +32,6 @@ import {
   Callout,
   Input,
   KeyValueRow,
-  PacketTracker,
   Pill,
   RoutePreview,
   ScreenScaffold,
@@ -97,7 +96,6 @@ import {
   identityOf,
   shortDenom,
   tokenKindLabel,
-  tokenText,
   type TokenIdentity,
 } from "../../../lib/token-identity";
 import type { TxPreview } from "../../../lib/tx-kernel";
@@ -109,14 +107,29 @@ import { useToast } from "../state/Toasts";
 import { ChainSheet, PickerTrigger } from "../components/ChainSheet";
 import { PickerSheet, type PickerItem } from "../components/PickerSheet";
 import {
-  TokenAvatar,
   TokenPill,
   TokenTicker,
   networkTag,
   provenanceLabel,
   tokenA11yName,
+  tokenLocationText,
   tokenPickerItem,
 } from "../components/TokenLabel";
+import {
+  ConfirmFooter,
+  RawTxDisclosure,
+  ResultFooter,
+  ReviewAmount,
+  ReviewArrow,
+  ReviewCard,
+  ReviewDisclosure,
+  ReviewFact,
+  ReviewFacts,
+  TransferProgress,
+  TxStatusHero,
+  explainTxError,
+  rawTxJson,
+} from "../components/TxReview";
 import { usePickerMemory } from "../hooks/usePickerMemory";
 import {
   AddressBookPicker,
@@ -140,7 +153,7 @@ import {
 } from "./interchain-ui";
 import { SaveContactPrompt } from "../components/SaveContactPrompt";
 import { fieldFocusWithin } from "../components/field-focus";
-import { IconCheck, IconCopy, IconSend } from "./icons";
+import { IconCopy, IconSend } from "./icons";
 import { signingError, useSignedSend } from "../state/SigningPassword";
 
 const PERCENTS = [25, 50, 75, 100] as const;
@@ -1300,65 +1313,41 @@ export function SendScreen({
       const movedAmount = amountParts(tracked.amountBaseUnits, moved);
       return (
         <ScreenScaffold
-          title={failed ? "Transfer failed" : "Transfer in flight"}
-          footer={
-            <Button className="w-full" variant="secondary" onClick={onBack}>
-              Done
-            </Button>
-          }
+          title={failed ? "Transfer failed" : outcome === "delivered" ? "Transfer complete" : "Transfer in progress"}
+          footer={<ResultFooter explorerUrl={explorerTxUrl(tracked.chainId, tracked.txHash)} onDone={onBack} />}
         >
-          <div className="pt-1">
-            <section className="mb-3 flex items-center gap-2.5 rounded-[14px] border border-[var(--z-line)] px-3 py-2.5">
-              <TokenAvatar identity={moved} size={30} locationBadge="always" />
-              <span className="min-w-0 flex-1">
-                <span className="block text-[13px] font-semibold leading-snug tracking-[-0.02em] tabular-nums text-fg [overflow-wrap:anywhere]">
-                  {movedAmount.figure} {movedAmount.unit}
-                </span>
-                <span className="mt-0.5 block text-[11px] leading-snug text-fg-muted [overflow-wrap:anywhere]">
-                  {chainNameOf(tracked.plan.sourceChainId)} →{" "}
-                  {chainNameOf(tracked.plan.destChainId)}
-                </span>
-              </span>
-            </section>
-            <PacketTracker
-              compact
-              hops={route?.hops ?? []}
-              sourceTxHash={tracked.txHash}
-              sourceChainId={tracked.chainId}
-              failure={route?.failure ?? null}
-              recoveryReady={false}
-              txUrl={explorerTxUrl}
-              loading={tracking.loading && !route}
+          <div className="flex flex-col gap-2 pt-1">
+            <TransferProgress
+              amount={`${movedAmount.figure} ${movedAmount.unit}`}
+              identity={moved}
+              fromChainName={chainNameOf(tracked.plan.sourceChainId)}
+              toChainName={chainNameOf(tracked.plan.destChainId)}
+              route={route}
+              loading={tracking.loading}
               error={tracking.error}
               onRefresh={tracking.refresh}
-              lastUpdatedAt={route?.updatedAt ?? null}
+              txHash={tracked.txHash}
+              sourceChainId={tracked.chainId}
+              txUrl={explorerTxUrl}
             />
             {failed ? (
-              <Callout compact className="mt-3" tone="danger" title="Transaction failed">
-                {route?.sourceError ||
-                  "The source chain rejected this transfer. Nothing was sent."}
+              <Callout compact tone="danger" title="Transaction failed">
+                {route?.sourceError || "The source chain rejected this transfer. Nothing was sent."}
               </Callout>
-            ) : (
-              <Callout
-                compact
-                tone="neutral"
-                className="mt-3"
-                title="Runs without the popup"
-              >
-                Zunia follows this for a day and lists it on Activity until it
-                arrives.
-              </Callout>
+            ) : outcome === "delivered" ? null : (
+              <p className="px-0.5 text-[10.5px] leading-snug text-fg-dim">
+                You can close this window: Zunia keeps following the transfer for a day and lists it in
+                Activity.
+              </p>
             )}
-            <div className="mt-3">
-              {sentTo ? (
-                <SaveContactPrompt
-                  address={sentTo}
-                  chainId={tracked.plan.destChainId}
-                  contacts={contacts}
-                  onSaved={() => onContactsChanged?.()}
-                />
-              ) : null}
-            </div>
+            {sentTo ? (
+              <SaveContactPrompt
+                address={sentTo}
+                chainId={tracked.plan.destChainId}
+                contacts={contacts}
+                onSaved={() => onContactsChanged?.()}
+              />
+            ) : null}
           </div>
         </ScreenScaffold>
       );
@@ -1370,95 +1359,47 @@ export function SendScreen({
     const failed = Boolean(confirmed && !confirmed.success);
     const included = Boolean(confirmed?.success);
     const sentAmount = reviewed ? amountParts(reviewed.units, reviewed.identity) : null;
-    const explorer = sentUrl ? (
-      <Button className="w-full" asChild>
-        <a href={sentUrl} target="_blank" rel="noreferrer">
-          View on explorer
-        </a>
-      </Button>
-    ) : undefined;
-
-    if (waiting) {
-      return (
-        <ScreenScaffold title="Sending" onBack={onBack}>
-          <div className="flex flex-col items-center px-2 pt-10 text-center">
-            <div className="relative flex size-[76px] items-center justify-center">
-              <span className="absolute inset-0 rounded-full border border-[var(--z-line)]" />
-              <span className="absolute inset-[6px] animate-spin rounded-full border-2 border-transparent border-t-accent" />
-              <Spinner className="size-6 text-accent" />
-            </div>
-            <p className="mt-5 text-[18px] font-semibold tracking-tight text-fg">
-              Confirming
-            </p>
-            <p className="mt-1.5 max-w-[240px] text-[12.5px] leading-snug text-fg-muted">
-              Waiting for {chain.entry.chainName} to include this send.
-            </p>
-            <p className="mt-5 break-all font-mono text-[10px] leading-relaxed text-fg-faint">
-              {txHash}
-            </p>
-          </div>
-        </ScreenScaffold>
-      );
-    }
-
+    const explained = failed ? explainTxError(confirmed?.error ?? "") : null;
     return (
       <ScreenScaffold
-        title={failed ? "Rejected" : included ? "Sent" : "Broadcast"}
+        title={waiting ? "Sending" : failed ? "Send failed" : included ? "Sent" : "Send submitted"}
         onBack={onBack}
-        footer={explorer}
+        footer={<ResultFooter explorerUrl={sentUrl} onDone={onBack} />}
       >
-        <div className="flex flex-col items-center px-2 pt-8 text-center">
-          <div
-            className={cn(
-              "flex size-[76px] items-center justify-center rounded-full",
-              failed
-                ? "bg-[var(--z-danger-fill)] text-[var(--z-danger)]"
-                : "bg-[var(--z-success-fill)] text-[var(--z-success)]",
-            )}
-          >
-            {failed ? (
-              <span className="text-[28px] font-semibold leading-none">!</span>
-            ) : (
-              <IconCheck width={32} height={32} />
-            )}
-          </div>
-          <p className="mt-5 text-[18px] font-semibold tracking-tight text-fg">
-            {failed ? "Not included" : included ? "Included" : "Broadcast accepted"}
-          </p>
-          {reviewed && sentAmount ? (
-            <>
-              <p className="mt-2 max-w-full text-[22px] font-semibold leading-tight tracking-[-0.03em] tabular-nums text-fg [overflow-wrap:anywhere]">
+        <TxStatusHero
+          status={waiting ? "pending" : failed ? "failed" : included ? "success" : "submitted"}
+          title={waiting ? "Confirming" : failed ? "Not sent" : included ? "Sent" : "Broadcast accepted"}
+          amount={
+            reviewed && sentAmount ? (
+              <>
                 {sentAmount.figure}{" "}
-                <span className="text-[14px] tracking-[-0.02em] text-fg-muted">
-                  {sentAmount.unit}
-                </span>
-              </p>
-              <p className="mt-1 max-w-[260px] text-[11px] leading-snug text-fg-muted [overflow-wrap:anywhere]">
-                {tokenText(reviewed.identity, "row")}
-              </p>
-            </>
-          ) : null}
-          <p className="mt-1.5 max-w-[250px] text-[12.5px] leading-snug text-fg-muted">
-            {failed
-              ? confirmed?.error || "The chain included this transaction with an error."
-              : included
-                ? `Confirmed on ${chain.entry.chainName}.`
-                : `${chain.entry.chainName} has not confirmed it here yet. Open the explorer to follow it.`}
-          </p>
-          <p className="mt-4 break-all font-mono text-[10px] leading-relaxed text-fg-faint">
-            {txHash}
-          </p>
-        </div>
-        <div className="mt-4">
-          {sentTo ? (
+                <span className="text-[14px] tracking-[-0.02em] text-fg-muted">{sentAmount.unit}</span>
+              </>
+            ) : null
+          }
+          line={sentTo ? `To ${truncateAddress(sentTo, 10, 8)} · on ${chain.entry.chainName}` : null}
+          message={
+            waiting
+              ? `Waiting for ${chain.entry.chainName} to include it.`
+              : explained
+                ? explained.message
+                : included
+                  ? `Confirmed on ${chain.entry.chainName}.`
+                  : `${chain.entry.chainName} has not confirmed it here yet. The explorer shows it as soon as it is in a block.`
+          }
+          errorDetail={explained?.detail ?? null}
+          txHash={txHash}
+        />
+        {!waiting && sentTo ? (
+          <div className="mt-4">
             <SaveContactPrompt
               address={sentTo}
               chainId={chain.chainId}
               contacts={contacts}
               onSaved={() => onContactsChanged?.()}
             />
-          ) : null}
-        </div>
+          </div>
+        ) : null}
       </ScreenScaffold>
     );
   }
@@ -1523,234 +1464,178 @@ export function SendScreen({
             sent,
           })
         : null;
+    const toName = toContact?.label ?? (usingSelf ? "Your own address" : null);
+    const destName = cross ? (destChain?.entry.chainName ?? "the destination") : chain.entry.chainName;
+    const back = () => {
+      setPhase("form");
+      setError(null);
+    };
+    const rawMsgs = cross ? (pendingMsgs ?? []) : sameChainMsgs(chain.address, toAddress, reviewed);
+    const rawFee = cross ? (preview?.fee ?? null) : localFee;
     return (
       <ScreenScaffold
         title={confirmTitle}
-        onBack={() => {
-          setPhase("form");
-          setError(null);
-        }}
+        onBack={back}
         footer={
-          <div className="flex gap-2">
-            <Button
-              variant="secondary"
-              className="flex-1"
-              disabled={busy}
-              onClick={() => {
-                setPhase("form");
-                setError(null);
-              }}
-            >
-              Back
-            </Button>
-            <Button
-              className="flex-1"
-              disabled={busy}
-              onClick={() => void confirmAndBroadcast(shownMemo)}
-            >
-              {busy ? "Signing…" : signLabel}
-            </Button>
-          </div>
+          <ConfirmFooter
+            busy={busy}
+            action={signLabel}
+            onBack={back}
+            onSign={() => void confirmAndBroadcast(shownMemo)}
+          />
         }
       >
-        <div className="flex flex-col gap-3 pt-1">
-          <section className="rounded-[18px] border border-[var(--z-line)] bg-[var(--z-glass)] px-3.5 py-4">
-            <div className="flex items-start gap-3">
-              <TokenAvatar identity={sent} size={44} locationBadge="always" />
-              <div className="min-w-0 flex-1">
-                <p className="font-mono text-[9px] uppercase tracking-[0.16em] text-fg-dim">
-                  {confirmKind === "send"
-                    ? "Send"
-                    : confirmKind === "ibc-forward"
-                      ? "Multi-hop IBC"
-                      : "IBC transfer"}
-                </p>
-                <p className="mt-1 text-[26px] font-semibold leading-tight tracking-[-0.04em] tabular-nums text-fg [overflow-wrap:anywhere]">
+        <div className="flex min-w-0 flex-col gap-2 pt-1 [overflow-wrap:anywhere]">
+          <ReviewCard>
+            <ReviewAmount
+              label="You send"
+              identity={sent}
+              amount={
+                <>
                   {sentAmount.figure}{" "}
-                  <span className="text-[15px] font-semibold tracking-[-0.02em] text-fg-muted">
-                    {sentAmount.unit}
-                  </span>
-                </p>
-                <p className="mt-1 text-[11px] leading-snug text-fg-muted [overflow-wrap:anywhere]">
-                  {tokenText(sent, "row")}
-                </p>
-                <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                  <Pill className="px-1.5 py-0.5 text-[8.5px] tracking-[0.08em]">
-                    {tokenKindLabel(sent.kind)}
-                  </Pill>
-                  {tag ? (
-                    <Pill tone="warning" className="px-1.5 py-0.5 text-[8.5px] tracking-[0.08em]">
-                      {tag}
-                    </Pill>
-                  ) : null}
-                  {cross && destChain ? (
-                    <Pill tone="accent" className="px-1.5 py-0.5 text-[8.5px] tracking-[0.08em]">
-                      {chain.entry.chainName} → {destChain.entry.chainName}
-                    </Pill>
-                  ) : (
-                    <Pill className="px-1.5 py-0.5 text-[8.5px] tracking-[0.08em]">
-                      {chain.entry.chainName}
-                    </Pill>
-                  )}
-                </div>
-              </div>
-            </div>
-            {cross && destChain ? (
-              <div className="mt-3.5 flex items-center gap-2 rounded-[12px] border border-[var(--z-line)] px-3 py-2">
-                <TokenLogo
-                  src={chain.iconUrl}
-                  symbol={chain.entry.chainName}
-                  size={22}
-                  verified={chain.entry.inCosmosRegistry}
-                />
-                <span className="min-w-0 flex-1 font-mono text-[10px] leading-snug text-fg-muted [overflow-wrap:anywhere]">
-                  {routeSentence(signedPlan?.hops ?? []) ||
-                    `${chain.entry.chainName} → ${destChain.entry.chainName}`}
-                </span>
-                <TokenLogo
-                  src={destChain.iconUrl}
-                  symbol={destChain.entry.chainName}
-                  size={22}
-                  verified={destChain.entry.inCosmosRegistry}
-                />
-              </div>
-            ) : null}
-          </section>
-
-          <section className="divide-y divide-[var(--z-line)] rounded-[16px] border border-[var(--z-line)] px-3.5 py-2.5">
-            <PartyRow
-              label="From"
-              address={chain.address}
-              hint="You"
-              onCopy={copyParty}
-            />
-            <PartyRow
-              label="To"
-              address={toAddress}
-              hint={
-                toContact?.label ??
-                (usingSelf
-                  ? `This wallet · ${destChain?.entry.chainName ?? "destination"}`
-                  : cross
-                    ? destChain?.entry.chainName
-                    : undefined)
+                  <span className="text-[14px] tracking-[-0.02em] text-fg-muted">{sentAmount.unit}</span>
+                </>
               }
-              onCopy={copyParty}
+              line={tokenLocationText(sent, "held")}
+              srNote={provenanceLabel(sent)}
             />
-          </section>
-
-          <section className="flex flex-col gap-1.5 rounded-[16px] border border-[var(--z-line)] px-3.5 py-3">
-            {confirmKind === "send" ? (
-              <KeyValueRow label="Message" value="MsgSend" />
-            ) : (
-              <KeyValueRow
-                label="Message"
-                value={confirmKind === "ibc-forward" ? "MsgTransfer · PFM" : "MsgTransfer"}
+            <ReviewArrow />
+            <ReviewAmount
+              label="To"
+              avatar={
+                <TokenLogo
+                  src={cross ? destChain?.iconUrl : chain.iconUrl}
+                  symbol={destName}
+                  size={32}
+                  verified={(cross ? destChain?.entry.inCosmosRegistry : chain.entry.inCosmosRegistry) ?? false}
+                />
+              }
+              amount={
+                toName ? (
+                  <span className="text-[15px]">{toName}</span>
+                ) : (
+                  <span className="font-mono text-[14px] tracking-normal">{truncateAddress(toAddress, 10, 8)}</span>
+                )
+              }
+              line={
+                // The arrival text names the destination already (`USDC.n · Native on Noble`).
+                arrival
+                  ? `Arrives as ${arrival.text}`
+                  : toName
+                    ? `${truncateAddress(toAddress, 10, 8)} · on ${destName}`
+                    : `On ${destName}`
+              }
+            />
+            <ReviewFacts>
+              {cross ? (
+                <ReviewFact label="Route" note={forwarders.length > 0 ? `Forwarded by ${forwarders.join(", ")}` : null}>
+                  {chain.entry.chainName} → {destName}
+                </ReviewFact>
+              ) : null}
+              {cross && eta ? (
+                <ReviewFact label="Arrives in">about {Math.max(1, Math.round(eta / 60))} min</ReviewFact>
+              ) : null}
+              {tag ? <ReviewFact label="Network">{tag}</ReviewFact> : null}
+              <GasFeePrefs
+                variant="fact"
+                feeAmount={feeCoin?.amount}
+                feeDecimals={chain.entry.feeDecimals}
+                feeSymbol={feeTicker(chain.entry)}
+                onChanged={() => {
+                  if (cross) void reprice();
+                }}
               />
-            )}
-            <KeyValueRow label="Issued on" value={issuerText(sent)} />
-            {sent.kind !== "native" ? (
-              <KeyValueRow
-                label="Denom"
-                value={<CopyDenom denom={reviewed.denom} what="Denom" onCopy={copyParty} />}
-              />
-            ) : null}
-            {arrival ? (
-              <KeyValueRow
-                label="Arrives as"
-                value={<ArrivalValue arrival={arrival} onCopy={copyParty} />}
-              />
-            ) : null}
-            {forwarders.length > 0 ? (
-              <KeyValueRow
-                label="Forwarded by"
-                value={<WholeValue>{forwarders.join(", ")}</WholeValue>}
-              />
-            ) : null}
-            {cross ? (
-              <KeyValueRow
-                label="Timeout"
-                value={<WholeValue>{timeoutLabel(pendingMsgs?.[0])}</WholeValue>}
-              />
-            ) : null}
-            {cross && eta ? (
-              <KeyValueRow
-                label="Arrives in"
-                value={`about ${Math.max(1, Math.round(eta / 60))} min`}
-              />
-            ) : null}
-            <KeyValueRow label="Memo" value={<WholeValue>{shownMemo}</WholeValue>} />
-          </section>
+              {cross && preview?.feeNote ? (
+                <p className="text-right text-[10px] leading-snug text-fg-dim">{preview.feeNote}</p>
+              ) : null}
+            </ReviewFacts>
+          </ReviewCard>
 
           {arrival?.warning ? (
-            <Callout tone="warning" title={arrival.warning.title}>
+            <Callout compact tone="warning" title={arrival.warning.title}>
               {arrival.warning.body}
             </Callout>
           ) : null}
 
           {unconfirmedPins.map((pin) => (
             <Callout
+              compact
               key={`${pin.fromChainId}>${pin.toChainId}`}
               tone="warning"
               title={`${pin.channelId} was entered by hand`}
             >
-              Nothing confirmed that it leads from {pin.fromChainId} to {pin.toChainId}. If it
-              goes somewhere else, the funds can land on another chain or come back as a
-              refund after the timeout.
+              Nothing confirmed that it leads from {pin.fromChainId} to {pin.toChainId}. If it goes somewhere
+              else, the funds can land on another chain or come back as a refund after the timeout.
             </Callout>
           ))}
 
-          {cross && memoInfo ? (
-            <section className="rounded-[16px] border border-[var(--z-line)] px-3.5 py-3">
-              <SectionLabel>What the packet memo will do</SectionLabel>
-              <p className="mt-1.5 text-[11.5px] leading-snug text-fg">
-                {memoInfo.summary}
-              </p>
-              {memoInfo.warnings.map((warning) => (
-                <p key={warning} className="mt-1.5 text-[10.5px] text-[var(--z-warning)]">
-                  {warning}
-                </p>
-              ))}
-            </section>
-          ) : null}
-
-          <section className="rounded-[12px] border border-[var(--z-line)] px-2.5 py-2">
-            <GasFeePrefs
-              feeAmount={feeCoin?.amount}
-              feeDecimals={chain.entry.feeDecimals}
-              feeSymbol={feeTicker(chain.entry)}
-              onChanged={() => {
-                if (cross) void reprice();
-              }}
-            />
-            {gas ? (
-              <div className="mt-1.5">
-                <KeyValueRow label="Gas" value={gas} />
-              </div>
-            ) : null}
-          </section>
-
-          {cross && preview?.feeNote ? (
-            <Callout compact tone="warning" title="Fee is an estimate">
-              {preview.feeNote}
-            </Callout>
-          ) : null}
-
           {error ? (
-            <Callout tone="danger" title="Could not broadcast">
+            <Callout compact tone="danger" title="Could not broadcast">
               {error}
             </Callout>
-          ) : cross ? (
-            <Callout tone="warning" title="Gas is paid on this chain">
-              You pay gas only on {chain.entry.chainName}, in {feeTicker(chain.entry)}.
-              Relayers carry the packet the rest of the way.
-            </Callout>
-          ) : (
-            <p className="text-[11px] leading-snug text-fg-muted">
-              This stays on {chain.entry.chainName}. The recipient can spend it as soon
-              as the transaction is included.
+          ) : null}
+
+          <ReviewDisclosure title="Transaction details" hint="addresses, denom, memo">
+            <div className="divide-y divide-[var(--z-line)]">
+              <PartyRow label="From" address={chain.address} hint="You" onCopy={copyParty} />
+              <PartyRow
+                label="To"
+                address={toAddress}
+                hint={
+                  toContact?.label ??
+                  (usingSelf ? `This wallet · ${destName}` : cross ? destName : undefined)
+                }
+                onCopy={copyParty}
+              />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <KeyValueRow
+                label="Message"
+                value={
+                  confirmKind === "send" ? "MsgSend" : confirmKind === "ibc-forward" ? "MsgTransfer · PFM" : "MsgTransfer"
+                }
+              />
+              <KeyValueRow label="Token" value={`${tokenKindLabel(sent.kind)} · ${issuerText(sent)}`} />
+              {sent.kind !== "native" ? (
+                <KeyValueRow
+                  label="Denom"
+                  value={<CopyDenom denom={reviewed.denom} what="Denom" onCopy={copyParty} />}
+                />
+              ) : null}
+              {arrival ? (
+                <KeyValueRow label="Arrives as" value={<ArrivalValue arrival={arrival} onCopy={copyParty} />} />
+              ) : null}
+              {cross && signedPlan ? (
+                <KeyValueRow label="Channels" value={<WholeValue>{routeSentence(signedPlan.hops)}</WholeValue>} />
+              ) : null}
+              {cross ? (
+                <KeyValueRow label="Timeout" value={<WholeValue>{timeoutLabel(pendingMsgs?.[0])}</WholeValue>} />
+              ) : null}
+              <KeyValueRow label="Memo" value={<WholeValue>{shownMemo}</WholeValue>} />
+              {gas ? <KeyValueRow label="Gas" value={gas} /> : null}
+            </div>
+            {cross && memoInfo ? (
+              <div className="min-w-0">
+                <p className="font-mono text-[9px] uppercase tracking-[0.12em] text-fg-dim">
+                  What the packet memo will do
+                </p>
+                <p className="mt-0.5 text-[11px] leading-snug text-fg">{memoInfo.summary}</p>
+                {memoInfo.warnings.map((warning) => (
+                  <p key={warning} className="mt-1 text-[10.5px] text-[var(--z-warning)]">
+                    {warning}
+                  </p>
+                ))}
+              </div>
+            ) : null}
+            <p className="text-[10.5px] leading-snug text-fg-dim">
+              {cross
+                ? `You pay gas only on ${chain.entry.chainName}, in ${feeTicker(chain.entry)}. Relayers carry the packet the rest of the way.`
+                : `This stays on ${chain.entry.chainName}: the recipient can spend it as soon as the transaction is included.`}
             </p>
-          )}
+          </ReviewDisclosure>
+          <RawTxDisclosure
+            json={rawTxJson({ chainId: chain.chainId, memo: shownMemo, fee: rawFee, messages: rawMsgs })}
+          />
         </div>
       </ScreenScaffold>
     );

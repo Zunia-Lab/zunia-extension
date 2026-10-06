@@ -24,7 +24,6 @@ import {
   KeyValueRow,
   NftDetail,
   ScreenScaffold,
-  SectionLabel,
   Spinner,
   cn,
   focusRing,
@@ -67,6 +66,22 @@ import {
   useNftMediaGate,
 } from "./nft-ui";
 import { GasFeePrefs } from "../components/GasFeePrefs";
+import {
+  ConfirmFooter,
+  ExactMessages,
+  RawTxDisclosure,
+  ResultFooter,
+  ReviewAmount,
+  ReviewArrow,
+  ReviewCard,
+  ReviewDisclosure,
+  ReviewFacts,
+  TxStatusHero,
+  explainTxError,
+  rawTxJson,
+} from "../components/TxReview";
+import { useTxDetail } from "../hooks/useChainQuery";
+import { IconNft } from "./icons";
 import { signingError, useSignedSend } from "../state/SigningPassword";
 
 type Phase = "view" | "transfer" | "confirm" | "sent";
@@ -201,6 +216,14 @@ export function NftDetailScreen({
     rawLog: string;
     success: boolean;
   } | null>(null);
+  // A transaction the node accepted is followed until a block includes it,
+  // so the result says "Sent" only once it is, and why not when it is not.
+  const inclusion = useTxDetail(
+    chainId,
+    phase === "sent" && sent?.success ? sent.txhash : "",
+    phase === "sent" && Boolean(sent?.success),
+    { intervalMs: 2_000, maxRetries: 60 },
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -480,42 +503,64 @@ export function NftDetailScreen({
             recipient: recipient.trim(),
           })
         : [];
+    const back = () => {
+      setPhase("transfer");
+      setError(null);
+    };
+    const to = recipient.trim();
+    const destName =
+      pending.destination === "cross" ? (pending.destChainName ?? "the destination") : (entry?.chainName ?? chainId);
     return (
       <ScreenScaffold
         title={pending.title}
-        onBack={() => {
-          setPhase("transfer");
-          setError(null);
-        }}
-        footer={
-          <div className="flex gap-2">
-            <Button
-              variant="secondary"
-              className="flex-1"
-              disabled={busy}
-              onClick={() => {
-                setPhase("transfer");
-                setError(null);
-              }}
-            >
-              Back
-            </Button>
-            <Button className="flex-1" disabled={busy} onClick={() => void sign()}>
-              {busy ? "Signing…" : "Sign and send"}
-            </Button>
-          </div>
-        }
+        onBack={back}
+        footer={<ConfirmFooter busy={busy} onBack={back} onSign={() => void sign()} />}
       >
-        <div className="flex flex-col gap-3 pt-1">
-          <NftExecutePanel
-            msg={pending.msg}
-            collectionName={collectionName}
-            tokenName={token?.name ?? null}
-            destChainName={pending.destChainName}
-          />
+        <div className="flex min-w-0 flex-col gap-2 pt-1 [overflow-wrap:anywhere]">
+          <ReviewCard>
+            <ReviewAmount
+              label="You send"
+              avatar={
+                image ? (
+                  <img
+                    src={image}
+                    alt=""
+                    referrerPolicy="no-referrer"
+                    className="size-8 shrink-0 rounded-[8px] border border-[var(--z-line)] object-cover"
+                  />
+                ) : (
+                  <span className="flex size-8 shrink-0 items-center justify-center rounded-[8px] border border-[var(--z-line)] text-fg-muted">
+                    <IconNft width={16} height={16} aria-hidden />
+                  </span>
+                )
+              }
+              amount={<span className="text-[15px]">{token?.name ?? `#${tokenId}`}</span>}
+              line={`${collectionName ?? truncateAddress(collectionAddress, 10, 6)} · on ${entry?.chainName ?? chainId}`}
+            />
+            <ReviewArrow />
+            <ReviewAmount
+              label="To"
+              amount={<span className="font-mono text-[14px] tracking-normal">{truncateAddress(to, 10, 8)}</span>}
+              line={pending.destination === "cross" ? `On ${destName}, as a voucher of this NFT` : `On ${destName}`}
+            />
+            <ReviewFacts>
+              <GasFeePrefs
+                variant="fact"
+                feeAmount={feeCoin?.amount}
+                feeDecimals={entry?.feeDecimals ?? 6}
+                feeSymbol={entry ? feeTicker(entry) : (feeCoin?.denom ?? "")}
+                onChanged={() => {
+                  void review();
+                }}
+              />
+              {preview.feeNote ? (
+                <p className="text-right text-[10px] leading-snug text-fg-dim">{preview.feeNote}</p>
+              ) : null}
+            </ReviewFacts>
+          </ReviewCard>
 
           {warnings.length > 0 ? (
-            <Callout tone="warning" title="What the destination receives">
+            <Callout compact tone="warning" title="What the destination receives">
               <ul className="flex flex-col gap-1">
                 {warnings.map((warning) => (
                   <li key={warning}>{warning}</li>
@@ -524,48 +569,28 @@ export function NftDetailScreen({
             </Callout>
           ) : null}
 
-          {/* The kernel's own reading of the transaction, kept alongside the
-              decoded panel. If the two ever disagree, the difference is
-              visible instead of hidden behind one of them. */}
-          <section className="rounded-[13px] border border-[var(--z-line)] px-3 py-3">
-            <SectionLabel>Signing kernel says</SectionLabel>
-            {preview.preview.summaries.map((line, index) => (
-              <p key={index} className="mt-1.5 text-[11px] leading-snug text-fg-muted">
-                {line}
-              </p>
-            ))}
-          </section>
-
-          <section className="flex flex-col gap-1.5 rounded-[12px] border border-[var(--z-line)] px-2.5 py-2">
-            <GasFeePrefs
-              feeAmount={feeCoin?.amount}
-              feeDecimals={entry?.feeDecimals ?? 6}
-              feeSymbol={entry ? feeTicker(entry) : (feeCoin?.denom ?? "")}
-              onChanged={() => {
-                void review();
-              }}
-            />
-            <KeyValueRow label="Gas" value={preview.fee.gas_limit} />
-            {preview.preview.memo ? (
-              <KeyValueRow label="Memo" value={preview.preview.memo} />
-            ) : null}
-            <KeyValueRow
-              label="Sign bytes"
-              value={`${preview.preview.signBytesHash.slice(0, 12)}…`}
-            />
-          </section>
-
-          {preview.feeNote ? (
-            <Callout tone="warning" title="Fee is an estimate">
-              {preview.feeNote}
-            </Callout>
-          ) : null}
-
           {error ? (
-            <Callout tone="danger" title="Could not sign">
+            <Callout compact tone="danger" title="Could not sign">
               {error}
             </Callout>
           ) : null}
+
+          <ReviewDisclosure title="Transaction details" hint="contract, message, memo">
+            {/* The decoded call and the kernel's own reading of it, side by side:
+                if the two ever disagree, the difference is visible. */}
+            <NftExecutePanel
+              msg={pending.msg}
+              collectionName={collectionName}
+              tokenName={token?.name ?? null}
+              destChainName={pending.destChainName}
+            />
+            <ExactMessages summaries={preview.preview.summaries} memo={preview.preview.memo} />
+            <KeyValueRow label="Gas" value={preview.fee.gas_limit} />
+            <KeyValueRow label="Sign bytes" value={`${preview.preview.signBytesHash.slice(0, 12)}…`} />
+          </ReviewDisclosure>
+          <RawTxDisclosure
+            json={rawTxJson({ chainId, memo: preview.preview.memo, fee: preview.fee, messages: [pending.msg] })}
+          />
         </div>
       </ScreenScaffold>
     );
@@ -579,57 +604,38 @@ export function NftDetailScreen({
     const txHash = sent.txhash;
     const url = explorerTxUrl(chainId, txHash);
     const wasCross = pending?.destination === "cross";
+    const confirmed = sent.success ? inclusion.detail : null;
+    const waiting = sent.success && !confirmed && (inclusion.retrying || inclusion.loading || inclusion.missing);
+    const failed = !sent.success || Boolean(confirmed && !confirmed.success);
+    const included = Boolean(confirmed?.success);
+    const chainLabel = entry?.chainName ?? chainId;
+    const explained = confirmed && !confirmed.success ? explainTxError(confirmed.error ?? "") : null;
     return (
       <ScreenScaffold
-        title={sent.success ? "Submitted" : "Rejected"}
-        footer={
-          <Button className="w-full" onClick={onBack}>
-            Done
-          </Button>
-        }
+        title={failed ? "NFT not sent" : included ? "NFT sent" : "Sending NFT"}
+        footer={<ResultFooter explorerUrl={url} onDone={onBack} />}
       >
-        <div className="flex flex-col gap-3 pt-1">
-          {/* Never a success screen for something that has not succeeded. A
-              `sync` broadcast tells us the node accepted the transaction into
-              its mempool and nothing more, so the NFT has not moved yet and
-              this does not say it has. */}
-          {sent.success ? (
-            <Callout tone="info" title="Sent to the network, not yet confirmed">
-              {wasCross
-                ? `If it is included in a block, the NFT is escrowed by the bridge contract on ${entry?.chainName ?? chainId} and a voucher is minted on ${pending?.destChainName ?? "the destination"} once a relayer delivers the packet.`
-                : `If it is included in a block, token ${tokenId} belongs to ${truncateAddress(recipient.trim(), 8, 6)} and this wallet no longer controls it.`}
-            </Callout>
-          ) : (
-            <Callout tone="danger" title="The node rejected this transaction">
-              Nothing moved. The chain answered with code {sent.code}
-              {sent.rawLog ? `: ${sent.rawLog}` : "."}
-            </Callout>
-          )}
-          <section className="rounded-[13px] border border-[var(--z-line)] px-3 py-3">
-            <SectionLabel>Transaction</SectionLabel>
-            {/* No explorer is configured for this chain, so the hash is plain
-                selectable text. A guessed explorer domain either 404s or shows
-                somebody else's chain. */}
-            {url ? (
-              <a
-                href={url}
-                target="_blank"
-                rel="noreferrer noopener"
-                className={cn("mt-1.5 block break-all font-mono text-[10px] text-fg underline", focusRing)}
-              >
-                {txHash}
-              </a>
-            ) : (
-              <p className="m-0 mt-1.5 break-all font-mono text-[10px] leading-relaxed text-fg">
-                {txHash}
-              </p>
-            )}
-          </section>
-          <p className="m-0 text-[10px] leading-snug text-fg-muted">
-            Zunia does not wait for a block. Re-open this token to see who owns
-            it now, or find the hash above in Activity.
-          </p>
-        </div>
+        <TxStatusHero
+          status={failed ? "failed" : included ? "success" : waiting ? "pending" : "submitted"}
+          title={failed ? "Not sent" : included ? "Sent" : waiting ? "Confirming" : "Broadcast accepted"}
+          amount={<span className="text-[17px]">{token?.name ?? `#${tokenId}`}</span>}
+          line={`To ${truncateAddress(recipient.trim(), 10, 8)}${wasCross ? ` · on ${pending?.destChainName ?? "the destination"}` : ""}`}
+          message={
+            !sent.success
+              ? `The node rejected it, so nothing moved (code ${sent.code}${sent.rawLog ? `: ${sent.rawLog}` : ""}).`
+              : explained
+                ? explained.message
+                : included
+                  ? wasCross
+                    ? `The bridge on ${chainLabel} holds the NFT; a voucher is minted on ${pending?.destChainName ?? "the destination"} once a relayer delivers it.`
+                    : "It belongs to the recipient now."
+                  : waiting
+                    ? `Waiting for ${chainLabel} to include it.`
+                    : "Not confirmed here yet. The explorer shows it as soon as it is in a block."
+          }
+          errorDetail={explained?.detail ?? null}
+          txHash={txHash}
+        />
       </ScreenScaffold>
     );
   }

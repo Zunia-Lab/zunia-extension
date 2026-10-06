@@ -22,6 +22,7 @@ import type { SignSafetySummary } from "../../../lib/signing";
 import { findCatalogEntry } from "../../../lib/chain-catalog";
 import { sendToBackground } from "../../../lib/popup-client";
 import { IconCheck, IconGlobe, IconShield } from "./icons";
+import { RawTxDisclosure, ReviewDisclosure } from "../components/TxReview";
 
 function summaryFrom(approval: ApprovalRequest): SignSafetySummary | null {
   const detail = approval.detail as { summary?: SignSafetySummary } | undefined;
@@ -327,17 +328,9 @@ function jsonFrom(approval: ApprovalRequest): string | null {
   return typeof json === "string" && json.trim() ? json : null;
 }
 
+/** The transaction the site asks to sign, as JSON, folded like every review's raw transaction. */
 function TxJson({ json }: { json: string }) {
-  return (
-    <details className="rounded-[14px] border border-[var(--z-line)] px-3.5 py-2.5">
-      <summary className="cursor-pointer select-none text-[12.5px] text-fg-muted">
-        Show transaction JSON
-      </summary>
-      <pre className="mt-2 max-h-[160px] overflow-auto whitespace-pre-wrap break-words font-mono text-[10.5px] leading-snug text-fg">
-        {json}
-      </pre>
-    </details>
-  );
+  return <RawTxDisclosure json={json} />;
 }
 
 /** "Send 1 uosmo to osmo1..." splits so the address can wrap on its own line. */
@@ -473,7 +466,11 @@ function SignTxBody({
         <div>
           <div className="font-mono text-[9px] uppercase tracking-[0.14em] text-fg-dim">Account</div>
           <div className="mt-1 truncate text-[13.5px] font-medium text-fg">{accountName}</div>
-          {address ? <div className="mt-0.5 font-mono text-[11.5px] text-fg-muted">{address}</div> : null}
+          {address ? (
+            <div className="mt-0.5 font-mono text-[11px] text-fg-muted" title={address}>
+              {truncateAddress(address, 12, 8)}
+            </div>
+          ) : null}
         </div>
         {fees.map((fee) => (
           <div
@@ -499,14 +496,14 @@ function SignTxBody({
             <p className="text-[10.5px] leading-snug text-fg-dim">{FEE_HINT[feePick]}</p>
           </div>
         ) : null}
-        {memo ? (
-          <div className="border-t border-[var(--z-line)] pt-2.5">
-            <div className="text-[12px] text-fg-dim">Memo</div>
-            <div className="mt-1 text-[12.5px] leading-snug text-fg [overflow-wrap:anywhere]">{memo}</div>
-          </div>
-        ) : null}
       </div>
 
+      {address || memo ? (
+        <ReviewDisclosure title="Transaction details" hint={memo ? "account, memo" : "account"}>
+          {address ? <KeyValueRow label="Signs with" value={address} /> : null}
+          {memo ? <KeyValueRow label="Memo" value={memo} /> : null}
+        </ReviewDisclosure>
+      ) : null}
       {json ? <TxJson json={json} /> : null}
     </div>
   );
