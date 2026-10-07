@@ -1,5 +1,5 @@
-import { CONNECT_CONFIG } from "../config/connect";
 import { PAGE_CHANNEL } from "../lib/messaging";
+import { providerIdentity } from "../lib/provider-identity";
 import type { ZuniaKey, ZuniaOfflineSigner, ZuniaProvider } from "../types/window";
 
 type RpcRequest = {
@@ -70,6 +70,8 @@ export default defineUnlistedScript(() => {
   const script = document.currentScript as HTMLScriptElement | null;
   const nonce = script?.dataset.zuniaNonce;
   const expectedOrigin = script?.dataset.zuniaOrigin ?? window.location.origin;
+  /** Which release this is and what it signs; the content script names the release. */
+  const identity = providerIdentity(script?.dataset.zuniaVersion);
 
   if (!nonce) {
     console.warn("[zunia] injected script missing nonce");
@@ -270,7 +272,9 @@ export default defineUnlistedScript(() => {
     on: typeof on;
     off: typeof off;
   } = {
-    version: CONNECT_CONFIG.provider.version,
+    // version (the provider API, "0.1.0" in every release), extensionVersion,
+    // isZunia and features: lib/provider-identity.ts.
+    ...identity,
     mode: "extension",
     defaultOptions: {},
     enable: async (chainIds) => {

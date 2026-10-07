@@ -45,6 +45,12 @@ export default defineContentScript({
       script.src = browser.runtime.getURL("/injected.js");
       script.dataset.zuniaNonce = nonce;
       script.dataset.zuniaOrigin = pageOrigin;
+      // The installed release (manifest version), so sites can tell what this build decodes.
+      try {
+        script.dataset.zuniaVersion = browser.runtime.getManifest().version;
+      } catch {
+        // Not readable here: the provider then reports an empty extensionVersion.
+      }
       script.async = false;
       (document.documentElement || document.head || document.body).appendChild(
         script,

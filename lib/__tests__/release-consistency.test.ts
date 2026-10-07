@@ -11,7 +11,8 @@
  *   table's hash-verified spelling, and the planner is asked for exactly that.
  * - No code outside the deprecated naming shims and their tests uses them.
  * - The Safari app carries package.json's version.
- * - scripts/check-build.mjs refuses a stale SDK dist and a new permission.
+ * - scripts/check-build.mjs refuses a stale SDK dist, a new permission, and a
+ *   provider that would not report its release and features.
  * - Zunia's swap fee is 50 basis points, compiled in, and every treasury it
  *   pays decodes with its own chain's prefix.
  */
@@ -25,6 +26,7 @@ import { SEED_CHANNEL_ROUTES } from "@zunialab/interchain";
 import ts from "typescript";
 import { afterAll, describe, expect, it } from "vitest";
 
+import { CONNECT_CONFIG } from "../../config/connect";
 import { SWAP_FEE_BPS, SWAP_FEE_RECIPIENTS } from "../../config/fees";
 import { swapPlanRequest } from "../../entrypoints/popup/screens/SwapScreen";
 import {
@@ -429,20 +431,32 @@ describe("the Safari app", () => {
  * -------------------------------------------------------------------------- */
 
 /**
- * A scratch copy of the workspace layout check-build reads: the script, a
- * linked zunia-sdk interchain package with src and dist, and one Chrome build
- * that passes every check.
+ * What the provider bundle carries about itself (lib/provider-identity.ts): the
+ * read of the release the content script hands over, and the feature strings.
+ */
+const providerBundle = (features: readonly string[]) =>
+  `const r=document.currentScript?.dataset.zuniaVersion;const f=Object.freeze(${JSON.stringify(features)});\n`;
+/** The content script's side: it writes the release into the script tag. */
+const CONTENT_BUNDLE = "s.dataset.zuniaVersion=chrome.runtime.getManifest().version;\n";
+
+/**
+ * A scratch copy of the workspace layout check-build reads: the script, the
+ * connect config it reads the provider's features from, a linked zunia-sdk
+ * interchain package with src and dist, and one Chrome build that passes every
+ * check.
  */
 function scratchWorkspace() {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), "zunia-check-build-"));
   const ext = path.join(base, "zunia-extension");
   const sdk = path.join(base, "zunia-sdk", "packages", "interchain");
   const build = path.join(ext, ".output", "chrome-mv3");
+  const config = path.join(ext, "config", "connect.ts");
   const write = (file: string, text: string | Buffer) => {
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, text);
   };
   write(path.join(ext, "scripts", "check-build.mjs"), fs.readFileSync(path.join(ROOT, "scripts/check-build.mjs")));
+  write(config, fs.readFileSync(path.join(ROOT, "config/connect.ts")));
   write(path.join(sdk, "src", "route.ts"), "export const route = 1;\n");
   write(path.join(sdk, "dist", "index.js"), "export const route = 1;\n");
   fs.mkdirSync(path.join(ext, "node_modules", "@zunialab"), { recursive: true });
@@ -462,9 +476,11 @@ function scratchWorkspace() {
     externally_connectable: { matches: ["https://zunialab.com/*"] },
     content_scripts: [{ matches: ["https://*/*"], js: ["content-scripts/content.js"] }],
   };
-  for (const file of ["background.js", "injected.js", "content-scripts/content.js", "chunks/swap.js"]) {
+  for (const file of ["background.js", "chunks/swap.js"]) {
     write(path.join(build, file), "console.log(1);\n");
   }
+  write(path.join(build, "injected.js"), providerBundle(CONNECT_CONFIG.provider.features));
+  write(path.join(build, "content-scripts", "content.js"), CONTENT_BUNDLE);
   for (const file of ["popup.html", "connect.html", "onboarding.html"]) {
     write(path.join(build, file), '<!doctype html><script type="module" src="/chunks/swap.js"></script>\n');
   }
@@ -485,7 +501,7 @@ function scratchWorkspace() {
     });
     return { status: result.status, output: `${result.stdout}${result.stderr}` };
   };
-  return { base, sdk, build, manifest, writeManifest, at, T, run };
+  return { base, sdk, build, config, manifest, writeManifest, at, T, run };
 }
 
 describe("scripts/check-build.mjs", () => {
@@ -503,8 +519,50 @@ describe("scripts/check-build.mjs", () => {
     const { run } = workspace();
     const result = run();
     expect(result.output).toContain("ok   @zunialab/interchain dist");
+    expect(result.output).toContain(`ok   config/connect.ts lists ${CONNECT_CONFIG.provider.features.length} provider features`);
     expect(result.output).toContain("ok   chrome-mv3");
     expect(result.status).toBe(0);
+  });
+
+  it("fails when injected.js lacks a feature config/connect.ts lists", () => {
+    const { build, at, T, run } = workspace();
+    const [dropped, ...kept] = CONNECT_CONFIG.provider.features;
+    // A bundle built before the feature existed, carrying the others.
+    fs.writeFileSync(path.join(build, "injected.js"), providerBundle(kept));
+    at(path.join(build, "manifest.json"), T + 120);
+    const result = run();
+    expect(result.status).toBe(1);
+    expect(result.output).toContain(`injected.js lacks the provider feature(s) ${dropped} that config/connect.ts lists`);
+  });
+
+  it("fails when the provider would not say which release it is", () => {
+    for (const [file, text, expected] of [
+      [
+        "injected.js",
+        `const f=${JSON.stringify(CONNECT_CONFIG.provider.features)};\n`,
+        "injected.js does not read the release from data-zunia-version",
+      ],
+      [
+        "content-scripts/content.js",
+        "console.log(1);\n",
+        "no content script sets data-zunia-version, so window.zunia.extensionVersion would be empty",
+      ],
+    ] as const) {
+      const { build, at, T, run } = workspace();
+      fs.writeFileSync(path.join(build, file), text);
+      at(path.join(build, "manifest.json"), T + 120);
+      const result = run();
+      expect(result.status, expected).toBe(1);
+      expect(result.output).toContain(expected);
+    }
+  });
+
+  it("fails when config/connect.ts lists no provider features", () => {
+    const { config, run } = workspace();
+    fs.writeFileSync(config, fs.readFileSync(config, "utf8").replace(/\bfeatures:\s*\[[^\]]*\]/, "features: []"));
+    const result = run();
+    expect(result.status).toBe(1);
+    expect(result.output).toMatch(/FAIL config\/connect\.ts\s+- provider\.features is missing or empty/);
   });
 
   it("fails when an SDK source file is newer than dist/index.js", () => {

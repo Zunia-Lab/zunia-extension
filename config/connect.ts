@@ -13,8 +13,35 @@ export const CONNECT_CONFIG = {
     keplrCompatibleAlias: "keplr" as const,
     /** Default OFF. The user opts in from Settings > Security. */
     exposeKeplrAlias: false,
+    /**
+     * Provider API version, "0.1.0" in every release: sites compare against it, so it
+     * does not follow the release. The release is window.zunia.extensionVersion.
+     */
     version: "0.1.0",
     isZunia: true,
+    /**
+     * window.zunia.features (from 0.1.5, lib/provider-identity.ts): what this build signs
+     * that 0.1.4 and older refused or signed wrongly. Sites and @zunialab/sdk-core match
+     * these exact strings, so never rename one; add a new string instead.
+     * - sign-direct:wasm-contract-32: direct contract calls on 32-byte contract addresses
+     *   (Osmosis's cross-chain swap contract, NFT collections) are read and prompted.
+     * - sign-direct:send-32: a direct MsgSend to a 32-byte address is read and prompted.
+     * - sign-direct:osmosis-poolmanager: Osmosis poolmanager swaps that sell an exact
+     *   amount, single and split routes (since 0.1.4).
+     * - sign-direct:osmosis-exact-out: poolmanager swaps that buy an exact amount.
+     * - sign-amino:escaped: Amino sign bytes escape &, <, >, U+2028 and U+2029 the way
+     *   chains rebuild them.
+     * - sign-amino:osmosis-poolmanager: Amino poolmanager swap requests are described and
+     *   prompted instead of refused.
+     */
+    features: [
+      "sign-direct:wasm-contract-32",
+      "sign-direct:send-32",
+      "sign-direct:osmosis-poolmanager",
+      "sign-direct:osmosis-exact-out",
+      "sign-amino:escaped",
+      "sign-amino:osmosis-poolmanager",
+    ],
   },
 
   wallet: {

@@ -85,7 +85,7 @@ kept in session storage.
 | --- | --- |
 | `pnpm dev` | Watch build for Chrome (`dev:edge`, `dev:firefox`, `dev:safari` for the others) |
 | `pnpm build` | Production builds for Chrome, Edge, Firefox and Safari |
-| `pnpm check:build` | Checks the production builds (MV3, CSP, one kernel binary, permissions, per-browser keys) |
+| `pnpm check:build` | Checks the production builds (MV3, CSP, one kernel binary, permissions, per-browser keys, the provider's release and features) |
 | `pnpm lint:firefox` | Mozilla's addons-linter on the Firefox build |
 | `pnpm safari:build` | Safari build, then the macOS and iOS Simulator apps (macOS and Xcode only) |
 | `pnpm safari:open` | Open the Safari app project in Xcode |
@@ -129,6 +129,33 @@ What the provider adds on top of the Keplr surface:
   or account, or when its dates are out of bounds; otherwise the user sees a dedicated
   "Sign in to <site>" screen. `lib/__tests__/fixtures/sign-in-vectors.json` holds the
   format's test vectors.
+- **Release and features.** `version` is the provider API version and stays `"0.1.0"`.
+  From 0.1.5 the provider also has `extensionVersion`, the installed release (the manifest
+  version, or `""` if the extension could not read it); `isZunia: true`, which tells the
+  `window.keplr` alias from Keplr itself; and `features`, a frozen list of what the build
+  signs that older ones refused or signed wrongly. A provider without `extensionVersion`
+  is 0.1.4 or older. The same fields are on `window.keplr` while the alias is on.
+
+| `features` entry | What the build does |
+| --- | --- |
+| `sign-direct:wasm-contract-32` | Decodes and prompts Direct contract calls on 32-byte contract addresses, such as Osmosis's cross-chain swap contract or an NFT collection. 0.1.4 refused them as unknown messages. |
+| `sign-direct:send-32` | Decodes and prompts a Direct `MsgSend` to a 32-byte address. |
+| `sign-direct:osmosis-poolmanager` | Decodes Osmosis poolmanager swaps that sell an exact amount, single and split routes (since 0.1.4). |
+| `sign-direct:osmosis-exact-out` | Decodes poolmanager swaps that buy an exact amount, single and split routes. |
+| `sign-amino:escaped` | Escapes `&`, `<`, `>`, U+2028 and U+2029 in Amino sign bytes the way chains rebuild them. 0.1.4 signed a memo like "rent & food" over bytes chains reject. |
+| `sign-amino:osmosis-poolmanager` | Describes and prompts Amino poolmanager swap requests (`osmosis/poolmanager/...`), which 0.1.4 refused. |
+
+To pick a sign mode, treat a build as able to sign everything in Direct mode when
+`features` includes `"sign-direct:wasm-contract-32"`, or, when `features` is absent, when
+`extensionVersion` is 0.1.5 or later. Anything else is a legacy build (0.1.4 or older),
+which refuses Direct contract calls on 32-byte contracts and signs Amino documents that
+hold `&`, `<` or `>` over bytes chains reject.
+
+```ts
+const zunia = window.zunia;
+const legacy = zunia !== undefined && zunia.extensionVersion === undefined;
+const directEverything = zunia?.features?.includes("sign-direct:wasm-contract-32") ?? false;
+```
 
 Most dApps should use the SDK instead of the raw provider:
 [`@zunialab/sdk-web`](https://github.com/Zunia-Lab/zunia-sdk) handles detection, events and
@@ -138,6 +165,7 @@ the QR fallback to the mobile app. The full API is documented at
 | Item | Location |
 | --- | --- |
 | Connect policy | `config/connect.ts` |
+| Provider release and features | `lib/provider-identity.ts`, the list in `config/connect.ts` |
 | Host permissions | `config/hosts.ts`, `wxt.config.ts` |
 | Session and security policy | `config/session.yaml`, `config/security.yaml` |
 | Provider types | `types/window.d.ts` |
