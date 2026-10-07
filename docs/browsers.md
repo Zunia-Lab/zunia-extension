@@ -188,6 +188,11 @@ Run this on each browser before a store submission:
       the chain accepts it.
 - [ ] Ask for a Direct message the wallet cannot read, such as
       `/cosmos.authz.v1beta1.MsgGrant`: the site's `UNSUPPORTED` error names that type.
+- [ ] From a dApp, list an NFT on a marketplace (a `send_nft`): the prompt reads "Hand NFT
+      … to contract …", naming the marketplace contract, with a first-time-recipient warning.
+- [ ] From a dApp, send tokens with a packet-forward memo: beside the packet-memo notice,
+      the prompt names the channel and the receiver the memo forwards them to, and Raw
+      transaction shows the memo whole.
 - [ ] In the page console, `window.zunia.version` is `"0.1.0"`,
       `window.zunia.extensionVersion` is the version being submitted, and
       `window.zunia.features` lists the strings in `config/connect.ts`.

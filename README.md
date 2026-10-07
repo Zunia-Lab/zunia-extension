@@ -122,7 +122,9 @@ What the provider adds on top of the Keplr surface:
 - **Error codes.** Every failure rejects with a `ZuniaProviderError` whose `code` is one of
   `USER_REJECTED`, `NOT_CONNECTED`, `LOCKED`, `UNKNOWN_CHAIN`, `ORIGIN_MISMATCH`,
   `UNSUPPORTED`, `INVALID_PARAMS` or `INTERNAL`. Messages keep Keplr's wording
-  ("Request rejected", "Not authorized").
+  ("Request rejected", "Not authorized"). A signing request whose transaction the prompt
+  could not show whole, past 4 MiB of JSON, is refused with `UNSUPPORTED` "This transaction
+  is too large to show in full" rather than shown in part.
 - **Sign-in.** A `signArbitrary` message in the CAIP-122 shape ("<domain> wants you to sign
   in with your Cosmos account: ...") is read back before anything is shown. It is refused
   outright when its domain or URI is not the requesting site, when it names another chain
