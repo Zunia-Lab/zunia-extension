@@ -13,7 +13,7 @@ import { STORAGE_KEYS } from "./storage-keys";
 import type { DecodedDirectTx, DecodedMessageDetail, DecodedTxMessage, KernelCoin } from "./kernel";
 import { loadKernel, bytesToHex, hexToBytes } from "./kernel";
 import { SECURITY_CONFIG } from "../config/security";
-import { describeAminoMsg } from "./amino-summary";
+import { aminoCoin, aminoUint64, describeAminoMsg } from "./amino-summary";
 import { exactCoinText, isBankSpelling } from "./chain-queries";
 import { cosmWasmActionName, describeCw721Action } from "./nft";
 import { packetMemoNote } from "./packet-memo";
@@ -37,7 +37,10 @@ export interface SignSafetySummary {
     recipient?: string;
     detail?: DecodedMessageDetail;
   }>;
+  /** The fee in words: one "Fee" row naming every coin it pays, and the gas limit. */
   fees: Array<{ label: string; value: string }>;
+  /** The fee as signed, for the "Raw transaction". Absent when the document's could not be read. */
+  fee?: { amount: SignedCoin[]; gas: string };
   warnings: string[];
   /** True when approval requires blind-signing opt-in. */
   requiresBlindSigning: boolean;
@@ -194,6 +197,32 @@ function withNftSentences(messages: readonly DecodedTxMessage[]): DecodedTxMessa
  */
 const PACKET_MEMO_NOTICE =
   "This transfer carries instructions for the receiving chain (packet memo). Check them under Raw transaction.";
+
+/** A fee in words: every coin it pays, each as exactly as {@link exactCoinText} names one. */
+function feeText(chainId: string, coins: readonly SignedCoin[]): string {
+  if (coins.length === 0) return "None";
+  return coins.map((coin) => exactCoinText(chainId, coin.amount, coin.denom)).join(" + ");
+}
+
+/**
+ * An Amino fee in which every coin and the gas limit are spelled as the chain writes them,
+ * whole: a fee in several coins is deducted in all of them. Undefined for any other.
+ */
+function aminoFee(value: unknown): DecodedDirectTx["fee"] {
+  const { amount, gas } = (typeof value === "object" && value !== null ? value : {}) as {
+    amount?: unknown;
+    gas?: unknown;
+  };
+  const limit = aminoUint64(gas);
+  if (!Array.isArray(amount) || limit === null) return undefined;
+  const coins: KernelCoin[] = [];
+  for (const item of amount) {
+    const coin = aminoCoin(item);
+    if (!coin) return undefined;
+    coins.push({ denom: coin.denom, amount: coin.amount });
+  }
+  return { amount: coins, gas: limit };
+}
 
 /* -------------------------------------------------------------------------- *
  * The resolved line under a raw summary
@@ -411,10 +440,10 @@ export async function buildSignSafety(input: {
   }
 
   const fees: Array<{ label: string; value: string }> = [];
-  if (input.decoded.fee) {
-    const { amount, denom, gas } = input.decoded.fee;
-    fees.push({ label: "Fee", value: exactCoinText(input.expectedChainId, amount, denom) });
-    fees.push({ label: "Gas", value: /^\d+$/.test(gas) ? Number(gas).toLocaleString("en-US") : gas });
+  const fee = input.decoded.fee;
+  if (fee) {
+    fees.push({ label: "Fee", value: feeText(input.expectedChainId, fee.amount) });
+    fees.push({ label: "Gas", value: /^\d+$/.test(fee.gas) ? Number(fee.gas).toLocaleString("en-US") : fee.gas });
   } else {
     fees.push({ label: "Fee", value: "Not specified" });
   }
@@ -432,6 +461,7 @@ export async function buildSignSafety(input: {
     chainId: input.decoded.chainId || input.expectedChainId,
     messages,
     fees,
+    ...(fee ? { fee: { amount: fee.amount.map(({ denom, amount }) => ({ denom, amount })), gas: fee.gas } } : {}),
     warnings,
     requiresBlindSigning: requiresBlindSigning && !settings.blindSigning,
     memo: "memo" in input.decoded ? input.decoded.memo : undefined,
@@ -463,11 +493,10 @@ export async function decodeAminoSignDoc(
   const amino = signDoc as {
     chain_id?: string;
     memo?: string;
-    fee?: { amount: Array<{ amount: string; denom: string }>; gas: string };
+    fee?: unknown;
     msgs?: Array<{ type: string; value: Record<string, unknown> }>;
   };
   const messages = summarizeAminoMsgs(amino.msgs ?? []);
-  const feeAmount = amino.fee?.amount?.[0];
   return buildSignSafety({
     expectedChainId,
     coins: (amino.msgs ?? []).map((msg) =>
@@ -477,13 +506,7 @@ export async function decodeAminoSignDoc(
       chainId: amino.chain_id ?? expectedChainId,
       messages,
       memo: amino.memo,
-      fee: feeAmount
-        ? {
-            amount: feeAmount.amount,
-            denom: feeAmount.denom,
-            gas: amino.fee?.gas ?? "0",
-          }
-        : undefined,
+      fee: aminoFee(amino.fee),
     },
   });
 }

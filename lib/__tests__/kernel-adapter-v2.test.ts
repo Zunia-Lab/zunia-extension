@@ -113,7 +113,7 @@ describe("kernel 0.1.1: payload v2", () => {
         { typeUrl: "/ibc.applications.transfer.v1.MsgTransfer", summary: TRANSFER, recipient: "osmo1receiver", detail: transfer.detail },
       ],
       memo: "for lunch",
-      fee: { amount: "5000", denom: "uatom", gas: "200000" },
+      fee: { amount: [{ denom: "uatom", amount: "5000" }], gas: "200000" },
     });
   });
 
@@ -137,10 +137,22 @@ describe("kernel 0.1.1: payload v2", () => {
     ]);
   });
 
-  it("names a fee in one coin only, never a fee in several by its first", () => {
-    const twoCoins = { amount: [{ denom: "uatom", amount: "5000" }, { denom: "uosmo", amount: "1" }], gasLimit: "200000" };
-    expect(adapt(v2([send], { fee: twoCoins }))).not.toHaveProperty("fee");
-    expect(adapt(v2([send], { fee: { amount: [], gasLimit: "200000" } }))).not.toHaveProperty("fee");
+  it("reads every coin of a fee, which the chain deducts all of, never a fee in several by its first", () => {
+    const twoCoins = { amount: [{ denom: "uion", amount: "1" }, { denom: "uosmo", amount: "1000000000" }], gasLimit: "250000" };
+    expect(adapt(v2([send], { fee: twoCoins })).fee).toStrictEqual({
+      amount: [
+        { denom: "uion", amount: "1" },
+        { denom: "uosmo", amount: "1000000000" },
+      ],
+      gas: "250000",
+    });
+    expect(adapt(v2([send], { fee: { amount: [], gasLimit: "200000" } })).fee).toStrictEqual({ amount: [], gas: "200000" });
+  });
+
+  it("names no fee when one of its coins is not a coin", () => {
+    const odd = { amount: [{ denom: "uatom", amount: "5000" }, { denom: "uosmo", amount: 1 }], gasLimit: "200000" };
+    expect(adapt(v2([send], { fee: odd }))).not.toHaveProperty("fee");
+    expect(adapt(v2([send], { fee: { amount: [null], gasLimit: "200000" } }))).not.toHaveProperty("fee");
   });
 
   it("drops a detail it does not know, or one missing what the prompt reads", () => {

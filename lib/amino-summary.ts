@@ -85,6 +85,15 @@ function coin(value: unknown, aboveZero = false): Coin | null {
   return name !== null && units !== null ? { denom: name, amount: units } : null;
 }
 
+/**
+ * A coin in the spelling the chain's Amino JSON gives it, a valid denom and a canonical amount,
+ * or null. What a fee or a contract call's coins must be before the prompt names them.
+ */
+export const aminoCoin = (value: unknown): Coin | null => coin(value);
+
+/** A u64 in the spelling the chain's Amino JSON gives it (a gas limit), or null. */
+export const aminoUint64 = (value: unknown): string | null => uint64(value);
+
 /** A coin as the kernel writes it in a sentence: `1000000 uatom`. */
 const coinText = (value: Coin): string => `${value.amount} ${value.denom}`;
 

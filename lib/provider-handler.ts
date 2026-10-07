@@ -704,13 +704,13 @@ async function dispatchProviderRequest(input: ProviderRequest): Promise<unknown>
         detail: {
           signer,
           summary,
-          // The transaction as decoded: each message with what its summary
-          // leaves out, a contract call's message and coins, a transfer's
-          // packet memo.
+          // The transaction as decoded: the fee as signed, every coin of it,
+          // and each message with what its summary leaves out, a contract
+          // call's message and coins, a transfer's packet memo.
           json: previewJson({
             chainId: summary.chainId,
             memo: summary.memo ?? "",
-            fees: summary.fees,
+            fee: summary.fee ?? null,
             messages: summary.messages,
           }),
           ...(feeChoice ? { feeChoice } : {}),

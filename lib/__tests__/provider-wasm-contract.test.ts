@@ -14,7 +14,8 @@
  *   (fixtures/amino-summaries.json, made by CosmJS and osmojs).
  * - What a site writes to mislead the prompt does not, in either mode:
  *   - padding never pushes a receiver out of the raw transaction, which is
- *     shown whole or refused.
+ *     shown whole or refused;
+ *   - a fee names every coin it pays.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -162,7 +163,7 @@ interface Prompt {
   /** The "Raw transaction" the prompt shows, as it shows it. */
   json: string;
   /** The direct-mode "Raw transaction", parsed. */
-  raw: { messages: Array<SignSafetySummary["messages"][number]> };
+  raw: { fee: SignSafetySummary["fee"] | null; messages: Array<SignSafetySummary["messages"][number]> };
   /** Settles once the request is answered. */
   pending: Promise<unknown>;
 }
@@ -491,5 +492,52 @@ describe("the raw transaction is shown whole, never cut", () => {
     const { summary } = await prompted(messagesDoc([["/ibc.applications.transfer.v1.MsgTransfer", transferMessage(USER_ON_HUB, twoWays)]]));
     expect(summary.warnings).toEqual(expect.arrayContaining([PACKET_MEMO_NOTICE, PACKET_MEMO_UNREADABLE]));
     expect(summary.warnings.join(" ")).not.toContain("forwards the tokens");
+  });
+});
+
+describe("a fee in several coins", () => {
+  const TO = "osmo1jrkmdcwgq94uaamx6zax2luewlhf7u4k5r4pqs";
+  const fees = [
+    { label: "Fee", value: "0.000001 ION + 1000 OSMO" },
+    { label: "Gas", value: "250,000" },
+  ];
+
+  it("direct: names every coin, and the raw transaction holds them", async () => {
+    installBrowser();
+    const send = new ProtoWriter().string(1, SIGNER).string(2, TO).repeatedMessage(3, [coin("uosmo", "1")]).intoBytes();
+    const { summary, raw } = await prompted(
+      messagesDoc([["/cosmos.bank.v1beta1.MsgSend", send]], [coin("uion", "1"), coin("uosmo", "1000000000")]),
+    );
+    expect(summary.fees).toEqual(fees);
+    expect(raw.fee).toEqual({
+      amount: [
+        { denom: "uion", amount: "1" },
+        { denom: "uosmo", amount: "1000000000" },
+      ],
+      gas: "250000",
+    });
+  });
+
+  it("amino: names every coin, not the first", async () => {
+    installBrowser();
+    const fee = { amount: [{ denom: "uion", amount: "1" }, { denom: "uosmo", amount: "1000000000" }], gas: "250000" };
+    const send = { type: "cosmos-sdk/MsgSend", value: { amount: [{ amount: "1", denom: "uosmo" }], from_address: SIGNER, to_address: TO } };
+    const { summary } = await promptedAmino(aminoDoc([send], fee));
+    expect(summary.fees).toEqual(fees);
+    expect(summary.fee).toEqual({ amount: fee.amount, gas: "250000" });
+  });
+
+  it("amino: names no fee it cannot read as the chain would", async () => {
+    installBrowser();
+    const send = { type: "cosmos-sdk/MsgSend", value: { amount: [{ amount: "1", denom: "uosmo" }], from_address: SIGNER, to_address: TO } };
+    for (const fee of [
+      { amount: [{ denom: "uosmo", amount: "5000" }, { denom: "uosmo + 1000000000 uatom", amount: "1" }], gas: "200000" },
+      { amount: [{ denom: "uosmo", amount: "5000" }], gas: "200000 plus 1,000 OSMO" },
+      { amount: "5000uosmo", gas: "200000" },
+    ]) {
+      resetApprovalsForTests();
+      const { summary } = await promptedAmino(aminoDoc([send], fee));
+      expect(summary.fees).toEqual([{ label: "Fee", value: "Not specified" }]);
+    }
   });
 });

@@ -561,7 +561,7 @@ describe("the resolved line under an approval summary", () => {
             { typeUrl: "", summary: `Send 1 ${UNLISTED} to ${OTHER_OSMO}` },
             { typeUrl: "/x.Msg", summary: "UNKNOWN ACTION: /x.Msg", unknown: true },
           ],
-          fee: { amount: "5000", denom: "uosmo", gas: "200000" },
+          fee: { amount: [{ denom: "uosmo", amount: "5000" }], gas: "200000" },
         },
       });
       expect(summary.messages[0]).toEqual({ type: "", summary: raw, unknown: undefined });
@@ -577,7 +577,7 @@ describe("the resolved line under an approval summary", () => {
           chainId: "osmosis-1",
           accountNumber: "0",
           messages: [{ typeUrl: "", summary: `Send 1 ${UNLISTED} to ${OTHER_OSMO}` }],
-          fee: { amount: "5000", denom: UNLISTED, gas: "200000" },
+          fee: { amount: [{ denom: UNLISTED, amount: "5000" }], gas: "200000" },
         },
       });
       expect(summary.fees[0]).toEqual({ label: "Fee", value: `5000 ${UNLISTED}` });

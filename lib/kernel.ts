@@ -73,7 +73,11 @@ export interface DecodedDirectTx {
   accountNumber: string;
   messages: DecodedTxMessage[];
   memo?: string;
-  fee?: { amount: string; denom: string; gas: string };
+  /**
+   * The fee: every coin it pays, which a chain deducts all of, and the gas limit. Absent when
+   * the kernel did not report it (0.1.0).
+   */
+  fee?: { amount: KernelCoin[]; gas: string };
 }
 
 /** Version reported by the JS kernel. Distinct from the WASM kernel's crate version. */
@@ -874,10 +878,15 @@ export function adaptWasmKernel(
       const decoded = mod.decodeDirectTx(signDocHex);
       const v2 = payloadV2(decoded);
       if (v2) {
-        // A fee in one coin is what the prompt can name; a fee in several, rare as it is, stays
-        // "Not specified" rather than shown as its first coin alone.
-        const [coin, ...more] = v2.fee.amount;
-        const fee = coin && more.length === 0 ? { amount: coin.amount, denom: coin.denom, gas: v2.fee.gasLimit } : null;
+        // Every coin of the fee, since the chain takes every one: a fee in several coins named
+        // by its first would hide the rest. A coin not spelled as one leaves the fee unnamed.
+        const coins = v2.fee.amount.map((coin: unknown) => {
+          const { denom, amount } = (coin ?? {}) as Partial<KernelCoin>;
+          return typeof denom === "string" && typeof amount === "string" ? { denom, amount } : null;
+        });
+        const fee = coins.every((coin): coin is KernelCoin => coin !== null)
+          ? { amount: coins, gas: v2.fee.gasLimit }
+          : null;
         return {
           chainId: v2.chainId,
           accountNumber: v2.accountNumber,
