@@ -310,24 +310,40 @@ function originWarnings(origin: string): string[] {
   return assessOrigin(origin).warnings;
 }
 
-/** Pretty JSON for the approval screen. Bytes stay a length, so a Direct doc stays readable. */
+/**
+ * The longest "Raw transaction" a prompt is handed, in characters, as the prompt spells it out.
+ * Far above any transaction a chain takes: CometBFT's default mempool limit is 1 MiB a
+ * transaction, and the largest message there is, a contract upload, carries at most 800 KiB of
+ * wasm under wasmd's default.
+ */
+const PREVIEW_MAX_CHARS = 4 * 1024 * 1024;
+
+/**
+ * Pretty JSON for the approval screen, always whole. Bytes stay a length, so a Direct doc stays
+ * readable. A transaction that cannot be shown whole is refused, never cut: padding placed ahead
+ * of a packet memo's receiver or a contract's would push what decides where the funds go out of
+ * the text the prompt tells the user to check.
+ */
 function previewJson(value: unknown): string {
-  let text = "";
+  let text: string | undefined;
   try {
-    text =
-      JSON.stringify(
-        value,
-        (_key, item) => {
-          if (typeof item === "bigint") return item.toString();
-          if (item instanceof Uint8Array) return `${item.length} bytes`;
-          return item;
-        },
-        2,
-      ) ?? "";
+    text = JSON.stringify(
+      value,
+      (_key, item) => {
+        if (typeof item === "bigint") return item.toString();
+        if (item instanceof Uint8Array) return `${item.length} bytes`;
+        return item;
+      },
+      2,
+    );
   } catch {
-    return "";
+    text = undefined;
   }
-  return text.length > 12_000 ? `${text.slice(0, 12_000)}\n[truncated]` : text;
+  if (text === undefined) throw new ProviderError("UNSUPPORTED", "This transaction cannot be shown in full");
+  if (text.length > PREVIEW_MAX_CHARS) {
+    throw new ProviderError("UNSUPPORTED", "This transaction is too large to show in full");
+  }
+  return text;
 }
 
 /**

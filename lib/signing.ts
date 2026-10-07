@@ -16,6 +16,7 @@ import { SECURITY_CONFIG } from "../config/security";
 import { describeAminoMsg } from "./amino-summary";
 import { exactCoinText, isBankSpelling } from "./chain-queries";
 import { cosmWasmActionName, describeCw721Action } from "./nft";
+import { packetMemoNote } from "./packet-memo";
 import { assertSameChain } from "./provider-guards";
 import { getSettings } from "./settings";
 import { amountFieldText } from "./token-amount";
@@ -188,7 +189,8 @@ function withNftSentences(messages: readonly DecodedTxMessage[]): DecodedTxMessa
 /**
  * Told whenever a transfer carries a packet memo. The memo is not in the
  * summary, and packet-forward or ibc-hooks instructions in it can send the
- * tokens on from the receiving chain to another chain and another receiver.
+ * tokens on from the receiving chain to another chain and another receiver;
+ * lib/packet-memo.ts names where, in a note of its own beside this one.
  */
 const PACKET_MEMO_NOTICE =
   "This transfer carries instructions for the receiving chain (packet memo). Check them under Raw transaction.";
@@ -387,7 +389,11 @@ export async function buildSignSafety(input: {
         notes.add(note);
       }
     }
-    if (m.detail?.kind === "ibc-transfer" && m.detail.memo.trim() !== "") notes.add(PACKET_MEMO_NOTICE);
+    if (m.detail?.kind === "ibc-transfer" && m.detail.memo.trim() !== "") {
+      notes.add(PACKET_MEMO_NOTICE);
+      const where = packetMemoNote(m.detail.memo);
+      if (where) notes.add(where);
+    }
     return {
       type: m.typeUrl,
       summary: m.summary,

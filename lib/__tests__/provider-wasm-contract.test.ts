@@ -12,6 +12,9 @@
  * - A message the kernel cannot read is refused by name.
  * - The Amino form of a message reads exactly as its direct bytes do
  *   (fixtures/amino-summaries.json, made by CosmJS and osmojs).
+ * - What a site writes to mislead the prompt does not, in either mode:
+ *   - padding never pushes a receiver out of the raw transaction, which is
+ *     shown whole or refused.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -46,6 +49,7 @@ import { getPendingApprovals, resetApprovalsForTests, resolveApproval, type Appr
 import { handleProviderRequest } from "../provider-handler";
 import { encodeDirectSignDoc } from "../provider-guards";
 import { ProtoWriter, readProtoFields } from "../proto";
+import { PACKET_MEMO_UNREADABLE } from "../packet-memo";
 import { decodeAminoSignDoc, decodeDirectSignBytes, type SignSafetySummary } from "../signing";
 import { STORAGE_KEYS } from "../storage-keys";
 import fixture from "./fixtures/amino-summaries.json";
@@ -59,6 +63,11 @@ const NFT_RECIPIENT = "osmo1jrkmdcwgq94uaamx6zax2luewlhf7u4k5r4pqs";
 const OUT = "ibc/794C7D7F3B857713878A3A1927251FA6AC1EEE520424C1F6FAFE9BA26D476138";
 const PACKET_MEMO_NOTICE =
   "This transfer carries instructions for the receiving chain (packet memo). Check them under Raw transaction.";
+/** The signer's own address on the Hub, where a site may claim to send something. */
+const USER_ON_HUB = "cosmos1qx8te2rzsdyj47q2hswzclqc52gp9nju0yccyk";
+/** Where a forged request really sends the funds. Shown, never checked: it lives on another chain. */
+const ATTACKER_STRIDE = "stride1qx8te2rzsdyj47q2hswzclqc52gp9nju9dlkmh";
+const ATTACKER_HUB = "cosmos1jrkmdcwgq94uaamx6zax2luewlhf7u4kucx3kz";
 
 function area(map: Map<string, unknown>) {
   return {
@@ -150,15 +159,43 @@ function referenceDoc(name: string): WireDoc {
 interface Prompt {
   approval: ApprovalRequest;
   summary: SignSafetySummary;
-  /** The "Raw transaction" the prompt shows, parsed. */
+  /** The "Raw transaction" the prompt shows, as it shows it. */
+  json: string;
+  /** The direct-mode "Raw transaction", parsed. */
   raw: { messages: Array<SignSafetySummary["messages"][number]> };
   /** Settles once the request is answered. */
   pending: Promise<unknown>;
 }
 
+/** An Amino sign doc as a dApp hands it to signAmino. */
+interface AminoDoc {
+  chain_id: string;
+  account_number: string;
+  sequence: string;
+  fee: unknown;
+  memo: string;
+  msgs: Array<{ type: string; value: Record<string, unknown> }>;
+}
+
+function aminoDoc(
+  msgs: AminoDoc["msgs"],
+  fee: unknown = { amount: [{ denom: "uosmo", amount: "5000" }], gas: "200000" },
+): AminoDoc {
+  return { chain_id: CHAIN, account_number: "12345", sequence: "7", fee, memo: "", msgs };
+}
+
 /** Ask for a direct signature: the prompt it opens, or the refusal it got instead. */
-async function ask(doc: WireDoc): Promise<Prompt | string> {
-  const pending = handleProviderRequest({ origin: ORIGIN, method: "signDirect", args: [doc.chainId, SIGNER, doc] });
+function ask(doc: WireDoc): Promise<Prompt | string> {
+  return request("signDirect", doc.chainId, doc);
+}
+
+/** Ask for an Amino signature, the same way. */
+function askAmino(doc: AminoDoc): Promise<Prompt | string> {
+  return request("signAmino", doc.chain_id, doc);
+}
+
+async function request(method: "signDirect" | "signAmino", chainId: string, doc: unknown): Promise<Prompt | string> {
+  const pending = handleProviderRequest({ origin: ORIGIN, method, args: [chainId, SIGNER, doc] });
   const outcome = await Promise.race([
     pending.then(
       () => "resolved",
@@ -174,13 +211,62 @@ async function ask(doc: WireDoc): Promise<Prompt | string> {
   if (outcome !== "prompt") return outcome;
   const approval = getPendingApprovals()[0]!;
   const detail = approval.detail as { summary: SignSafetySummary; json: string };
-  return { approval, summary: detail.summary, raw: JSON.parse(detail.json) as Prompt["raw"], pending };
+  return { approval, summary: detail.summary, json: detail.json, raw: JSON.parse(detail.json) as Prompt["raw"], pending };
 }
 
 async function prompted(doc: WireDoc): Promise<Prompt> {
   const outcome = await ask(doc);
   if (typeof outcome === "string") throw new Error(`expected a prompt, got ${outcome}`);
   return outcome;
+}
+
+async function promptedAmino(doc: AminoDoc): Promise<Prompt> {
+  const outcome = await askAmino(doc);
+  if (typeof outcome === "string") throw new Error(`expected a prompt, got ${outcome}`);
+  return outcome;
+}
+
+/** A MsgTransfer from the signer, over channel-0 to `receiver`, carrying `memo`. */
+function transferMessage(receiver: string, memo: string): Uint8Array {
+  return new ProtoWriter()
+    .string(1, "transfer")
+    .string(2, "channel-0")
+    .message(3, coin("uosmo", "250000000"))
+    .string(4, SIGNER)
+    .string(5, receiver)
+    .uint64(7, 1_900_000_000_000_000_000n)
+    .string(8, memo)
+    .intoBytes();
+}
+
+/** The same transfer in Amino. */
+function aminoTransfer(receiver: string, memo: string): AminoDoc["msgs"][number] {
+  return {
+    type: "cosmos-sdk/MsgTransfer",
+    value: {
+      memo,
+      receiver,
+      sender: SIGNER,
+      source_channel: "channel-0",
+      source_port: "transfer",
+      timeout_height: {},
+      timeout_timestamp: "1900000000000000000",
+      token: { amount: "250000000", denom: "uosmo" },
+    },
+  };
+}
+
+/** A direct SignDoc holding these messages, with a fee in these coins. */
+function messagesDoc(anys: Array<[typeUrl: string, value: Uint8Array]>, feeCoins = [coin("uosmo", "5000")], gas = 250_000n): WireDoc {
+  const bodyBytes = new ProtoWriter()
+    .repeatedMessage(
+      1,
+      anys.map(([typeUrl, value]) => new ProtoWriter().string(1, typeUrl).bytes(2, value).intoBytes()),
+    )
+    .intoBytes();
+  const fee = new ProtoWriter().repeatedMessage(1, feeCoins).uint64(2, gas).intoBytes();
+  const authInfoBytes = new ProtoWriter().message(2, fee).intoBytes();
+  return { bodyBytes: Array.from(bodyBytes), authInfoBytes: Array.from(authInfoBytes), chainId: CHAIN, accountNumber: "12345" };
 }
 
 afterEach(() => {
@@ -326,5 +412,84 @@ describe("both sign modes read the same", () => {
     const direct = await decodeDirectSignBytes(entry.chainId, Uint8Array.from(Buffer.from(entry.signDocHex, "hex")));
     expect(direct.messages[0]!.unknown).toBeFalsy();
     expect(shown(amino)).toEqual(shown(direct));
+  });
+});
+
+describe("the raw transaction is shown whole, never cut", () => {
+  /** Valid JSON for encoding/json, within ICS20's 32,768-byte memo limit: whitespace before the receiver. */
+  const paddedForward = `{"forward":{${" ".repeat(12_500)}"receiver":"${ATTACKER_STRIDE}","port":"transfer","channel":"channel-5"}}`;
+  const forwardNote = `The packet memo forwards the tokens from the receiving chain over channel-5 to ${ATTACKER_STRIDE}.`;
+
+  it("direct: a transfer's packet-forward receiver behind 12k of padding, named beside the notice", async () => {
+    installBrowser();
+    const { summary, json } = await prompted(messagesDoc([["/ibc.applications.transfer.v1.MsgTransfer", transferMessage(USER_ON_HUB, paddedForward)]]));
+    expect(summary.messages[0]!.summary).toBe(`IBC transfer 250000000 uosmo to ${USER_ON_HUB} over channel-0`);
+    expect(json).toContain(ATTACKER_STRIDE);
+    expect(json).not.toContain("[truncated]");
+    expect(summary.warnings).toEqual(expect.arrayContaining([PACKET_MEMO_NOTICE, forwardNote]));
+  });
+
+  it("amino: the same transfer, its receiver in the raw transaction and named", async () => {
+    installBrowser();
+    const { summary, json } = await promptedAmino(aminoDoc([aminoTransfer(USER_ON_HUB, paddedForward)]));
+    expect(summary.messages[0]!.summary).toBe(`IBC transfer 250000000 uosmo to ${USER_ON_HUB} over channel-0`);
+    expect(json).toContain(ATTACKER_STRIDE);
+    expect(summary.warnings).toEqual(expect.arrayContaining([PACKET_MEMO_NOTICE, forwardNote]));
+  });
+
+  it("direct: a swap's receiver written after a 12k next_memo", async () => {
+    installBrowser();
+    const msg = {
+      osmosis_swap: {
+        output_denom: "uatom",
+        slippage: { twap: { window_seconds: 10, slippage_percentage: "5" } },
+        next_memo: { note: "x".repeat(12_500) },
+        receiver: ATTACKER_HUB,
+        on_failed_delivery: "do_nothing",
+      },
+    };
+    const { summary, json } = await prompted(contractCall(XCS, msg, [coin("uosmo", "1000000000")]));
+    expect(summary.messages[0]!.summary).toBe(`Execute "osmosis_swap" on ${XCS} sending 1000000000 uosmo`);
+    expect(json).toContain(ATTACKER_HUB);
+  });
+
+  it("direct: a padded first message leaves the second one's detail in view", async () => {
+    installBrowser();
+    const padded = new ProtoWriter()
+      .string(1, SIGNER)
+      .string(2, XCS)
+      .bytes(3, new TextEncoder().encode(JSON.stringify({ recover: { note: "y".repeat(12_500) } })))
+      .intoBytes();
+    const forward = `{"forward":{"receiver":"${ATTACKER_STRIDE}","port":"transfer","channel":"channel-5"}}`;
+    const { summary, raw } = await prompted(
+      messagesDoc([
+        ["/cosmwasm.wasm.v1.MsgExecuteContract", padded],
+        ["/ibc.applications.transfer.v1.MsgTransfer", transferMessage(USER_ON_HUB, forward)],
+      ]),
+    );
+    expect(raw.messages[1]!.detail).toMatchObject({ kind: "ibc-transfer", memo: forward });
+    expect(summary.warnings).toContain(forwardNote);
+  });
+
+  it("refuses, in both modes, a transaction too large to show whole rather than cut it", async () => {
+    installBrowser();
+    const refusal = "refused UNSUPPORTED: This transaction is too large to show in full";
+    // Amino: a 4.3 MB memo.
+    const huge = `{"forward":{${" ".repeat(4_300_000)}"receiver":"${ATTACKER_STRIDE}","port":"transfer","channel":"channel-5"}}`;
+    expect(await askAmino(aminoDoc([aminoTransfer(USER_ON_HUB, huge)]))).toBe(refusal);
+    // Direct: 60 KB of contract message, nested 100 deep, which the prompt's JSON spells out over
+    // more than 4 MB.
+    const deep = `{"x":${"[".repeat(100)}${Array(30_000).fill("0").join(",")}${"]".repeat(100)}}`;
+    expect(await ask(contractCall(XCS, JSON.parse(deep)))).toBe(refusal);
+    expect(getPendingApprovals()).toEqual([]);
+  });
+
+  it("does not name a forward the chain could read differently, and says so", async () => {
+    installBrowser();
+    // encoding/json matches "Receiver" to the receiver field too, and the last one wins.
+    const twoWays = `{"forward":{"receiver":"${USER_ON_HUB}","port":"transfer","channel":"channel-5","Receiver":"${ATTACKER_STRIDE}"}}`;
+    const { summary } = await prompted(messagesDoc([["/ibc.applications.transfer.v1.MsgTransfer", transferMessage(USER_ON_HUB, twoWays)]]));
+    expect(summary.warnings).toEqual(expect.arrayContaining([PACKET_MEMO_NOTICE, PACKET_MEMO_UNREADABLE]));
+    expect(summary.warnings.join(" ")).not.toContain("forwards the tokens");
   });
 });
