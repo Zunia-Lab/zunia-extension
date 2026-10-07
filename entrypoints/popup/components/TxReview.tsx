@@ -374,6 +374,12 @@ export function explainTxError(raw: string): { readonly message: string; readonl
     ],
     [/account sequence mismatch|incorrect account sequence/i, "Another transaction from this account went first. Try again."],
     [/timed? ?out|deadline exceeded/i, "The network did not answer in time. Check Activity before trying again: it may still go through."],
+    // The SDK's own refusal of a signature (code 4). Lowercase only: a contract's
+    // "Unauthorized" is that contract's error, not the chain's verdict on the signature.
+    [
+      /signature verification failed|unauthorized/,
+      "The chain did not accept the signature. Nothing moved. Update Zunia and try again.",
+    ],
   ];
   for (const [pattern, message] of rules) {
     if (pattern.test(text)) return { message, detail: text || null };

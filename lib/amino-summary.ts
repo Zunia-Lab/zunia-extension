@@ -11,7 +11,8 @@
  * - `cosmos-sdk/MsgDelegate`, `MsgUndelegate`, `MsgBeginRedelegate` and
  *   `MsgWithdrawDelegationReward`;
  * - `cosmos-sdk/MsgVote` and gov v1's `cosmos-sdk/v1/MsgVote`;
- * - `cosmos-sdk/MsgTransfer`, whose receiver is the message's recipient;
+ * - `cosmos-sdk/MsgTransfer`, whose receiver is the message's recipient, with the kernel's
+ *   detail for it: channel, receiver, token and packet memo;
  * - the Osmosis poolmanager swaps `osmosis/poolmanager/swap-exact-amount-in`,
  *   `split-amount-in`, `swap-exact-amount-out` and `split-amount-out`.
  *
@@ -184,8 +185,21 @@ function transfer(value: Fields): Description | null {
   const token = coin(value.token);
   const receiver = renderable(value.receiver);
   if (!renderable(value.source_port) || !channel || !token || !account(value.sender) || !receiver) return null;
-  if (!readableTimeout(value) || (value.memo !== undefined && typeof value.memo !== "string")) return null;
-  return { summary: `IBC transfer ${coinText(token)} to ${receiver} over ${channel}`, recipient: receiver };
+  const memo = value.memo ?? "";
+  if (!readableTimeout(value) || typeof memo !== "string") return null;
+  return {
+    summary: `IBC transfer ${coinText(token)} to ${receiver} over ${channel}`,
+    recipient: receiver,
+    // The kernel's detail for the direct form. The packet memo is not in the sentence, and
+    // packet-forward or ibc-hooks instructions in it can move the tokens on from the receiver.
+    detail: {
+      kind: "ibc-transfer",
+      sourceChannel: channel,
+      receiver,
+      token: { denom: token.denom, amount: token.amount },
+      memo,
+    },
+  };
 }
 
 interface Hop {
@@ -319,10 +333,10 @@ const DESCRIBERS: ReadonlyMap<string, (value: Fields) => Description | null> = n
 export const DESCRIBED_AMINO_TYPES: readonly string[] = [...DESCRIBERS.keys()];
 
 /**
- * The kernel's sentence for an Amino message of one of the types above, with its recipient for
- * a transfer; `unknown` only for a vote whose option is outside the enum. Null for any other
- * type, and for a message of these types that is not in the shape the chain's Amino JSON gives
- * it, which the caller shows with its generic summary.
+ * The kernel's sentence for an Amino message of one of the types above, with a transfer's
+ * recipient and detail; `unknown` only for a vote whose option is outside the enum. Null for
+ * any other type, and for a message of these types that is not in the shape the chain's Amino
+ * JSON gives it, which the caller shows with its generic summary.
  */
 export function describeAminoMsg(type: string, value: unknown): DecodedTxMessage | null {
   const describe = DESCRIBERS.get(type);

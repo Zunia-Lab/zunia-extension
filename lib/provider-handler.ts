@@ -79,6 +79,7 @@ import {
   decodeAminoSignDoc,
   decodeDirectSignBytes,
   rememberRecipient,
+  type SignSafetySummary,
 } from "./signing";
 import { STORAGE_KEYS } from "./storage-keys";
 import { SECURITY_CONFIG } from "../config/security";
@@ -279,7 +280,14 @@ async function requirePermission(origin: string, chainId: string): Promise<void>
 
 interface ActiveKey {
   name: string;
+  /** The account's row in the wallet; what "the active account changed" compares. */
   index: number;
+  /**
+   * The BIP-44 address index the key is derived at: the account index for an
+   * account of the main phrase, 0 for an account with its own phrase. Every
+   * signature is made at this index, or it does not match `derived.pubKey`.
+   */
+  derivationIndex: number;
   derived: DerivedAddress;
 }
 
@@ -289,15 +297,12 @@ async function activeKey(mnemonic: string, chainId: string): Promise<ActiveKey> 
   const account = accounts.find((a) => a.index === active) ?? accounts[0];
   if (!account) throw new Error("No account");
   const kernel = await loadKernel();
+  const derivationIndex = derivationIndexOf(account);
   return {
     name: account.name,
     index: account.index,
-    derived: kernel.deriveAddress(
-      mnemonic,
-      "",
-      chainJsonFor(chainId),
-      derivationIndexOf(account),
-    ),
+    derivationIndex,
+    derived: kernel.deriveAddress(mnemonic, "", chainJsonFor(chainId), derivationIndex),
   };
 }
 
@@ -323,6 +328,36 @@ function previewJson(value: unknown): string {
     return "";
   }
   return text.length > 12_000 ? `${text.slice(0, 12_000)}\n[truncated]` : text;
+}
+
+/**
+ * The refusal a site gets when a document holds a message Zunia cannot read
+ * and blind signing is off. Keeps the sentence sites already match on, and
+ * names each unreadable type so the site (and its user) knows which one.
+ */
+export function blindSigningRefusal(summary: {
+  messages: Array<{ type: string; unknown?: boolean }>;
+}): ProviderError {
+  const named = summary.messages.filter((m) => m.unknown).map((m) => m.type.trim());
+  const types = [...new Set(named.filter(Boolean))]
+    .map((type) => (type.length > 128 ? `${type.slice(0, 127)}…` : type))
+    .slice(0, 5);
+  return new ProviderError(
+    "UNSUPPORTED",
+    `Blind signing disabled for unknown messages${types.length > 0 ? `: ${types.join(", ")}` : ""}`,
+  );
+}
+
+/**
+ * After an approval, every address the prompt named as a recipient (a send's,
+ * a transfer's receiver, an NFT's new owner), in either sign mode, so paying it
+ * again is not "first-time". Every message, so a multi-send teaches the
+ * address book every recipient, not the first one N times.
+ */
+async function rememberRecipients(summary: SignSafetySummary): Promise<void> {
+  for (const message of summary.messages) {
+    if (message.recipient) await rememberRecipient(message.recipient);
+  }
 }
 
 /** Record a use of the grant. Bookkeeping only: it never fails the request. */
@@ -575,7 +610,7 @@ async function dispatchProviderRequest(input: ProviderRequest): Promise<unknown>
 
       const summary = await decodeAminoSignDoc(chainId, signDoc);
       if (summary.requiresBlindSigning) {
-        throw new ProviderError("UNSUPPORTED", "Blind signing disabled for unknown messages");
+        throw blindSigningRefusal(summary);
       }
       const feeChoice = feeChoiceFor(chainId, aminoFeeOf(signDoc), options);
       const answer = await approveInPopup({
@@ -599,15 +634,7 @@ async function dispatchProviderRequest(input: ProviderRequest): Promise<unknown>
         before.index,
       );
 
-      // Walk the sign doc's own messages so a multi-send teaches the address
-      // book every recipient, not the first one N times.
-      const outgoing = (
-        signDoc as { msgs?: Array<{ value?: { to_address?: string } }> }
-      )?.msgs;
-      for (const msg of outgoing ?? []) {
-        const recipient = msg?.value?.to_address;
-        if (recipient) await rememberRecipient(recipient);
-      }
+      await rememberRecipients(summary);
 
       // The site reads the fee back from `signed`, as CosmJS does, so a
       // tier the user picked is what gets broadcast.
@@ -625,7 +652,7 @@ async function dispatchProviderRequest(input: ProviderRequest): Promise<unknown>
         current,
         "",
         chainJsonFor(chainId),
-        key.index,
+        key.derivationIndex,
         bytesToHex(serializeAminoSignDoc(signed)),
       );
       noteUse(origin, { chainId, address: key.derived.bech32Address });
@@ -649,7 +676,7 @@ async function dispatchProviderRequest(input: ProviderRequest): Promise<unknown>
 
       const summary = await decodeDirectSignBytes(chainId, signBytes);
       if (summary.requiresBlindSigning) {
-        throw new ProviderError("UNSUPPORTED", "Blind signing disabled for unknown messages");
+        throw blindSigningRefusal(summary);
       }
       const feeChoice = feeChoiceFor(chainId, authInfoFee(doc.authInfoBytes), options);
       const answer = await approveInPopup({
@@ -661,6 +688,9 @@ async function dispatchProviderRequest(input: ProviderRequest): Promise<unknown>
         detail: {
           signer,
           summary,
+          // The transaction as decoded: each message with what its summary
+          // leaves out, a contract call's message and coins, a transfer's
+          // packet memo.
           json: previewJson({
             chainId: summary.chainId,
             memo: summary.memo ?? "",
@@ -677,6 +707,7 @@ async function dispatchProviderRequest(input: ProviderRequest): Promise<unknown>
         signer as string,
         before.index,
       );
+      await rememberRecipients(summary);
 
       const tier = pickedTier(feeChoice, answer);
       let signedDoc = doc;
@@ -701,7 +732,7 @@ async function dispatchProviderRequest(input: ProviderRequest): Promise<unknown>
         current,
         "",
         chainJsonFor(chainId),
-        key.index,
+        key.derivationIndex,
         bytesToHex(signedDoc === doc ? signBytes : encodeDirectSignDoc(signedDoc)),
       );
       noteUse(origin, { chainId, address: key.derived.bech32Address });
@@ -753,7 +784,7 @@ async function dispatchProviderRequest(input: ProviderRequest): Promise<unknown>
         current,
         "",
         chainJsonFor(chainId),
-        key.index,
+        key.derivationIndex,
         adr36SignBytesHex(signer, dataBytes),
       );
       noteUse(origin, { chainId, address: key.derived.bech32Address });

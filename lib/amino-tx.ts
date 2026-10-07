@@ -33,7 +33,7 @@ export type StdSignDoc = {
 
 export type VoteOption = "yes" | "no" | "veto" | "abstain";
 
-const VOTE_AMINO: Record<VoteOption, string> = {
+const VOTE_NAMES: Record<VoteOption, string> = {
   yes: "VOTE_OPTION_YES",
   abstain: "VOTE_OPTION_ABSTAIN",
   no: "VOTE_OPTION_NO",
@@ -46,6 +46,20 @@ const VOTE_PROTO: Record<VoteOption, number> = {
   no: 3,
   veto: 4,
 };
+
+/**
+ * The `VoteOption` number a vote message carries, 1 to 4. Amino JSON writes
+ * the enum as that number (what the chain rebuilds and CosmJS signs); the
+ * enum name is accepted too, for documents built before 0.1.5. Anything else
+ * is 0, which is never signed.
+ */
+export function voteOptionNumber(option: unknown): number {
+  if (typeof option === "number") {
+    return Number.isInteger(option) && option >= 1 && option <= 4 ? option : 0;
+  }
+  const key = (Object.keys(VOTE_NAMES) as VoteOption[]).find((k) => VOTE_NAMES[k] === option);
+  return key ? VOTE_PROTO[key] : 0;
+}
 
 export function msgSend(params: {
   fromAddress: string;
@@ -115,7 +129,10 @@ export function msgVote(params: {
     value: {
       proposal_id: params.proposalId,
       voter: params.voter,
-      option: VOTE_AMINO[params.option],
+      // A number, as CosmJS's AminoMsgVote and the chain write it
+      // (cosmoshub-4 tx 645AB8B9…: "option":1). The enum name signs bytes
+      // the chain does not rebuild.
+      option: VOTE_PROTO[params.option],
     },
   };
 }
@@ -135,6 +152,9 @@ export function msgIbcTransfer(params: {
     token: params.token,
     sender: params.sender,
     receiver: params.receiver,
+    // Height is non-nullable: amino JSON writes {} when no height is set
+    // (CosmJS createIbcAminoConverters, cosmoshub-4 tx B812E67C…).
+    timeout_height: {},
     timeout_timestamp: params.timeoutTimestamp,
   };
   if (params.memo) value.memo = params.memo;
@@ -224,11 +244,8 @@ function encodeMsgProto(msg: AminoMsg): { typeUrl: string; value: Uint8Array } {
           .intoBytes(),
       };
     case "cosmos-sdk/MsgVote": {
-      const optionName = String(v.option ?? "");
-      const optionKey = (Object.keys(VOTE_AMINO) as VoteOption[]).find(
-        (k) => VOTE_AMINO[k] === optionName,
-      );
-      const option = optionKey ? VOTE_PROTO[optionKey] : 0;
+      const option = voteOptionNumber(v.option);
+      if (option === 0) throw new Error("A vote needs an option: yes, no, abstain or veto");
       const proposalId = BigInt(String(v.proposal_id ?? "0"));
       return {
         typeUrl: "/cosmos.gov.v1beta1.MsgVote",

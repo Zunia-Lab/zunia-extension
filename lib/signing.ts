@@ -1,7 +1,19 @@
+/**
+ * The signing prompt's facts about a transaction a site asked Zunia to sign, in either mode.
+ *
+ * Direct bytes are decoded by the kernel, whose sentences the prompt shows as written, with each
+ * message's type URL, recipient and {@link DecodedMessageDetail} (zunia-core 0.1.1). Amino
+ * documents are described here in the same words: lib/amino-summary.ts writes the kernel's
+ * sentence for staking, votes, IBC transfers and Osmosis swaps, and this module the send and the
+ * contract call. One sentence is not the kernel's in either mode: a CW721 transfer reads as
+ * lib/nft.ts describes it (which token, which collection, to whom), where the kernel names the
+ * action alone. So the sign mode a dApp picks does not change what the user reads.
+ */
 import { STORAGE_KEYS } from "./storage-keys";
-import type { DecodedDirectTx, DecodedTxMessage } from "./kernel";
+import type { DecodedDirectTx, DecodedMessageDetail, DecodedTxMessage, KernelCoin } from "./kernel";
 import { loadKernel, bytesToHex, hexToBytes } from "./kernel";
 import { SECURITY_CONFIG } from "../config/security";
+import { describeAminoMsg } from "./amino-summary";
 import { exactCoinText, isBankSpelling } from "./chain-queries";
 import { cosmWasmActionName, describeCw721Action } from "./nft";
 import { assertSameChain } from "./provider-guards";
@@ -11,8 +23,19 @@ import { hydrateTokenIdentities, identityOf, type TokenIdentity } from "./token-
 
 export interface SignSafetySummary {
   chainId: string;
-  /** The exact words of what is signed: the kernel's, or for Amino this module's. Never rewritten. */
-  messages: Array<{ type: string; summary: string; unknown?: boolean }>;
+  /**
+   * The exact words of what is signed: the kernel's, or for Amino the same words written here
+   * (see the module documentation), and never reworded after. With each message, what the
+   * signing prompt's "Raw transaction" shows of it: the address it pays and the contract message
+   * or packet memo it carries.
+   */
+  messages: Array<{
+    type: string;
+    summary: string;
+    unknown?: boolean;
+    recipient?: string;
+    detail?: DecodedMessageDetail;
+  }>;
   fees: Array<{ label: string; value: string }>;
   warnings: string[];
   /** True when approval requires blind-signing opt-in. */
@@ -50,21 +73,72 @@ export async function rememberRecipient(address: string): Promise<void> {
 }
 
 /**
- * Describe an Amino `MsgExecuteContract`.
+ * Coins as the kernel writes them in a summary, `1000000 uosmo, 5 uatom`; null
+ * when there are none.
+ */
+function coinsText(coins: unknown): string | null {
+  if (!Array.isArray(coins) || coins.length === 0) return null;
+  return coins
+    .map((coin: { amount?: unknown; denom?: unknown } | null) =>
+      `${String(coin?.amount ?? "?")} ${String(coin?.denom ?? "")}`.trim(),
+    )
+    .join(", ");
+}
+
+/**
+ * A CW721 transfer in words: which token, from which collection, to whom.
  *
- * A CW721 transfer arriving from a dApp is the case that matters: it is an
- * opaque contract call, and "Message wasm/MsgExecuteContract" tells the user
- * nothing about the one-of-a-kind asset they are about to sign away. The Amino
- * encoding puts the ExecuteMsg in as a plain object rather than base64, so the
- * shared CW721 decoder in `lib/nft.ts` is handed the object directly and both
- * encodings produce the same sentence.
- *
- * When the payload is not a CW721 transfer the summary still names the action -
- * the top-level key of an ExecuteMsg is the action by convention, and
- * "Execute increase_allowance on juno1..." is strictly more than "Message
- * wasm/MsgExecuteContract". `recipient` is set only for a transfer whose new
- * owner is really known, so the first-time-recipient warning cannot fire on a
- * guess.
+ * The case that matters is a dApp's request: an opaque contract call, where the
+ * kernel's `Execute "transfer_nft" on stars1…` tells the user nothing about the
+ * one-of-a-kind asset they are about to sign away. lib/nft.ts reads the
+ * ExecuteMsg, as Amino's plain object or the kernel's parse of the direct
+ * bytes, so both sign modes show the same sentence. `recipient` is set only for
+ * a transfer whose new owner is really known, so the first-time-recipient
+ * warning cannot fire on a guess. Coins attached, which a CW721 transfer never
+ * takes, are named the way the kernel names them; lib/nft.ts also warns.
+ */
+function describeNftCall(
+  contract: string,
+  body: unknown,
+  funds: unknown,
+): { summary: string; recipient?: string } | null {
+  const described = describeCw721Action(contract, body, funds);
+  if (!described) return null;
+  const sending = coinsText(funds);
+  const coins = sending ? ` sending ${sending}` : "";
+  const { action } = described;
+  if (action.kind === "transfer_nft") {
+    const { tokenId, collectionAddress, recipient } = action;
+    return { summary: `Give away NFT ${tokenId} from collection ${collectionAddress} to ${recipient}${coins}`, recipient };
+  }
+  return {
+    summary: action.ics721
+      ? `Send NFT ${action.tokenId} from collection ${action.collectionAddress} across ${action.ics721.channelId} to ${action.ics721.receiver}${coins}, which mints a voucher rather than moving the original`
+      : `Hand NFT ${action.tokenId} from collection ${action.collectionAddress} to contract ${action.receivingContract}${coins}`,
+  };
+}
+
+/** Coins with string amounts and denoms, or null for anything else. */
+function wellFormedCoins(value: unknown): KernelCoin[] | null {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) return null;
+  const coins: KernelCoin[] = [];
+  for (const item of value) {
+    const { denom, amount } = (item ?? {}) as { denom?: unknown; amount?: unknown };
+    if (typeof denom !== "string" || typeof amount !== "string") return null;
+    coins.push({ denom, amount });
+  }
+  return coins;
+}
+
+/**
+ * Describe an Amino `MsgExecuteContract`: a CW721 transfer as
+ * {@link describeNftCall} reads it, anything else as the kernel writes a
+ * contract call, `Execute "{action}" on {contract}[ sending {coins}]`. The
+ * top-level key of an ExecuteMsg is the action by convention, and
+ * `Execute "increase_allowance" on juno1...` is strictly more than `Message
+ * wasm/MsgExecuteContract`. The detail is the kernel's for the direct form:
+ * the contract, its message and the coins attached.
  */
 function summarizeExecuteContract(
   type: string,
@@ -72,37 +146,52 @@ function summarizeExecuteContract(
 ): DecodedTxMessage {
   const contract = typeof value.contract === "string" ? value.contract : "";
   // wasmd renamed this field from `sent_funds` to `funds`; both appear in the
-  // wild depending on the chain's SDK version, and the only thing read from it
-  // is whether coins are attached at all.
+  // wild depending on the chain's SDK version.
   const funds = value.funds ?? value.sent_funds;
-  const described = describeCw721Action(contract, value.msg, funds);
+  const coins = wellFormedCoins(funds);
+  const detail: DecodedMessageDetail | null =
+    contract && value.msg !== undefined && coins
+      ? { kind: "execute-contract", contract, msg: value.msg, funds: coins }
+      : null;
+  const withDetail = detail ? { detail } : {};
 
-  if (described?.action.kind === "transfer_nft") {
-    const { tokenId, recipient, collectionAddress } = described.action;
-    return {
-      typeUrl: type,
-      summary: `Give away NFT ${tokenId} from collection ${collectionAddress} to ${recipient}`,
-      recipient,
-    };
-  }
-  if (described?.action.kind === "send_nft") {
-    const action = described.action;
-    return {
-      typeUrl: type,
-      summary: action.ics721
-        ? `Send NFT ${action.tokenId} from collection ${action.collectionAddress} across ${action.ics721.channelId} to ${action.ics721.receiver}, which mints a voucher rather than moving the original`
-        : `Hand NFT ${action.tokenId} from collection ${action.collectionAddress} to contract ${action.receivingContract}`,
-    };
-  }
+  const nft = describeNftCall(contract, value.msg, funds);
+  if (nft) return { typeUrl: type, ...nft, ...withDetail };
 
   const action = cosmWasmActionName(value.msg);
+  const sending = coinsText(funds);
   return {
     typeUrl: type,
     summary: action
-      ? `Execute "${action}" on ${contract || "an unnamed contract"}`
+      ? `Execute "${action}" on ${contract || "an unnamed contract"}${sending ? ` sending ${sending}` : ""}`
       : `Execute a contract call on ${contract || "an unnamed contract"} that Zunia could not read`,
+    ...withDetail,
   };
 }
+
+/**
+ * The kernel's messages with a CW721 transfer reworded as the Amino path words
+ * it ({@link describeNftCall}); every other summary exactly as the kernel wrote
+ * it.
+ */
+function withNftSentences(messages: readonly DecodedTxMessage[]): DecodedTxMessage[] {
+  return messages.map((message) => {
+    const { detail } = message;
+    if (message.unknown || detail?.kind !== "execute-contract") return message;
+    const nft = describeNftCall(detail.contract, detail.msg, detail.funds);
+    if (!nft) return message;
+    const { recipient: _kernelRecipient, ...rest } = message;
+    return { ...rest, ...nft };
+  });
+}
+
+/**
+ * Told whenever a transfer carries a packet memo. The memo is not in the
+ * summary, and packet-forward or ibc-hooks instructions in it can send the
+ * tokens on from the receiving chain to another chain and another receiver.
+ */
+const PACKET_MEMO_NOTICE =
+  "This transfer carries instructions for the receiving chain (packet memo). Check them under Raw transaction.";
 
 /* -------------------------------------------------------------------------- *
  * The resolved line under a raw summary
@@ -230,6 +319,10 @@ export function summarizeAminoMsgs(
         recipient: toAddress || undefined,
       };
     }
+    const described = describeAminoMsg(type, msg.value);
+    if (described) return described;
+    // Anything else, including one of those types in a shape the chain would
+    // not rebuild, keeps the generic line; a type without "Msg" in it is gated.
     return {
       typeUrl: type,
       summary: `Message ${type}`,
@@ -275,6 +368,7 @@ export async function buildSignSafety(input: {
     assertSameChain(input.expectedChainId, input.decoded.chainId);
   }
 
+  const notes = new Set<string>();
   const messages = input.decoded.messages.map((m) => {
     if (m.unknown && SECURITY_CONFIG.signing.warnUnknownMsgs) {
       warnings.push(`Unknown or undecoded message: ${m.typeUrl}`);
@@ -287,12 +381,22 @@ export async function buildSignSafety(input: {
     ) {
       warnings.push(`First-time recipient: ${m.recipient}`);
     }
+    if (m.detail?.kind === "execute-contract") {
+      // What lib/nft.ts notes about a CW721 transfer: coins attached to one, which takes none.
+      for (const note of describeCw721Action(m.detail.contract, m.detail.msg, m.detail.funds)?.warnings ?? []) {
+        notes.add(note);
+      }
+    }
+    if (m.detail?.kind === "ibc-transfer" && m.detail.memo.trim() !== "") notes.add(PACKET_MEMO_NOTICE);
     return {
       type: m.typeUrl,
       summary: m.summary,
       unknown: m.unknown,
+      ...(m.recipient ? { recipient: m.recipient } : {}),
+      ...(m.detail ? { detail: m.detail } : {}),
     };
   });
+  warnings.push(...notes);
 
   if (requiresBlindSigning && !settings.blindSigning) {
     warnings.push(
@@ -340,7 +444,10 @@ export async function decodeDirectSignBytes(
 ): Promise<SignSafetySummary> {
   const kernel = await loadKernel();
   const decoded = kernel.decodeDirectTx(bytesToHex(signBytes));
-  return buildSignSafety({ expectedChainId, decoded });
+  return buildSignSafety({
+    expectedChainId,
+    decoded: { ...decoded, messages: withNftSentences(decoded.messages) },
+  });
 }
 
 export async function decodeAminoSignDoc(

@@ -73,9 +73,24 @@ describe("a chain's error in plain words", () => {
     expect(explainTxError("account sequence mismatch, expected 5, got 4").message).toMatch(/went first/);
   });
 
+  it("says a refused signature in words, and that nothing moved", () => {
+    const raw =
+      "signature verification failed; please verify account number (2837022), sequence (91) and chain-id (cosmoshub-4): unauthorized";
+    expect(explainTxError(raw)).toEqual({
+      message: "The chain did not accept the signature. Nothing moved. Update Zunia and try again.",
+      detail: raw,
+    });
+    expect(explainTxError("invalid number of signer; expected: 1, got 2: unauthorized").message).toMatch(
+      /^The chain did not accept the signature/,
+    );
+    // A contract's own "Unauthorized" is not the chain refusing the signature.
+    const contract = "failed to execute message; message index: 0: Unauthorized: execute wasm contract failed";
+    expect(explainTxError(contract)).toEqual({ message: contract, detail: null });
+  });
+
   it("keeps an error it does not know as the chain wrote it, with nothing folded", () => {
-    expect(explainTxError("unauthorized: signature verification failed")).toEqual({
-      message: "unauthorized: signature verification failed",
+    expect(explainTxError("proposal 848 is not in its voting period: inactive proposal")).toEqual({
+      message: "proposal 848 is not in its voting period: inactive proposal",
       detail: null,
     });
     expect(explainTxError("  ").message).toBe("The chain refused this transaction.");

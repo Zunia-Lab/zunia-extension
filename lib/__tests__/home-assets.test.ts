@@ -659,7 +659,7 @@ const USDC_INJ_SEND =
 const USDC_N_TRANSFER =
   '{"type":"cosmos-sdk/MsgTransfer","value":{"source_port":"transfer","source_channel":"channel-750",' +
   '"token":{"denom":"ibc/498A0751C798A0D9A389AA3691123DADA57DAA4FE165D5C75894505B876BA6E4","amount":"12340000"},' +
-  '"sender":"osmo1from","receiver":"noble1to","timeout_timestamp":"1791202200000000000",' +
+  '"sender":"osmo1from","receiver":"noble1to","timeout_height":{},"timeout_timestamp":"1791202200000000000",' +
   '"memo":"{\\"forward\\":{\\"receiver\\":\\"cosmos1to\\",\\"port\\":\\"transfer\\",\\"channel\\":\\"channel-4\\"}}"}}';
 
 describe("display only: Home never changes what Send and Swap sign", () => {

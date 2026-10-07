@@ -28,6 +28,7 @@ interface KernelMessage {
   summary: string;
   unknown: boolean;
   recipient?: string;
+  detail?: unknown;
 }
 
 let decode: (signDocHex: string) => { summaries: string[]; messages?: KernelMessage[] };
@@ -102,6 +103,7 @@ describe("in the kernel's words", () => {
       typeUrl: entry.amino.type,
       summary: kernel!.summary,
       ...(kernel!.recipient === undefined ? {} : { recipient: kernel!.recipient }),
+      ...(kernel!.detail === undefined ? {} : { detail: kernel!.detail }),
     });
   });
 
@@ -116,6 +118,13 @@ describe("in the kernel's words", () => {
       typeUrl: "cosmos-sdk/MsgTransfer",
       summary: `IBC transfer 1000000 uatom to ${hex} over channel-141`,
       recipient: hex,
+      detail: {
+        kind: "ibc-transfer",
+        sourceChannel: "channel-141",
+        receiver: hex,
+        token: { denom: "uatom", amount: "1000000" },
+        memo: "",
+      },
     });
   });
 

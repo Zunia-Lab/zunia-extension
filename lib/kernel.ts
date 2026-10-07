@@ -31,11 +31,41 @@ export interface DerivedAddress {
   path?: string;
 }
 
+/**
+ * What a contract call carries that its summary does not say: the contract message, parsed, and
+ * the coins attached. A cw20 `transfer` names its own recipient in `msg`, so the prompt shows it
+ * whole.
+ */
+export interface ExecuteContractDetail {
+  kind: "execute-contract";
+  contract: string;
+  msg: unknown;
+  funds: KernelCoin[];
+}
+
+/**
+ * What an IBC transfer carries that its summary does not say. Packet-forward and ibc-hooks
+ * instructions for the receiving chain live in `memo`, and they can send the tokens on to another
+ * chain and another receiver than the one the summary names.
+ */
+export interface IbcTransferDetail {
+  kind: "ibc-transfer";
+  sourceChannel: string;
+  receiver: string;
+  token: KernelCoin | null;
+  memo: string;
+}
+
+/** Kernel payload v2's `detail` (zunia-core 0.1.1), and its Amino counterpart. */
+export type DecodedMessageDetail = ExecuteContractDetail | IbcTransferDetail;
+
 export interface DecodedTxMessage {
   typeUrl: string;
   summary: string;
   unknown?: boolean;
   recipient?: string;
+  /** For a contract call or an IBC transfer the wallet read: what the summary leaves out. */
+  detail?: DecodedMessageDetail;
 }
 
 export interface DecodedDirectTx {
@@ -330,12 +360,29 @@ function fromBase64(value: string): Uint8Array {
 }
 
 /**
- * CosmJS `serializeSignDoc`: recursively sort object keys, then
- * `JSON.stringify` (compact, insertion order = sorted). Sign bytes are the
- * UTF-8 encoding of that string; `signCosmos` hashes them with sha256.
+ * CosmJS `serializeSignDoc`: recursively sort object keys, `JSON.stringify`
+ * (compact, insertion order = sorted), then {@link escapeAminoJson}. Sign
+ * bytes are the UTF-8 encoding of that string; `signCosmos` hashes them with
+ * sha256. The chain rebuilds these bytes with Go's encoding/json, so without
+ * the escaping a memo like "rent & food" signs bytes no chain verifies.
  */
 export function serializeAminoSignDoc(value: unknown): Uint8Array {
-  return utf8Bytes(JSON.stringify(sortKeysDeep(value)));
+  return utf8Bytes(escapeAminoJson(JSON.stringify(sortKeysDeep(value))));
+}
+
+/**
+ * The escapes Go's encoding/json writes inside strings and JSON.stringify does
+ * not: `&`, `<`, `>` (CosmJS `escapeCharacters`, what Keplr signs) and U+2028,
+ * U+2029 (Go escapes them unconditionally; CosmJS does not). In valid JSON
+ * these characters can only occur inside string values.
+ */
+export function escapeAminoJson(json: string): string {
+  return json
+    .replace(/&/g, "\\u0026")
+    .replace(/</g, "\\u003c")
+    .replace(/>/g, "\\u003e")
+    .replace(/\u2028/g, "\\u2028")
+    .replace(/\u2029/g, "\\u2029");
 }
 
 function sortKeysDeep(value: unknown): unknown {
@@ -695,7 +742,97 @@ let activeStatus: KernelStatus | null = null;
 const UNKNOWN_SUMMARY_PREFIX = "UNKNOWN ACTION:";
 
 /**
- * Adapt the WASM module to {@link ZuniaKernel}.
+ * Kernel payload v2, zunia-core 0.1.1 and later: per message, its type URL, its summary, whether
+ * it was read, the address it pays and its {@link DecodedMessageDetail}; and the fee and the
+ * account number. Typed here, not taken from `@zunialab/core`'s declarations, so this file also
+ * compiles against a 0.1.0 kernel, which returns none of it and keeps the 0.1.0 reading.
+ */
+interface DecodedPayloadV2 {
+  chainId: string;
+  memo: string;
+  hasUnknownMsgs: boolean;
+  summaries: string[];
+  accountNumber: string;
+  fee: { amount: KernelCoin[]; gasLimit: string };
+  messages: Array<{
+    typeUrl: string;
+    summary: string;
+    unknown: boolean;
+    recipient?: unknown;
+    detail?: unknown;
+  }>;
+}
+
+/** The payload as v2, when it is one and its messages match its summaries one for one. */
+function payloadV2(decoded: unknown): DecodedPayloadV2 | null {
+  if (typeof decoded !== "object" || decoded === null) return null;
+  const payload = decoded as Partial<DecodedPayloadV2>;
+  const { messages, summaries, fee } = payload;
+  if (!Array.isArray(messages) || !Array.isArray(summaries) || messages.length !== summaries.length) {
+    return null;
+  }
+  if (typeof payload.accountNumber !== "string" || !Array.isArray(fee?.amount) || typeof fee.gasLimit !== "string") {
+    return null;
+  }
+  const matched = messages.every(
+    (message, index) =>
+      typeof message === "object" &&
+      message !== null &&
+      typeof message.typeUrl === "string" &&
+      message.summary === summaries[index] &&
+      typeof message.unknown === "boolean",
+  );
+  return matched ? (payload as DecodedPayloadV2) : null;
+}
+
+/** A detail of a kind this build reads, with the fields the prompt reads from it. */
+function detailOf(value: unknown): DecodedMessageDetail | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const detail = value as Partial<ExecuteContractDetail> | Partial<IbcTransferDetail>;
+  if (detail.kind === "execute-contract") {
+    return typeof detail.contract === "string" && "msg" in detail && Array.isArray(detail.funds)
+      ? (detail as ExecuteContractDetail)
+      : undefined;
+  }
+  if (detail.kind === "ibc-transfer") {
+    return typeof detail.receiver === "string" &&
+      typeof detail.sourceChannel === "string" &&
+      typeof detail.memo === "string"
+      ? (detail as IbcTransferDetail)
+      : undefined;
+  }
+  return undefined;
+}
+
+/**
+ * The messages of a v2 payload. The kernel names each message's type, so a known message keeps
+ * its type URL too; an unknown one keeps nothing but its type and summary, as nothing else in it
+ * was read.
+ */
+function messagesV2(payload: DecodedPayloadV2): DecodedTxMessage[] {
+  const unknownAt = payload.messages.map(
+    (message) => message.unknown || message.summary.startsWith(UNKNOWN_SUMMARY_PREFIX),
+  );
+  // The same rule as for 0.1.0 below: a transaction the kernel calls unreadable while no message
+  // owns up to it is unreadable throughout.
+  const unexplained = payload.hasUnknownMsgs && !unknownAt.some(Boolean);
+  return payload.messages.map((message, index) => {
+    if (unknownAt[index] || unexplained) {
+      return { typeUrl: message.typeUrl, summary: message.summary, unknown: true };
+    }
+    const detail = detailOf(message.detail);
+    return {
+      typeUrl: message.typeUrl,
+      summary: message.summary,
+      ...(typeof message.recipient === "string" && message.recipient ? { recipient: message.recipient } : {}),
+      ...(detail ? { detail } : {}),
+    };
+  });
+}
+
+/**
+ * Adapt the WASM module to {@link ZuniaKernel}. Exported so tests can run the real wasm module
+ * through the real adapter.
  *
  * This takes over the five transaction methods, which the JS kernel cannot implement at all,
  * plus `decodeDirectTx`, whose JS version only pretends to decode. Everything else stays on
@@ -711,11 +848,15 @@ const UNKNOWN_SUMMARY_PREFIX = "UNKNOWN ACTION:";
  *     derivation into a throw. Both kernels derive the same keys for the chains in use, so
  *     the mixture is safe; unifying it is a separate change.
  *
- * `decodeDirectTx` is adapted rather than passed through because the artifact reports
- * per-transaction summaries where this interface wants per-message objects. See the note on
- * `unknown` below, which is the part that matters for blind-signing gating.
+ * `decodeDirectTx` is adapted rather than passed through. Kernel 0.1.1 returns payload v2, one
+ * object per message, read by {@link messagesV2} with its fee and account number. Kernel 0.1.0
+ * returns per-transaction summaries where this interface wants per-message objects, and is read
+ * as it always was. See the note on `unknown` below, which is the part that matters for
+ * blind-signing gating.
+ *
+ * @internal
  */
-function adaptWasmKernel(
+export function adaptWasmKernel(
   mod: typeof import("@zunialab/core"),
   fallback: ZuniaKernel,
   version: string,
@@ -731,8 +872,22 @@ function adaptWasmKernel(
 
     decodeDirectTx: (signDocHex) => {
       const decoded = mod.decodeDirectTx(signDocHex);
-      // If the kernel says something in here is undecodable but no individual summary
-      // admits to it, mark every message unknown. Erring toward more blind-signing gating
+      const v2 = payloadV2(decoded);
+      if (v2) {
+        // A fee in one coin is what the prompt can name; a fee in several, rare as it is, stays
+        // "Not specified" rather than shown as its first coin alone.
+        const [coin, ...more] = v2.fee.amount;
+        const fee = coin && more.length === 0 ? { amount: coin.amount, denom: coin.denom, gas: v2.fee.gasLimit } : null;
+        return {
+          chainId: v2.chainId,
+          accountNumber: v2.accountNumber,
+          messages: messagesV2(v2),
+          memo: v2.memo,
+          ...(fee ? { fee } : {}),
+        };
+      }
+      // Kernel 0.1.0. If the kernel says something in here is undecodable but no individual
+      // summary admits to it, mark every message unknown. Erring toward more blind-signing gating
       // than the truth costs a user one extra confirmation; erring the other way lets an
       // unreadable message through a screen that called it safe.
       const anyFlagged = decoded.summaries.some((s) =>
@@ -758,8 +913,8 @@ function adaptWasmKernel(
       });
       return {
         chainId: decoded.chainId,
-        // Not carried across the boundary by `decode_direct_tx`, which reports only the
-        // fields a signing prompt renders. No caller reads it today.
+        // Not carried across the boundary by 0.1.0's `decode_direct_tx`, which reports only
+        // the fields a signing prompt renders.
         accountNumber: "0",
         messages,
         memo: decoded.memo,
