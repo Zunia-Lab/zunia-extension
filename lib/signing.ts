@@ -19,7 +19,7 @@ import { loadKernel, bytesToHex, hexToBytes } from "./kernel";
 import { SECURITY_CONFIG } from "../config/security";
 import { aminoCoin, aminoUint64, describeAminoMsg } from "./amino-summary";
 import { exactCoinText, isBankSpelling } from "./chain-queries";
-import { cosmWasmActionName, describeCw721Action, knownNftBridges } from "./nft";
+import { cosmWasmActionName, describeCw721Action, hasUnreadableContractAction, knownNftBridges } from "./nft";
 import { packetMemoNote } from "./packet-memo";
 import { assertSameChain } from "./provider-guards";
 import { getSettings } from "./settings";
@@ -244,11 +244,16 @@ function summarizeExecuteContract(
 
   const action = cosmWasmActionName(value.msg);
   const sending = coinsText(funds);
+  // An action key that is not a plain name (bidi overrides, line separators,
+  // quotes) is never quoted, and the call counts as unreadable, so the
+  // blind-signing gate refuses it here exactly as the kernel does in direct mode.
+  const unreadable = hasUnreadableContractAction(value.msg);
   return {
     typeUrl: type,
     summary: action
       ? `Execute "${action}" on ${contract || "an unnamed contract"}${sending ? ` sending ${sending}` : ""}`
       : `Execute a contract call on ${contract || "an unnamed contract"} that Zunia could not read`,
+    ...(unreadable ? { unknown: true } : {}),
     ...withDetail,
   };
 }

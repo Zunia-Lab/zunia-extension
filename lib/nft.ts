@@ -1828,7 +1828,27 @@ export function cosmWasmActionName(body: unknown): string | null {
   const parsed = asRecord(body);
   if (!parsed) return null;
   const keys = Object.keys(parsed);
-  return keys.length === 1 ? (keys[0] ?? null) : null;
+  const key = keys.length === 1 ? keys[0] : undefined;
+  return key !== undefined && isPlainContractAction(key) ? key : null;
+}
+
+/**
+ * Whether a contract message's top-level key can be quoted in a prompt: a
+ * plain name, the way contracts spell their actions. zunia-core applies the
+ * same rule (`is_plain_contract_action`, `^[A-Za-z0-9_-]{1,128}$`) before it
+ * names an action, so a key carrying bidi overrides, line separators or quotes
+ * can rewrite neither prompt.
+ */
+export function isPlainContractAction(key: string): boolean {
+  return /^[A-Za-z0-9_-]{1,128}$/.test(key);
+}
+
+/** A contract message whose single top-level key is not a plain name: the kernel reads it as unknown. */
+export function hasUnreadableContractAction(body: unknown): boolean {
+  const parsed = asRecord(body);
+  if (!parsed) return false;
+  const keys = Object.keys(parsed);
+  return keys.length === 1 && !isPlainContractAction(keys[0] ?? "");
 }
 
 /** Re-exported so screens can render an arbitrary ExecuteMsg body if they must. */
