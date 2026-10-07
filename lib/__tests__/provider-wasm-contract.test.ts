@@ -17,7 +17,9 @@
  *     shown whole or refused;
  *   - a fee names every coin it pays;
  *   - a send_nft with a payload shaped like a bridge's names the contract
- *     that gets the NFT.
+ *     that gets the NFT;
+ *   - a token id or an address that hides text never reaches a sentence, or
+ *     the recipients Zunia remembers.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -607,5 +609,45 @@ describe("a send_nft whose payload reads like a bridge's (ICS721)", () => {
     const local = installBrowser();
     await approve(await prompted(contractCall(COLLECTION, sendNft(XCS))));
     expect(local.get(STORAGE_KEYS.knownRecipients)).toEqual([XCS]);
+  });
+});
+
+describe("a token id or an address that hides text", () => {
+  /** P2b: a bidi override and a NUL in the recipient, a line separator in the token id. */
+  const disguised = { transfer_nft: { recipient: "osmo1friend\u202e\u0000 to osmo1legit", token_id: "1\u2028 from collection osmo1legit" } };
+
+  it("direct: keeps the kernel's sentence, and remembers nothing once approved", async () => {
+    const local = installBrowser();
+    const prompt = await prompted(contractCall(COLLECTION, disguised));
+    expect(prompt.summary.messages[0]).toEqual({ type: "/cosmwasm.wasm.v1.MsgExecuteContract", summary: `Execute "transfer_nft" on ${COLLECTION}`, detail: expect.anything() });
+    await approve(prompt);
+    expect(local.get(STORAGE_KEYS.knownRecipients)).toBeUndefined();
+  });
+
+  it.each([
+    ["a token id with a line separator", { recipient: NFT_RECIPIENT, token_id: "1\u2028 from collection osmo1legit" }],
+    ["a token id with a right-to-left override", { recipient: NFT_RECIPIENT, token_id: "\u202e1" }],
+    ["a recipient that is not an address", { recipient: "osmo1friend", token_id: "1" }],
+    ["a recipient on another chain", { recipient: USER_ON_HUB, token_id: "1" }],
+  ])("direct and amino: %s keeps the generic sentence", async (_name, transfer) => {
+    installBrowser();
+    const direct = await prompted(contractCall(COLLECTION, { transfer_nft: transfer }));
+    expect(direct.summary.messages[0]!.summary).toBe(`Execute "transfer_nft" on ${COLLECTION}`);
+    expect(direct.summary.messages[0]!.recipient).toBeUndefined();
+    resetApprovalsForTests();
+    const amino = await promptedAmino(
+      aminoDoc([{ type: "wasm/MsgExecuteContract", value: { sender: SIGNER, contract: COLLECTION, msg: { transfer_nft: transfer }, funds: [] } }]),
+    );
+    expect(amino.summary.messages[0]!.summary).toBe(`Execute "transfer_nft" on ${COLLECTION}`);
+    expect(amino.summary.messages[0]!.recipient).toBeUndefined();
+  });
+
+  it("amino: a send's recipient that is not an address is never remembered, one that is, is", async () => {
+    const local = installBrowser();
+    const send = (to: string) => ({ type: "cosmos-sdk/MsgSend", value: { amount: [{ amount: "1", denom: "uosmo" }], from_address: SIGNER, to_address: to } });
+    await approve(await promptedAmino(aminoDoc([send("osmo1friend\u202e\u0000 to osmo1legit")])));
+    expect(local.get(STORAGE_KEYS.knownRecipients)).toBeUndefined();
+    await approve(await promptedAmino(aminoDoc([send(NFT_RECIPIENT)])));
+    expect(local.get(STORAGE_KEYS.knownRecipients)).toEqual([NFT_RECIPIENT]);
   });
 });

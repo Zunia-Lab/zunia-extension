@@ -7,8 +7,9 @@
  * sentence for staking, votes, IBC transfers and Osmosis swaps, and this module the send and the
  * contract call. One sentence is not the kernel's in either mode: a CW721 transfer reads as
  * lib/nft.ts describes it (which token, which collection, to whom, or which contract receives
- * it), where the kernel names the action alone. So the sign mode a dApp picks does not change
- * what the user reads.
+ * it), where the kernel names the action alone; when its token id or an address in it is not
+ * text the prompt can show as it is, the kernel's sentence stays. So the sign mode a dApp picks
+ * does not change what the user reads.
  */
 import { bech32 } from "@scure/base";
 
@@ -71,7 +72,13 @@ async function loadKnownRecipients(): Promise<Set<string>> {
   return new Set(list);
 }
 
+/**
+ * Remember an address as paid before, so paying it again is not "first-time". Only an address
+ * ({@link shownAddressPrefix}): text a site put where a recipient goes, which the chain would
+ * refuse, must not silence the warning for whatever it resembles.
+ */
 export async function rememberRecipient(address: string): Promise<void> {
+  if (shownAddressPrefix(address) === null) return;
   const known = await loadKnownRecipients();
   known.add(address);
   await browser.storage.local.set({
@@ -96,6 +103,18 @@ function shownAddressPrefix(value: unknown): string | null {
   }
 }
 
+/**
+ * Characters that change how the text around them reads without showing themselves: controls
+ * (C0 and C1), format characters (the bidi marks, embeddings, overrides and isolates, the
+ * zero-width ones), unpaired surrogates, and the line and paragraph separators.
+ */
+const HIDDEN_CHARACTERS = /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u;
+
+/** A token id the prompt can quote inside its sentence: one with nothing in it that reorders or hides the words around it. */
+function shownTokenId(value: string): boolean {
+  return value.length > 0 && !HIDDEN_CHARACTERS.test(value);
+}
+
 /** An IBC channel identifier, as an ICS721 packet names its own. */
 const IBC_CHANNEL = /^channel-\d{1,20}$/;
 
@@ -110,6 +129,23 @@ function coinsText(coins: unknown): string | null {
       `${String(coin?.amount ?? "?")} ${String(coin?.denom ?? "")}`.trim(),
     )
     .join(", ");
+}
+
+/**
+ * Coins as the kernel writes them, `1000000 uosmo, 5 uatom`, when every one is spelled the way
+ * the chain writes it: "" for none, null when one is not (an Amino document's coins are the
+ * site's text until checked).
+ */
+function checkedCoinsText(funds: unknown): string | null {
+  if (funds === undefined) return "";
+  if (!Array.isArray(funds)) return null;
+  const words: string[] = [];
+  for (const item of funds) {
+    const coin = aminoCoin(item);
+    if (!coin) return null;
+    words.push(`${coin.amount} ${coin.denom}`);
+  }
+  return words.join(", ");
 }
 
 /**
@@ -129,6 +165,12 @@ function coinsText(coins: unknown): string | null {
  * `recipient` is the new owner or that contract, so the first-time-recipient
  * warning names who really receives it. Coins attached, which a CW721 transfer
  * never takes, are named the way the kernel names them; lib/nft.ts also warns.
+ *
+ * Null, so the caller keeps the kernel's sentence, unless the collection and
+ * the recipient or contract are addresses of one chain ({@link
+ * shownAddressPrefix}), the token id hides nothing ({@link shownTokenId}) and
+ * the coins are spelled as the chain spells them: these are the site's words
+ * placed inside the wallet's sentence.
  */
 function describeNftCall(
   contract: string,
@@ -137,15 +179,18 @@ function describeNftCall(
   bridges: ReadonlySet<string>,
 ): { summary: string; recipient: string } | null {
   const described = describeCw721Action(contract, body, funds, bridges);
-  if (!described) return null;
-  const sending = coinsText(funds);
+  const prefix = shownAddressPrefix(contract);
+  const sending = checkedCoinsText(funds);
+  if (!described || prefix === null || sending === null || !shownTokenId(described.action.tokenId)) return null;
   const coins = sending ? ` sending ${sending}` : "";
   const { action } = described;
   if (action.kind === "transfer_nft") {
     const { tokenId, collectionAddress, recipient } = action;
+    if (shownAddressPrefix(recipient) !== prefix) return null;
     return { summary: `Give away NFT ${tokenId} from collection ${collectionAddress} to ${recipient}${coins}`, recipient };
   }
   const { tokenId, collectionAddress, receivingContract, ics721 } = action;
+  if (shownAddressPrefix(receivingContract) !== prefix) return null;
   const bridged =
     ics721 && IBC_CHANNEL.test(ics721.channelId) && shownAddressPrefix(ics721.receiver) !== null
       ? `, which says it bridges it across ${ics721.channelId} to ${ics721.receiver}`

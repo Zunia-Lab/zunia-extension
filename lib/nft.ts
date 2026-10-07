@@ -1719,7 +1719,9 @@ export function describeCw721Action(
   bridges: ReadonlySet<string> = NO_BRIDGES,
 ): NftExecuteDescription | null {
   const parsed = asRecord(body);
-  if (!contract || !parsed) return null;
+  // An ExecuteMsg is one variant: a body with a second key is not a call the
+  // contract would run, so it is not described as one.
+  if (!contract || !parsed || Object.keys(parsed).length !== 1) return null;
 
   const warnings: string[] = [];
   if (Array.isArray(funds) && funds.length > 0) {

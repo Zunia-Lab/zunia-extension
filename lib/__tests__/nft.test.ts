@@ -290,6 +290,22 @@ describe("describeNftExecute", () => {
         },
       }),
     ).toBeNull();
+
+    // An ExecuteMsg is one variant. A body naming two is no call a CW721
+    // contract runs, so it is not read as the first of them.
+    expect(
+      describeNftExecute({
+        typeUrl: "/cosmwasm.wasm.v1.MsgExecuteContract",
+        value: {
+          sender: SENDER,
+          contract: COLLECTION,
+          msg: Buffer.from(
+            JSON.stringify({ transfer_nft: { recipient: RECIPIENT, token_id: "1" }, burn: { token_id: "1" } }),
+          ).toString("base64"),
+          funds: [],
+        },
+      }),
+    ).toBeNull();
   });
 });
 
@@ -326,7 +342,8 @@ describe("summarizeAminoMsgs on a dApp CW721 request", () => {
    * The dApp path is where a user is most likely to meet an opaque CW721
    * transfer: a marketplace asks for a signature and the wallet has to say what
    * it does. Amino puts the ExecuteMsg in as a plain object, not base64, which
-   * is why the decoder is shared rather than duplicated.
+   * is why the decoder is shared rather than duplicated. The addresses here are
+   * real bech32, as a sentence about an NFT names nothing else.
    */
   const OSMO_SENDER = "osmo19rl4cm2hmr8afy4kldpxz3fka4jguq0a5m7df8";
   /** A collection and a contract: 32 bytes, as wasmd derives every contract. */
@@ -406,4 +423,53 @@ describe("summarizeAminoMsgs on a dApp CW721 request", () => {
     expect(summary!.summary).toBe(`Execute "increase_allowance" on ${COLLECTION}`);
   });
 
+  it.each([
+    ["a bidi override", "1\u202e"],
+    ["a line separator", "1\u2028 from collection osmo1legit"],
+    ["a paragraph separator", "1\u2029"],
+    ["a NUL", "1\u0000"],
+    ["a C1 control", "1\u0085"],
+    ["a right-to-left mark", "\u200f1"],
+    ["an isolate", "\u20661\u2069"],
+    ["a zero-width space", "1\u200b"],
+  ])("keeps the generic sentence for a token id with %s in it", (_name, tokenId) => {
+    const [summary] = summarizeAminoMsgs([execute({ transfer_nft: { recipient: OSMO_OWNER, token_id: tokenId } })]);
+    expect(summary).toMatchObject({ summary: `Execute "transfer_nft" on ${OSMO_COLLECTION}` });
+    expect(summary!.recipient).toBeUndefined();
+  });
+
+  it.each([
+    ["not bech32", "osmo1friend"],
+    ["hiding a bidi override and a NUL", `${OSMO_OWNER}\u202e\u0000 to osmo1legit`],
+    ["on another chain", HUB_RECEIVER],
+    ["in capitals", OSMO_OWNER.toUpperCase()],
+    ["33 bytes long", "osmo1qurswpc8qurswpc8qurswpc8qurswpc8qurswpc8qurswpc8qursw2f6s9f"],
+  ])("keeps the generic sentence for a recipient %s", (_name, recipient) => {
+    const [summary] = summarizeAminoMsgs([execute({ transfer_nft: { recipient, token_id: "1" } })]);
+    expect(summary).toMatchObject({ summary: `Execute "transfer_nft" on ${OSMO_COLLECTION}` });
+    expect(summary!.recipient).toBeUndefined();
+  });
+
+  it("keeps the generic sentence for a send_nft to a contract of another chain, or to a collection that is no address", () => {
+    const [toJuno] = summarizeAminoMsgs([sendNft("juno1qurswpc8qurswpc8qurswpc8qurswpc8qurswpc8qurswpc8qursaq28r5")]);
+    expect(toJuno!.summary).toBe(`Execute "send_nft" on ${OSMO_COLLECTION}`);
+    const [fromNowhere] = summarizeAminoMsgs([execute({ transfer_nft: { recipient: OSMO_OWNER, token_id: "1" } }, COLLECTION)]);
+    expect(fromNowhere!.summary).toBe(`Execute "transfer_nft" on ${COLLECTION}`);
+  });
+
+  it("does not word a transfer whose coins are not spelled as the chain spells them", () => {
+    const [summary] = summarizeAminoMsgs([
+      {
+        type: "wasm/MsgExecuteContract",
+        value: {
+          sender: OSMO_SENDER,
+          contract: OSMO_COLLECTION,
+          msg: { transfer_nft: { recipient: OSMO_OWNER, token_id: "1" } },
+          funds: [{ denom: "uosmo to osmo1legit", amount: "1" }],
+        },
+      },
+    ]);
+    expect(summary!.summary).toMatch(/^Execute "transfer_nft" on /);
+    expect(summary!.recipient).toBeUndefined();
+  });
 });
