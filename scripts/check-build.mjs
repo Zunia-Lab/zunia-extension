@@ -4,7 +4,8 @@
  * everywhere, the kernel binary shipped once at the fixed path lib/kernel.ts loads, no
  * inlined or bare-imported kernel, an unchanged permission set, and the manifest keys
  * each browser expects. It also checks that the linked @zunialab/interchain dist is
- * newer than its source, and that each build bundles that dist rather than an older one.
+ * newer than its source, that each build bundles that dist rather than an older one, and
+ * that the in-page provider reports its release and every feature config/connect.ts lists.
  *
  * Usage: node scripts/check-build.mjs [chrome] [edge] [firefox] [safari]
  * Without arguments, every production build found in .output is checked.
@@ -59,6 +60,12 @@ const WEB_ACCESSIBLE = ["injected.js", "connect.html"];
 const GECKO_ID = "wallet@zunialab.com";
 // Firefox shows its own data consent prompt from 140; older versions would need ours.
 const MIN_FIREFOX = 140;
+// What window.zunia says about itself (lib/provider-identity.ts). The content script hands
+// injected.js the release in data-zunia-version, read back as dataset.zuniaVersion, and the
+// provider lists provider.features from config/connect.ts. A build without them looks like
+// 0.1.4 or older to sites, which then sign around bugs this build no longer has.
+const CONNECT_CONFIG_FILE = path.join(rootDir, "config", "connect.ts");
+const RELEASE_DATASET_KEY = "zuniaVersion";
 
 function walk(dir, base = dir) {
   const out = [];
@@ -71,6 +78,21 @@ function walk(dir, base = dir) {
 }
 
 const relative = (file) => path.relative(rootDir, file).split(path.sep).join("/");
+
+/**
+ * provider.features in config/connect.ts: the string literals between `features: [` and
+ * the closing bracket, line comments skipped. Empty when the file or the list is missing.
+ */
+function providerFeatures() {
+  let text = "";
+  try {
+    text = fs.readFileSync(CONNECT_CONFIG_FILE, "utf8");
+  } catch {
+    return [];
+  }
+  const list = text.match(/\bfeatures:\s*\[([^\]]*)\]/)?.[1] ?? "";
+  return [...list.replace(/\/\/[^\n]*/g, "").matchAll(/"([^"\\]+)"/g)].map((match) => match[1]);
+}
 
 /**
  * The extension bundles @zunialab/interchain from its dist, which zunia-sdk does not
@@ -119,7 +141,7 @@ function checkInterchainDist() {
   };
 }
 
-function checkBuild(browser, interchainBuiltAt) {
+function checkBuild(browser, interchainBuiltAt, features) {
   const dir = path.join(outputDir, `${browser}-mv3`);
   const manifestPath = path.join(dir, "manifest.json");
   if (!fs.existsSync(manifestPath)) {
@@ -185,6 +207,23 @@ function checkBuild(browser, interchainBuiltAt) {
   for (const file of REQUIRED_FILES) {
     if (!files.includes(file)) fail(`${file} is missing`);
   }
+
+  const scriptText = (file) => (files.includes(file) ? fs.readFileSync(path.join(dir, file), "utf8") : "");
+  const injected = scriptText("injected.js");
+  if (injected) {
+    if (!injected.includes(RELEASE_DATASET_KEY)) {
+      fail("injected.js does not read the release from data-zunia-version");
+    }
+    const missing = features.filter((feature) => !injected.includes(feature));
+    if (missing.length > 0) {
+      fail(`injected.js lacks the provider feature(s) ${missing.join(", ")} that config/connect.ts lists`);
+    }
+  }
+  const contentScripts = (manifest.content_scripts ?? []).flatMap((script) => script.js ?? []);
+  if (!contentScripts.some((file) => scriptText(file).includes(RELEASE_DATASET_KEY))) {
+    fail("no content script sets data-zunia-version, so window.zunia.extensionVersion would be empty");
+  }
+
   const accessible = (manifest.web_accessible_resources ?? []).flatMap((entry) => entry.resources ?? []);
   for (const resource of WEB_ACCESSIBLE) {
     if (!accessible.includes(resource)) fail(`web_accessible_resources lacks ${resource}`);
@@ -309,8 +348,16 @@ if (interchain.problems.length === 0) {
   console.error("FAIL @zunialab/interchain dist");
   for (const problem of interchain.problems) console.error(`  - ${problem}`);
 }
+const features = providerFeatures();
+if (features.length > 0) {
+  console.log(`ok   ${relative(CONNECT_CONFIG_FILE)} lists ${features.length} provider features`);
+} else {
+  failed = true;
+  console.error(`FAIL ${relative(CONNECT_CONFIG_FILE)}`);
+  console.error("  - provider.features is missing or empty, so no build could say what it signs");
+}
 for (const browser of targets) {
-  const problems = checkBuild(browser, interchain.builtAt);
+  const problems = checkBuild(browser, interchain.builtAt, features);
   if (problems.length === 0) {
     console.log(`ok   ${browser}-mv3`);
     continue;

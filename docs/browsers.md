@@ -17,7 +17,7 @@ One codebase, four Manifest V3 builds. `wxt.config.ts` computes the manifest per
 
 | Check | Chrome | Edge | Firefox | Safari |
 | --- | --- | --- | --- | --- |
-| `check:build` (MV3, CSP, one kernel binary, permissions, per-browser keys) | CI | CI | CI | CI |
+| `check:build` (MV3, CSP, one kernel binary, permissions, per-browser keys, the provider's release and features) | CI | CI | CI | CI |
 | addons-linter (`pnpm lint:firefox`) | | | CI, no errors | |
 | Xcode app builds for macOS and the iOS Simulator (`scripts/safari.mjs build`) | | | | CI |
 | WASM kernel loads (`KERNEL_STATUS` reports `flavor: "wasm"`) | Automated | Chromium build | Automated | Partly, iOS Simulator |
@@ -176,5 +176,19 @@ Run this on each browser before a store submission:
       chains and no window opens.
 - [ ] Sign in from a dApp: the "Sign in to <site>" screen appears. A sign-in message
       naming another site is refused without opening anything.
-- [ ] Send, stake and vote from the wallet itself.
+- [ ] Stake, unstake and claim from the wallet itself.
+- [ ] Send with the memo "a & b" from the wallet itself: the chain accepts it and the
+      explorer shows the memo as typed.
+- [ ] Vote on a live proposal from the Governance screen: the chain records the vote
+      instead of answering "signature verification failed".
+- [ ] Add an account with its own recovery phrase and make it active. A dApp's sign-in and
+      its Amino and Direct signatures verify against the key `getKey` returns for it.
+- [ ] On app.zunialab.com, approve a Direct contract call (a cross-chain swap or a
+      recovery): the prompt reads `Execute "…" on osmo1…` with the contract message, and
+      the chain accepts it.
+- [ ] Ask for a Direct message the wallet cannot read, such as
+      `/cosmos.authz.v1beta1.MsgGrant`: the site's `UNSUPPORTED` error names that type.
+- [ ] In the page console, `window.zunia.version` is `"0.1.0"`,
+      `window.zunia.extensionVersion` is the version being submitted, and
+      `window.zunia.features` lists the strings in `config/connect.ts`.
 - [ ] Brave: repeat the connect test with Shields up.

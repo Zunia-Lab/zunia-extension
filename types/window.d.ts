@@ -62,7 +62,23 @@ export type ZuniaProviderEvent = "accountsChanged" | "chainChanged" | "disconnec
 
 /** Cosmos-compatible wallet provider exposed to dApps */
 export interface ZuniaProvider {
+  /** Provider API version, "0.1.0" in every release so far. */
   readonly version: string;
+  /**
+   * The installed Zunia release (the manifest version, e.g. "0.1.5"), or "" when the
+   * extension could not read it. Absent in 0.1.4 and earlier: those builds cannot sign
+   * direct-mode contract calls on 32-byte contracts and sign amino documents without the
+   * &, <, > escaping.
+   */
+  readonly extensionVersion?: string;
+  /** True on Zunia's provider from 0.1.5, which tells the window.keplr alias from Keplr. */
+  readonly isZunia?: true;
+  /**
+   * What this build signs that 0.1.4 and earlier refused or signed wrongly, from 0.1.5.
+   * Frozen. The strings and their meaning are listed in config/connect.ts
+   * (`provider.features`), for example "sign-direct:wasm-contract-32".
+   */
+  readonly features?: readonly string[];
   readonly mode: "extension";
   readonly defaultOptions?: Record<string, unknown>;
   enable(chainIds: string | string[]): Promise<void>;
