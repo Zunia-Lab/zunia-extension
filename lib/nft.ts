@@ -1393,6 +1393,26 @@ export async function setNftBridgeAddress(
   await browser.storage.local.set({ [STORAGE_KEYS.nftBridges]: next });
 }
 
+/**
+ * The cw-ics721 bridges this wallet knows on a chain: the shipped one, and the
+ * one the user pinned. A signing prompt reads a site's `send_nft` as a bridge
+ * transfer only when it goes to one of these, since any contract can be handed
+ * an NFT with a message shaped like an `IbcOutgoingMsg` and only a bridge acts
+ * on it. Never throws: when storage cannot be read, the shipped one alone.
+ */
+export async function knownNftBridges(chainId: string): Promise<ReadonlySet<string>> {
+  const known = new Set<string>();
+  const shipped = ICS721_BRIDGE_CONTRACTS[chainId];
+  if (shipped) known.add(shipped);
+  try {
+    const inForce = await nftBridgeAddress(chainId);
+    if (inForce) known.add(inForce);
+  } catch {
+    // Unreadable storage knows no pin: fewer known bridges is the safe side.
+  }
+  return known;
+}
+
 const bridgeCache = new Map<string, { at: number; address: string; check: NftBridgeCheck }>();
 const BRIDGE_CACHE_MS = 5 * 60_000;
 
@@ -1639,7 +1659,11 @@ export type NftExecuteAction =
       readonly tokenId: string;
       /** The contract receiving the token, which for ICS721 is the bridge. */
       readonly receivingContract: string;
-      /** Parsed `IbcOutgoingMsg`, when the inner payload is one. */
+      /**
+       * Parsed `IbcOutgoingMsg`, when the receiving contract is a known bridge
+       * and the inner payload is one. Any other contract holds the token
+       * itself, whatever the payload says.
+       */
       readonly ics721: {
         readonly receiver: string;
         readonly channelId: string;
@@ -1649,6 +1673,9 @@ export type NftExecuteAction =
       /** The inner payload as JSON text, so an unrecognised one is still visible. */
       readonly innerJson: string;
     };
+
+/** No known bridge: what a caller that names none gets, so it fails closed. */
+const NO_BRIDGES: ReadonlySet<string> = new Set();
 
 /** A decoded NFT execute, plus anything about it the user should be told. */
 export interface NftExecuteDescription {
@@ -1680,11 +1707,16 @@ function asString(value: unknown): string | null {
  * @param contract - The CW721 contract the message executes against.
  * @param body - The parsed ExecuteMsg.
  * @param funds - The coins attached, if any. Any at all earns a warning.
+ * @param bridges - The cw-ics721 bridges known on the collection's chain
+ *   ({@link knownNftBridges}). A `send_nft` is read as a bridge transfer only
+ *   when it goes to one of them; to any other contract it is a hand-over to
+ *   that contract, whatever its payload says, and `ics721` stays null.
  */
 export function describeCw721Action(
   contract: string,
   body: unknown,
   funds?: unknown,
+  bridges: ReadonlySet<string> = NO_BRIDGES,
 ): NftExecuteDescription | null {
   const parsed = asRecord(body);
   if (!contract || !parsed) return null;
@@ -1722,7 +1754,10 @@ export function describeCw721Action(
     } catch {
       return null;
     }
-    const outgoing = asRecord(innerValue);
+    // Only a bridge turns the payload into a packet. Read from any other
+    // contract's, a receiver and a channel would say where the NFT goes while
+    // the contract itself keeps it.
+    const outgoing = bridges.has(receivingContract) ? asRecord(innerValue) : null;
     const receiver = outgoing ? asString(outgoing.receiver) : null;
     const channelId = outgoing ? asString(outgoing.channel_id) : null;
     const timeout = outgoing ? asRecord(outgoing.timeout) : null;
@@ -1757,9 +1792,14 @@ export function describeCw721Action(
  * read in full - a different type URL, a different ExecuteMsg, a missing field.
  * Null means "Zunia cannot say what this does", and the screen has to say that
  * rather than fall back to a guess; a partially-decoded transfer described as a
- * whole one is worse than no description.
+ * whole one is worse than no description. `bridges` as for
+ * {@link describeCw721Action}: for the wallet's own cross-chain transfer, the
+ * bridge it checked and built the message for.
  */
-export function describeNftExecute(msg: BuiltMsg): NftExecuteDescription | null {
+export function describeNftExecute(
+  msg: BuiltMsg,
+  bridges: ReadonlySet<string> = NO_BRIDGES,
+): NftExecuteDescription | null {
   if (msg.typeUrl !== "/cosmwasm.wasm.v1.MsgExecuteContract") return null;
   const contract = asString(msg.value["contract"]);
   const encoded = msg.value["msg"];
@@ -1770,7 +1810,7 @@ export function describeNftExecute(msg: BuiltMsg): NftExecuteDescription | null 
   } catch {
     return null;
   }
-  return describeCw721Action(contract, payload, msg.value["funds"]);
+  return describeCw721Action(contract, payload, msg.value["funds"], bridges);
 }
 
 /**

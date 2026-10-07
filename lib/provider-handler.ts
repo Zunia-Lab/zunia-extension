@@ -366,9 +366,10 @@ export function blindSigningRefusal(summary: {
 
 /**
  * After an approval, every address the prompt named as a recipient (a send's,
- * a transfer's receiver, an NFT's new owner), in either sign mode, so paying it
- * again is not "first-time". Every message, so a multi-send teaches the
- * address book every recipient, not the first one N times.
+ * a transfer's receiver, an NFT's new owner or the contract handed it), in
+ * either sign mode, so paying it again is not "first-time". Every message, so
+ * a multi-send teaches the address book every recipient, not the first one N
+ * times.
  */
 async function rememberRecipients(summary: SignSafetySummary): Promise<void> {
   for (const message of summary.messages) {

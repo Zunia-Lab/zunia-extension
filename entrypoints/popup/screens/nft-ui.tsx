@@ -681,14 +681,23 @@ export function NftExecutePanel({
   collectionName,
   tokenName,
   destChainName,
+  bridgeContract,
 }: {
   msg: BuiltMsg;
   collectionName: string | null;
   tokenName: string | null;
   /** Only for a cross-chain transfer; names the chain the voucher is minted on. */
   destChainName?: string | null;
+  /**
+   * Only for a cross-chain transfer: the verified bridge the message was built
+   * for. The payload's receiver and channel are read only for a `send_nft` to it.
+   */
+  bridgeContract?: string | null;
 }) {
-  const described: NftExecuteDescription | null = describeNftExecute(msg);
+  const described: NftExecuteDescription | null = describeNftExecute(
+    msg,
+    bridgeContract ? new Set([bridgeContract]) : undefined,
+  );
 
   if (!described) {
     const raw = msg.value["msg"];

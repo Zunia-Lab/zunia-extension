@@ -203,19 +203,20 @@ describe("describeNftExecute", () => {
     expect(described!.warnings).toEqual([]);
   });
 
-  it("reads the ICS721 destination out of the doubly-encoded payload", () => {
-    const described = describeNftExecute(
-      buildCrossChainNftTransfer({
-        chainId: SAFRO,
-        destChainId: "osmosis-1",
-        sender: SENDER,
-        collectionAddress: COLLECTION,
-        tokenId: "7",
-        recipient: OSMO_RECIPIENT,
-        bridgeContract: BRIDGE,
-        channelId: "channel-3",
-      }),
-    );
+  const crossChain = () =>
+    buildCrossChainNftTransfer({
+      chainId: SAFRO,
+      destChainId: "osmosis-1",
+      sender: SENDER,
+      collectionAddress: COLLECTION,
+      tokenId: "7",
+      recipient: OSMO_RECIPIENT,
+      bridgeContract: BRIDGE,
+      channelId: "channel-3",
+    });
+
+  it("reads the ICS721 destination out of the doubly-encoded payload sent to the bridge", () => {
+    const described = describeNftExecute(crossChain(), new Set([BRIDGE]));
     expect(described).not.toBeNull();
     const action = described!.action;
     expect(action.kind).toBe("send_nft");
@@ -223,6 +224,16 @@ describe("describeNftExecute", () => {
     expect(action.receivingContract).toBe(BRIDGE);
     expect(action.ics721?.receiver).toBe(OSMO_RECIPIENT);
     expect(action.ics721?.channelId).toBe("channel-3");
+  });
+
+  it("reads no destination from the same payload sent to a contract that is not a known bridge", () => {
+    // Any contract can be handed an NFT with a bridge-shaped payload, and keep it.
+    for (const bridges of [undefined, new Set<string>(), new Set([SENDER])]) {
+      const action = describeNftExecute(crossChain(), bridges)!.action;
+      if (action.kind !== "send_nft") throw new Error("unreachable");
+      expect(action.receivingContract).toBe(BRIDGE);
+      expect(action.ics721).toBeNull();
+    }
   });
 
   it("warns when coins ride along, because a CW721 call takes none", () => {
@@ -317,49 +328,68 @@ describe("summarizeAminoMsgs on a dApp CW721 request", () => {
    * it does. Amino puts the ExecuteMsg in as a plain object, not base64, which
    * is why the decoder is shared rather than duplicated.
    */
-  it("names the token and the new owner instead of the message type", () => {
-    const [summary] = summarizeAminoMsgs([
-      {
-        type: "wasm/MsgExecuteContract",
-        value: {
-          sender: SENDER,
-          contract: COLLECTION,
-          msg: { transfer_nft: { recipient: RECIPIENT, token_id: "42" } },
-          funds: [],
-        },
+  const OSMO_SENDER = "osmo19rl4cm2hmr8afy4kldpxz3fka4jguq0a5m7df8";
+  /** A collection and a contract: 32 bytes, as wasmd derives every contract. */
+  const OSMO_COLLECTION = "osmo19vxk34pf2uqf8warhsgqswa5sqyxnm493lxr4808gyy2rjs5yajq0c4l8v";
+  const OSMO_CONTRACT = "osmo1uwk8xc6q0s6t5qcpr6rht3sczu6du83xq8pwxjua0hfj5hzcnh3sqxwvxs";
+  const OSMO_OWNER = "osmo1jrkmdcwgq94uaamx6zax2luewlhf7u4k5r4pqs";
+  const HUB_RECEIVER = "cosmos1qx8te2rzsdyj47q2hswzclqc52gp9nju0yccyk";
+
+  const execute = (msg: Record<string, unknown>, contract = OSMO_COLLECTION) => ({
+    type: "wasm/MsgExecuteContract",
+    value: { sender: OSMO_SENDER, contract, msg, funds: [] },
+  });
+  const sendNft = (contract: string) =>
+    execute({
+      send_nft: {
+        contract,
+        token_id: "7",
+        msg: Buffer.from(JSON.stringify({ receiver: HUB_RECEIVER, channel_id: "channel-3" })).toString("base64"),
       },
-    ]);
-    expect(summary!.summary).toContain("NFT 42");
-    expect(summary!.summary).toContain(RECIPIENT);
+    });
+
+  it("names the token and the new owner instead of the message type", () => {
+    const [summary] = summarizeAminoMsgs([execute({ transfer_nft: { recipient: OSMO_OWNER, token_id: "42" } })]);
+    expect(summary!.summary).toBe(`Give away NFT 42 from collection ${OSMO_COLLECTION} to ${OSMO_OWNER}`);
     // Feeds the first-time-recipient warning, which is only honest when the
     // recipient was really decoded.
-    expect(summary!.recipient).toBe(RECIPIENT);
+    expect(summary!.recipient).toBe(OSMO_OWNER);
   });
 
-  it("says the destination mints a voucher for an ICS721 send", () => {
-    const [summary] = summarizeAminoMsgs([
-      {
-        type: "wasm/MsgExecuteContract",
-        value: {
-          sender: SENDER,
-          contract: COLLECTION,
-          msg: {
-            send_nft: {
-              contract: BRIDGE,
-              token_id: "7",
-              msg: Buffer.from(
-                JSON.stringify({ receiver: OSMO_RECIPIENT, channel_id: "channel-3" }),
-              ).toString("base64"),
-            },
-          },
+  it("names the contract a send_nft hands the token to, whatever its payload says", () => {
+    // A payload shaped like a bridge's says nothing about a contract that is not
+    // one: the NFT stays with the contract. So the sentence names it, and it is
+    // the recipient, so a first-time contract is warned about.
+    const [summary] = summarizeAminoMsgs([sendNft(OSMO_CONTRACT)]);
+    expect(summary!.summary).toBe(`Hand NFT 7 from collection ${OSMO_COLLECTION} to contract ${OSMO_CONTRACT}`);
+    expect(summary!.recipient).toBe(OSMO_CONTRACT);
+  });
+
+  it("adds where a known bridge says it sends the token, and still names the bridge", () => {
+    const [summary] = summarizeAminoMsgs([sendNft(OSMO_CONTRACT)], new Set([OSMO_CONTRACT]));
+    expect(summary!.summary).toBe(
+      `Hand NFT 7 from collection ${OSMO_COLLECTION} to contract ${OSMO_CONTRACT}, which says it bridges it across channel-3 to ${HUB_RECEIVER}`,
+    );
+    // The bridge holds the original: the far-side receiver is not who receives it here.
+    expect(summary!.recipient).toBe(OSMO_CONTRACT);
+  });
+
+  it("drops the bridge's destination when it is not an address and a channel", () => {
+    const odd = (receiver: string, channel: string) =>
+      execute({
+        send_nft: {
+          contract: OSMO_CONTRACT,
+          token_id: "7",
+          msg: Buffer.from(JSON.stringify({ receiver, channel_id: channel })).toString("base64"),
         },
-      },
-    ]);
-    expect(summary!.summary).toContain("voucher");
-    expect(summary!.summary).toContain("channel-3");
-    // No recipient: the new holder is the bridge contract, not the receiver, so
-    // the first-time-recipient warning must not fire on the far-side address.
-    expect(summary!.recipient).toBeUndefined();
+      });
+    for (const [receiver, channel] of [
+      [`${HUB_RECEIVER}\u202e`, "channel-3"],
+      [HUB_RECEIVER, "channel-3 to cosmos1legit"],
+    ] as const) {
+      const [summary] = summarizeAminoMsgs([odd(receiver, channel)], new Set([OSMO_CONTRACT]));
+      expect(summary!.summary).toBe(`Hand NFT 7 from collection ${OSMO_COLLECTION} to contract ${OSMO_CONTRACT}`);
+    }
   });
 
   it("still names the action for a contract call it does not model", () => {
@@ -375,4 +405,5 @@ describe("summarizeAminoMsgs on a dApp CW721 request", () => {
     ]);
     expect(summary!.summary).toBe(`Execute "increase_allowance" on ${COLLECTION}`);
   });
+
 });

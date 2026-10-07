@@ -15,7 +15,9 @@
  * - What a site writes to mislead the prompt does not, in either mode:
  *   - padding never pushes a receiver out of the raw transaction, which is
  *     shown whole or refused;
- *   - a fee names every coin it pays.
+ *   - a fee names every coin it pays;
+ *   - a send_nft with a payload shaped like a bridge's names the contract
+ *     that gets the NFT.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -225,6 +227,12 @@ async function promptedAmino(doc: AminoDoc): Promise<Prompt> {
   const outcome = await askAmino(doc);
   if (typeof outcome === "string") throw new Error(`expected a prompt, got ${outcome}`);
   return outcome;
+}
+
+/** Approve the prompt and wait for the signature. */
+async function approve(prompt: Prompt): Promise<void> {
+  resolveApproval(prompt.approval.id, { approved: true });
+  await prompt.pending;
 }
 
 /** A MsgTransfer from the signer, over channel-0 to `receiver`, carrying `memo`. */
@@ -539,5 +547,65 @@ describe("a fee in several coins", () => {
       const { summary } = await promptedAmino(aminoDoc([send], fee));
       expect(summary.fees).toEqual([{ label: "Fee", value: "Not specified" }]);
     }
+  });
+});
+
+describe("a send_nft whose payload reads like a bridge's (ICS721)", () => {
+  /** What a bridge would read: a receiver on the Hub and a channel. Any contract can be handed it. */
+  const outgoing = (extra: Record<string, unknown> = {}) =>
+    Buffer.from(JSON.stringify({ receiver: USER_ON_HUB, channel_id: "channel-1", ...extra })).toString("base64");
+  const sendNft = (contract: string) => ({ send_nft: { contract, token_id: "4242", msg: outgoing() } });
+  const handed = `Hand NFT 4242 from collection ${COLLECTION} to contract ${XCS}`;
+
+  it("direct: names the contract that receives the NFT, a first-time recipient, and not where the payload says", async () => {
+    installBrowser();
+    const { summary } = await prompted(contractCall(COLLECTION, sendNft(XCS)));
+    expect(summary.requiresBlindSigning).toBe(false);
+    expect(summary.messages[0]).toMatchObject({ summary: handed, recipient: XCS });
+    expect(summary.warnings).toContain(`First-time recipient: ${XCS}`);
+    expect(JSON.stringify(summary.messages)).not.toContain("which says it bridges");
+  });
+
+  it("amino: the same sentence and the same warning", async () => {
+    installBrowser();
+    const doc = aminoDoc([
+      { type: "wasm/MsgExecuteContract", value: { sender: SIGNER, contract: COLLECTION, msg: sendNft(XCS), funds: [] } },
+    ]);
+    const { summary } = await promptedAmino(doc);
+    expect(summary.messages[0]).toMatchObject({ summary: handed, recipient: XCS });
+    expect(summary.warnings).toContain(`First-time recipient: ${XCS}`);
+  });
+
+  it("says where it goes only for the bridge the user pinned for the chain, still naming the bridge", async () => {
+    const local = installBrowser();
+    local.set(STORAGE_KEYS.nftBridges, { [CHAIN]: XCS });
+    const direct = await prompted(contractCall(COLLECTION, sendNft(XCS)));
+    const bridged = `${handed}, which says it bridges it across channel-1 to ${USER_ON_HUB}`;
+    expect(direct.summary.messages[0]).toMatchObject({ summary: bridged, recipient: XCS });
+    expect(direct.summary.warnings).toContain(`First-time recipient: ${XCS}`);
+    resetApprovalsForTests();
+    const amino = await promptedAmino(
+      aminoDoc([{ type: "wasm/MsgExecuteContract", value: { sender: SIGNER, contract: COLLECTION, msg: sendNft(XCS), funds: [] } }]),
+    );
+    expect(amino.summary.messages[0]).toMatchObject({ summary: bridged, recipient: XCS });
+    // A bridge pinned on another chain is not this chain's.
+    resetApprovalsForTests();
+    local.set(STORAGE_KEYS.nftBridges, { "stargaze-1": XCS });
+    expect((await prompted(contractCall(COLLECTION, sendNft(XCS)))).summary.messages[0]!.summary).toBe(handed);
+  });
+
+  it("keeps the receiving contract in the raw transaction when the payload is padded and written first", async () => {
+    installBrowser();
+    const body = { send_nft: { msg: outgoing({ memo: "z".repeat(9_500) }), token_id: "4242", contract: XCS } };
+    const { summary, json } = await prompted(contractCall(COLLECTION, body));
+    expect(summary.messages[0]!.summary).toBe(handed);
+    expect(json).not.toContain("[truncated]");
+    expect((JSON.parse(json) as Prompt["raw"]).messages[0]!.detail).toEqual({ kind: "execute-contract", contract: COLLECTION, msg: body, funds: [] });
+  });
+
+  it("remembers the contract once approved, as an address", async () => {
+    const local = installBrowser();
+    await approve(await prompted(contractCall(COLLECTION, sendNft(XCS))));
+    expect(local.get(STORAGE_KEYS.knownRecipients)).toEqual([XCS]);
   });
 });

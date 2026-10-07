@@ -6,16 +6,19 @@
  * documents are described here in the same words: lib/amino-summary.ts writes the kernel's
  * sentence for staking, votes, IBC transfers and Osmosis swaps, and this module the send and the
  * contract call. One sentence is not the kernel's in either mode: a CW721 transfer reads as
- * lib/nft.ts describes it (which token, which collection, to whom), where the kernel names the
- * action alone. So the sign mode a dApp picks does not change what the user reads.
+ * lib/nft.ts describes it (which token, which collection, to whom, or which contract receives
+ * it), where the kernel names the action alone. So the sign mode a dApp picks does not change
+ * what the user reads.
  */
+import { bech32 } from "@scure/base";
+
 import { STORAGE_KEYS } from "./storage-keys";
 import type { DecodedDirectTx, DecodedMessageDetail, DecodedTxMessage, KernelCoin } from "./kernel";
 import { loadKernel, bytesToHex, hexToBytes } from "./kernel";
 import { SECURITY_CONFIG } from "../config/security";
 import { aminoCoin, aminoUint64, describeAminoMsg } from "./amino-summary";
 import { exactCoinText, isBankSpelling } from "./chain-queries";
-import { cosmWasmActionName, describeCw721Action } from "./nft";
+import { cosmWasmActionName, describeCw721Action, knownNftBridges } from "./nft";
 import { packetMemoNote } from "./packet-memo";
 import { assertSameChain } from "./provider-guards";
 import { getSettings } from "./settings";
@@ -77,6 +80,26 @@ export async function rememberRecipient(address: string): Promise<void> {
 }
 
 /**
+ * The bech32 prefix of an address the prompt can show as it is, or null: printable ASCII in
+ * lowercase, a valid checksum, and 20 bytes (an account) or 32 (a contract or a module
+ * account), the lengths zunia-core decodes. Anything else that reads like an address, a bidi
+ * override or a NUL inside it included, is not one.
+ */
+function shownAddressPrefix(value: unknown): string | null {
+  if (typeof value !== "string" || !/^[\x21-\x7e]{1,90}$/.test(value) || value !== value.toLowerCase()) return null;
+  try {
+    const { prefix, words } = bech32.decode(value as `${string}1${string}`);
+    const length = bech32.fromWords(words).length;
+    return length === 20 || length === 32 ? prefix : null;
+  } catch {
+    return null;
+  }
+}
+
+/** An IBC channel identifier, as an ICS721 packet names its own. */
+const IBC_CHANNEL = /^channel-\d{1,20}$/;
+
+/**
  * Coins as the kernel writes them in a summary, `1000000 uosmo, 5 uatom`; null
  * when there are none.
  */
@@ -96,17 +119,24 @@ function coinsText(coins: unknown): string | null {
  * kernel's `Execute "transfer_nft" on stars1…` tells the user nothing about the
  * one-of-a-kind asset they are about to sign away. lib/nft.ts reads the
  * ExecuteMsg, as Amino's plain object or the kernel's parse of the direct
- * bytes, so both sign modes show the same sentence. `recipient` is set only for
- * a transfer whose new owner is really known, so the first-time-recipient
- * warning cannot fire on a guess. Coins attached, which a CW721 transfer never
- * takes, are named the way the kernel names them; lib/nft.ts also warns.
+ * bytes, so both sign modes show the same sentence:
+ * - `transfer_nft`: `Give away NFT {id} from collection {c} to {recipient}`;
+ * - `send_nft`: `Hand NFT {id} from collection {c} to contract {contract}`, the
+ *   contract that holds it next, always named. Only for a bridge this wallet
+ *   knows on the chain (lib/nft.ts `knownNftBridges`) does it add `, which says
+ *   it bridges it across {channel} to {receiver}`: any contract can be handed
+ *   a payload shaped like a bridge's, and keep the NFT.
+ * `recipient` is the new owner or that contract, so the first-time-recipient
+ * warning names who really receives it. Coins attached, which a CW721 transfer
+ * never takes, are named the way the kernel names them; lib/nft.ts also warns.
  */
 function describeNftCall(
   contract: string,
   body: unknown,
   funds: unknown,
-): { summary: string; recipient?: string } | null {
-  const described = describeCw721Action(contract, body, funds);
+  bridges: ReadonlySet<string>,
+): { summary: string; recipient: string } | null {
+  const described = describeCw721Action(contract, body, funds, bridges);
   if (!described) return null;
   const sending = coinsText(funds);
   const coins = sending ? ` sending ${sending}` : "";
@@ -115,10 +145,14 @@ function describeNftCall(
     const { tokenId, collectionAddress, recipient } = action;
     return { summary: `Give away NFT ${tokenId} from collection ${collectionAddress} to ${recipient}${coins}`, recipient };
   }
+  const { tokenId, collectionAddress, receivingContract, ics721 } = action;
+  const bridged =
+    ics721 && IBC_CHANNEL.test(ics721.channelId) && shownAddressPrefix(ics721.receiver) !== null
+      ? `, which says it bridges it across ${ics721.channelId} to ${ics721.receiver}`
+      : "";
   return {
-    summary: action.ics721
-      ? `Send NFT ${action.tokenId} from collection ${action.collectionAddress} across ${action.ics721.channelId} to ${action.ics721.receiver}${coins}, which mints a voucher rather than moving the original`
-      : `Hand NFT ${action.tokenId} from collection ${action.collectionAddress} to contract ${action.receivingContract}${coins}`,
+    summary: `Hand NFT ${tokenId} from collection ${collectionAddress} to contract ${receivingContract}${coins}${bridged}`,
+    recipient: receivingContract,
   };
 }
 
@@ -147,6 +181,7 @@ function wellFormedCoins(value: unknown): KernelCoin[] | null {
 function summarizeExecuteContract(
   type: string,
   value: Record<string, unknown>,
+  bridges: ReadonlySet<string>,
 ): DecodedTxMessage {
   const contract = typeof value.contract === "string" ? value.contract : "";
   // wasmd renamed this field from `sent_funds` to `funds`; both appear in the
@@ -159,7 +194,7 @@ function summarizeExecuteContract(
       : null;
   const withDetail = detail ? { detail } : {};
 
-  const nft = describeNftCall(contract, value.msg, funds);
+  const nft = describeNftCall(contract, value.msg, funds, bridges);
   if (nft) return { typeUrl: type, ...nft, ...withDetail };
 
   const action = cosmWasmActionName(value.msg);
@@ -175,14 +210,17 @@ function summarizeExecuteContract(
 
 /**
  * The kernel's messages with a CW721 transfer reworded as the Amino path words
- * it ({@link describeNftCall}); every other summary exactly as the kernel wrote
- * it.
+ * it ({@link describeNftCall}); every other summary, and a CW721 transfer that
+ * cannot be worded, exactly as the kernel wrote it.
  */
-function withNftSentences(messages: readonly DecodedTxMessage[]): DecodedTxMessage[] {
+function withNftSentences(
+  messages: readonly DecodedTxMessage[],
+  bridges: ReadonlySet<string>,
+): DecodedTxMessage[] {
   return messages.map((message) => {
     const { detail } = message;
     if (message.unknown || detail?.kind !== "execute-contract") return message;
-    const nft = describeNftCall(detail.contract, detail.msg, detail.funds);
+    const nft = describeNftCall(detail.contract, detail.msg, detail.funds, bridges);
     if (!nft) return message;
     const { recipient: _kernelRecipient, ...rest } = message;
     return { ...rest, ...nft };
@@ -327,13 +365,18 @@ export function aminoCoins(value: Record<string, unknown>): SignedCoin[] {
  * Summaries
  * -------------------------------------------------------------------------- */
 
+/**
+ * Amino messages in the kernel's words. `bridges`: the cw-ics721 bridges known
+ * on the document's chain (lib/nft.ts `knownNftBridges`), none by default.
+ */
 export function summarizeAminoMsgs(
   msgs: Array<{ type: string; value: Record<string, unknown> }>,
+  bridges: ReadonlySet<string> = new Set(),
 ): DecodedTxMessage[] {
   return msgs.map((msg) => {
     const type = msg.type || "unknown";
     if (type === "wasm/MsgExecuteContract" || type.endsWith("MsgExecuteContract")) {
-      return summarizeExecuteContract(type, msg.value);
+      return summarizeExecuteContract(type, msg.value, bridges);
     }
     if (type === "cosmos-sdk/MsgSend" || type.endsWith("MsgSend")) {
       const toAddress = String(msg.value.to_address ?? msg.value.toAddress ?? "");
@@ -478,11 +521,11 @@ export async function decodeDirectSignBytes(
   expectedChainId: string,
   signBytes: Uint8Array,
 ): Promise<SignSafetySummary> {
-  const kernel = await loadKernel();
+  const [kernel, bridges] = await Promise.all([loadKernel(), knownNftBridges(expectedChainId)]);
   const decoded = kernel.decodeDirectTx(bytesToHex(signBytes));
   return buildSignSafety({
     expectedChainId,
-    decoded: { ...decoded, messages: withNftSentences(decoded.messages) },
+    decoded: { ...decoded, messages: withNftSentences(decoded.messages, bridges) },
   });
 }
 
@@ -496,7 +539,7 @@ export async function decodeAminoSignDoc(
     fee?: unknown;
     msgs?: Array<{ type: string; value: Record<string, unknown> }>;
   };
-  const messages = summarizeAminoMsgs(amino.msgs ?? []);
+  const messages = summarizeAminoMsgs(amino.msgs ?? [], await knownNftBridges(expectedChainId));
   return buildSignSafety({
     expectedChainId,
     coins: (amino.msgs ?? []).map((msg) =>

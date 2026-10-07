@@ -94,6 +94,8 @@ interface PendingNftTx {
   readonly signerAddress: string;
   readonly destination: Destination;
   readonly destChainName: string | null;
+  /** The verified bridge a cross-chain message was built for; null for a same-chain one. */
+  readonly bridgeContract: string | null;
   readonly title: string;
 }
 
@@ -438,6 +440,7 @@ export function NftDetailScreen({
         signerAddress: owner,
         destination,
         destChainName: destChain?.entry.chainName ?? null,
+        bridgeContract: cross ? bridgeContract : null,
         title: cross ? "Send NFT to another chain" : "Transfer NFT",
       });
       setPreview(built);
@@ -583,6 +586,7 @@ export function NftDetailScreen({
               collectionName={collectionName}
               tokenName={token?.name ?? null}
               destChainName={pending.destChainName}
+              bridgeContract={pending.bridgeContract}
             />
             <ExactMessages summaries={preview.preview.summaries} memo={preview.preview.memo} />
             <KeyValueRow label="Gas" value={preview.fee.gas_limit} />
