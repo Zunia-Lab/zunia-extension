@@ -404,7 +404,7 @@ describe("Zunia's swap fee", () => {
  * -------------------------------------------------------------------------- */
 
 describe("the Safari app", () => {
-  it("carries package.json's version and one build number in every target", () => {
+  it("carries package.json's version on every target", () => {
     const { version } = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8")) as { version: string };
     const pbxproj = fs.readFileSync(path.join(ROOT, "safari/Zunia/Zunia.xcodeproj/project.pbxproj"), "utf8");
     // A target's configuration names its bundle; the project-wide ones do not.
@@ -415,14 +415,10 @@ describe("the Safari app", () => {
       .filter((block) => block.includes("PRODUCT_BUNDLE_IDENTIFIER"));
     // The app and its extension, for macOS and iOS, Debug and Release.
     expect(targets).toHaveLength(8);
-    const builds = new Set<string>();
     for (const block of targets) {
       expect(block.match(/MARKETING_VERSION = ([^;]+);/)?.[1]).toBe(version);
-      const build = block.match(/CURRENT_PROJECT_VERSION = ([^;]+);/)?.[1];
-      expect(build).toMatch(/^[1-9]\d*$/);
-      builds.add(build!);
+      expect(block.match(/CURRENT_PROJECT_VERSION = ([^;]+);/)?.[1]).toBe(version);
     }
-    expect(builds.size).toBe(1);
   });
 });
 

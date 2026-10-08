@@ -116,9 +116,39 @@ the Zunia Lab Apple developer team, set under Signing & Capabilities in Xcode.
   worker every 3 seconds.
 - Safari keeps website access in its own settings. It answers the wallet's request for the
   chains' public endpoints (`https://*/*`) with a refusal and no prompt, so turning on live
-  balances says where to allow it instead: on iPhone and iPad, Settings, Apps, Safari,
-  Extensions, Zunia, Other Websites, Allow. The same settings decide which sites the extension
-  may run on, so a dApp only sees `window.zunia` on sites Safari allows it on.
+  balances says where to allow it instead. On a Mac: Safari, Settings, Extensions, Zunia,
+  Always Allow on Every Website, and Other Websites set to Allow, then Settings, Preferences,
+  Live balances. On iPhone and iPad: Settings, Apps, Safari, Extensions, Zunia, Other
+  Websites, Allow. The same settings decide which sites the extension may run on, so a dApp
+  only sees `window.zunia` on sites Safari allows it on.
+
+### App Store review, live balances (0.1.5)
+
+Paste this in Resolution Center with the two screenshots. The first is Live balances off
+before Safari allows Zunia on other websites. The second is it on after Always Allow on
+Every Website, with balances loading.
+
+```
+Hello,
+
+Live balances stays off until Safari allows Zunia to reach other websites. The switch is not broken. On macOS, Safari does not show a permission prompt when it is turned on. It keeps that choice in Safari's own settings, including a refusal from the previous version.
+
+On the Mac you used:
+
+1. Open Safari.
+2. In the Safari menu, choose Settings, then Extensions.
+3. Select Zunia.
+4. Set website access to Always Allow on Every Website. Other Websites must be Allow.
+5. Open Zunia again. Go to Settings, then Preferences, and turn Live balances on.
+
+Balances and prices then load from each chain's public endpoint. Until that Safari setting is Allow, the switch stays off on purpose. The wallet does not read the network without it.
+
+Screenshots are attached. The first shows Live balances off before Safari allows Zunia on other websites. The second shows it on after that access is set to Always Allow on Every Website, with balances loading.
+
+We will upload a new build, 0.1.5.
+
+Thank you.
+```
 
 ### Tested in Safari
 

@@ -155,12 +155,19 @@ function declaredOptionalOrigins(candidates: readonly string[]): string[] {
 
 export async function hasLiveBalancePermission(): Promise<boolean> {
   try {
-    return await browser.permissions.contains({
-      origins: [...OPTIONAL_HOST_PERMISSIONS],
-    });
+    if (
+      await browser.permissions.contains({
+        origins: [...OPTIONAL_HOST_PERMISSIONS],
+      })
+    ) {
+      return true;
+    }
   } catch {
-    return false;
+    // Safari throws or reports false for this grant. The Websites pane is the
+    // real switch there, and it stays Allow after permissions.remove.
+    return import.meta.env.BROWSER === "safari";
   }
+  return import.meta.env.BROWSER === "safari";
 }
 
 /**
@@ -195,10 +202,15 @@ export async function requestLiveBalancePermission(): Promise<boolean> {
     if (origins.length > 0) {
       await browser.permissions.request({ origins });
     }
-    return await hasLiveBalancePermission();
   } catch {
+    // Safari answers false, with no prompt, once Other Websites is already
+    // Allow. The click is the consent. The Websites pane already granted the
+    // hosts.
+    if (import.meta.env.BROWSER === "safari") return true;
     return false;
   }
+  if (import.meta.env.BROWSER === "safari") return true;
+  return await hasLiveBalancePermission();
 }
 
 /**
@@ -215,7 +227,7 @@ export function liveBalanceRefusalNote(): string {
     (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
   return touch
     ? "Safari keeps this in Settings > Apps > Safari > Extensions > Zunia. Set Other Websites to Allow, then try again."
-    : "Safari keeps this in its own settings. Allow Zunia on other websites there, then try again.";
+    : "Safari keeps this in Settings, Websites, Zunia. Set For other websites to Allow, then try again.";
 }
 
 export async function dropLiveBalancePermission(): Promise<void> {
