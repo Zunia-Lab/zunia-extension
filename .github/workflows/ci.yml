@@ -56,7 +56,7 @@ jobs:
       - name: Build @zunialab/core
         run: bash zunia-core/scripts/build-wasm.sh
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           package_json_file: zunia-extension/package.json
       - uses: actions/setup-node@v4
