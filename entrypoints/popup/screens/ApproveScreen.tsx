@@ -241,7 +241,7 @@ function ConnectBody({
       <div className="mt-5 w-full rounded-[14px] border border-[var(--z-line)] bg-[var(--z-glass)] px-3.5 py-3 text-left">
         <div className="font-mono text-[9px] uppercase tracking-[0.14em] text-fg-dim">Account</div>
         <div className="mt-1 truncate text-[13.5px] font-medium text-fg">{accountName}</div>
-        {address ? <div className="mt-0.5 font-mono text-[11.5px] text-fg-muted">{address}</div> : null}
+        {address ? <div className="mt-0.5 font-mono text-[11.5px] text-fg-muted [overflow-wrap:anywhere]">{address}</div> : null}
       </div>
     </div>
   );
@@ -302,7 +302,7 @@ function SignInBody({
         <div>
           <div className="font-mono text-[9px] uppercase tracking-[0.14em] text-fg-dim">Account</div>
           <div className="mt-1 truncate text-[13.5px] font-medium text-fg">{accountName}</div>
-          {address ? <div className="mt-0.5 font-mono text-[11.5px] text-fg-muted">{address}</div> : null}
+          {address ? <div className="mt-0.5 font-mono text-[11.5px] text-fg-muted [overflow-wrap:anywhere]">{address}</div> : null}
         </div>
         {expires ? (
           <div className="flex items-baseline justify-between gap-3 border-t border-[var(--z-line)] pt-2.5">

@@ -439,7 +439,8 @@ export function TxDetailScreen({
               className={cn("mt-3", amountClass)}
             />
           ) : (
-            <p className="mt-3 text-[14px] font-medium text-fg">{item.subtitle}</p>
+            // "on addr_safro1…": the contract or address is one long word.
+            <p className="mt-3 text-[14px] font-medium text-fg [overflow-wrap:anywhere]">{item.subtitle}</p>
           )}
 
           {kind === "governance" && (primary?.proposalId || primary?.vote) ? (
@@ -544,7 +545,7 @@ export function TxDetailScreen({
             {extraMessages.length > 0 ? (
               <ul className="mt-2 flex flex-col gap-1.5 border-t border-[var(--z-line)] pt-2">
                 {extraMessages.map((message, index) => (
-                  <li key={`${message.type}:${index}`} className="font-mono text-[10.5px]">
+                  <li key={`${message.type}:${index}`} className="font-mono text-[10.5px] [overflow-wrap:anywhere]">
                     <span className="text-fg-dim">{message.type}</span>
                     <span className="mt-0.5 block text-fg">{message.summary}</span>
                   </li>

@@ -734,7 +734,11 @@ const EMPTY_SCAN_RECORD: WasmScanRecord = {
 };
 
 /** Bumped when the record shape changes, which discards every stored verdict. */
-const WASM_SCAN_VERSION = 1;
+// 2: version 1 recorded verdicts while smart queries were sent as unpadded
+// base64url, which the REST gateway rejects with HTTP 400 for two queries in
+// three. A CW721 code whose probe hit that was cached as "other" for good, so
+// its collections never showed. Those verdicts are dropped, not trusted.
+const WASM_SCAN_VERSION = 2;
 
 function asScanRecord(value: unknown): WasmScanRecord {
   const row = asPlainRecord(value);

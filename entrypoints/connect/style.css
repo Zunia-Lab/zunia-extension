@@ -35,6 +35,9 @@ body {
   color: var(--z-fg);
   font-family: var(--z-font-sans);
   -webkit-font-smoothing: antialiased;
+  /* Addresses, contracts and denoms are single long words: break inside them
+     rather than spill out of the window (see popup/style.css). */
+  overflow-wrap: break-word;
 }
 
 /*
