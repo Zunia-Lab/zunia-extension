@@ -65,6 +65,11 @@ body {
   color: var(--z-fg);
   font-family: var(--z-font-sans);
   -webkit-font-smoothing: antialiased;
+  /* An address, a contract, a hash or an ibc/ denom is one long word: a line
+     breaks inside it rather than spill past the 360px edge. break-word, not
+     anywhere, so nothing that fits changes size; flex items that hold such
+     values still need min-w-0 and [overflow-wrap:anywhere] where they render. */
+  overflow-wrap: break-word;
 }
 
 #root {
