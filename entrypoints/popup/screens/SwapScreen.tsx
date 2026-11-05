@@ -125,7 +125,17 @@ import {
   type PoolSwapPlan,
 } from "../../../lib/pool-swap";
 import { rememberSwapIntent, takeSwapIntent } from "../../../lib/swap-intent";
-import { isPoolPath, swapPathFor, type SwapPath } from "../../../lib/swap-path";
+import { isOneSignature, isPoolPath, swapPathFor, type SwapPath } from "../../../lib/swap-path";
+import {
+  buildRelayTransferMsg,
+  buildSkipSwapMemo,
+  readRelayMsg,
+  relayMessageProblems,
+  skipSwapTimeoutNs,
+  verifySkipEntryPoint,
+  type SkipDelivery,
+  type SkipEntryPointCheck,
+} from "../../../lib/skip-swap";
 import { amountFieldText, canTypeAmount, formatTokenAmount } from "../../../lib/token-amount";
 import { identityOf, shortDenom, type TokenIdentity } from "../../../lib/token-identity";
 import type { TxPreview } from "../../../lib/tx-kernel";
@@ -246,7 +256,7 @@ export interface ReviewedSwap {
 export interface ReviewedPoolSwap {
   /** Tells one review from the next, so a late price never lands on another. */
   readonly id: number;
-  readonly path: "pool" | "pool-deliver";
+  readonly path: "pool" | "pool-deliver" | "relay";
   readonly from: AssetOption;
   readonly to: AssetOption;
   /** Base units the user spends in all: the amount typed (or Max), the Zunia fee included. */
@@ -255,6 +265,12 @@ export interface ReviewedPoolSwap {
   readonly fee: SwapFee;
   /** What the swap buys, as Osmosis names it. */
   readonly venueOutputDenom: string;
+  /** What the swap sells, as Osmosis names it: the voucher a `relay` transfer arrives as. Absent for `pool`, which sells the From itself. */
+  readonly venueInputDenom?: string;
+  /** `relay`: the checked transfer to Osmosis that carries the swap; absent otherwise. */
+  readonly inbound?: RoutePlanView | null;
+  /** `relay`: where Skip's entry point pays the output; absent otherwise. */
+  readonly relayDelivery?: SkipDelivery | null;
   readonly slippagePercent: number;
   /** The price the messages were built from, and when the router gave it. */
   readonly price: { readonly quote: OsmosisSwapQuote; readonly at: number };
@@ -264,7 +280,7 @@ export interface ReviewedPoolSwap {
   readonly minOut: string;
   /** The checked transfer that sends {@link minOut} on (`pool-deliver`); `null` for `pool`. */
   readonly delivery: RoutePlanView | null;
-  /** This wallet's address on Osmosis: it signs, and poolmanager pays it. */
+  /** The signing account: this wallet's address on Osmosis, or on the From's chain for `relay`. */
   readonly signer: string;
   /** Where the output ends up: {@link signer} for `pool`, this wallet's address on the To's chain otherwise. */
   readonly recipient: string;
@@ -337,22 +353,41 @@ function rateLine(
  * USDC on Safrochain), is never the default: it would need the output sent
  * on through a third chain.
  */
+/**
+ * Skip's entry point, checked on Osmosis once per few minutes
+ * (lib/skip-swap.ts `verifySkipEntryPoint`): the `relay` path stays off until
+ * the check says it is the immutable contract the configuration names.
+ */
+function useSkipEntryPoint(enabled: boolean): { loading: boolean; check: SkipEntryPointCheck | null } {
+  const [answer, setAnswer] = useState<SkipEntryPointCheck | null>(null);
+  useEffect(() => {
+    if (!enabled) return;
+    let cancelled = false;
+    void verifySkipEntryPoint().then((check) => {
+      if (!cancelled) setAnswer(check);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [enabled]);
+  return { loading: enabled && answer === null, check: answer };
+}
+
 export function pickTo(
   destinations: readonly AssetOption[],
   toKey: string | null,
-  from?: Pick<AssetOption, "chainId"> | null,
+  from?: Pick<AssetOption, "chainId" | "identity"> | null,
 ): AssetOption | undefined {
   const picked = toKey ? destinations.find((asset) => asset.key === toKey) : undefined;
   if (picked) return picked;
   const usable = destinations.filter((asset) => asset.disabledReason === null);
   if (!from) return usable[0];
-  const oneStep = usable.find((asset) => {
-    const path = swapPathFor(from, asset, asset.executable);
-    return isPoolPath(path) || (path === "contract" && asset.executable === "yes");
-  });
-  if (oneStep) return oneStep;
-  const onVenue = usable.filter((asset) => asset.chainId === VENUE_CHAIN_ID);
-  return onVenue.find((asset) => asset.identity.family === "USDC") ?? onVenue[0] ?? usable[0];
+  // Rows one signature reaches come first (with Skip's entry point that is
+  // nearly every row); among them USDC on Osmosis, then anything on Osmosis.
+  const oneStep = usable.filter((asset) => isOneSignature(swapPathFor(from, asset, asset.executable), asset.executable));
+  const pool = oneStep.length > 0 ? oneStep : usable;
+  const onVenue = pool.filter((asset) => asset.chainId === VENUE_CHAIN_ID);
+  return onVenue.find((asset) => asset.identity.family === "USDC") ?? onVenue[0] ?? pool[0];
 }
 
 /**
@@ -1143,6 +1178,69 @@ export function poolSwapTxMsgs(args: {
 }
 
 /**
+ * What a one-signature swap (`relay`) signs on the chain holding the funds:
+ * the transfer of the amount left after the Zunia fee to Skip's entry point
+ * on Osmosis, its memo the swap and the delivery, then the fee's bank send
+ * when one is due. The swap's deadline is set from `nowMs`.
+ */
+export function relaySwapTxMsgs(args: {
+  /** This wallet's address on the From's chain. */
+  readonly sender: string;
+  /** The From's exact bank denom. */
+  readonly denom: string;
+  readonly inbound: RoutePlanView;
+  readonly venueInputDenom: string;
+  readonly venueOutputDenom: string;
+  readonly routes: readonly PoolRoute[];
+  readonly minOut: string;
+  readonly delivery: SkipDelivery;
+  readonly fee: SwapFee;
+  readonly nowMs: number;
+}): BuiltMsg[] {
+  const memo = buildSkipSwapMemo({
+    routes: args.routes,
+    venueInputDenom: args.venueInputDenom,
+    venueOutputDenom: args.venueOutputDenom,
+    minOut: args.minOut,
+    delivery: args.delivery,
+    timeoutNs: skipSwapTimeoutNs(args.nowMs),
+  });
+  const msgs: BuiltMsg[] = [
+    buildRelayTransferMsg({
+      inbound: args.inbound.plan,
+      sender: args.sender,
+      amountBaseUnits: args.fee.net.toString(),
+      memo,
+    }),
+  ];
+  if (args.fee.fee > 0n && args.fee.recipient !== null) {
+    msgs.push(
+      buildSwapFeeMsg({ sender: args.sender, recipient: args.fee.recipient, denom: args.denom, amount: args.fee.fee }),
+    );
+  }
+  return msgs;
+}
+
+/**
+ * Where Skip's entry point pays a `relay` swap: this wallet's Osmosis address
+ * when the To is on Osmosis, else over the checked channel to the To's chain,
+ * with the Osmosis address to recover to. `null` when what that needs is missing.
+ */
+export function relayDeliveryFor(args: {
+  readonly to: Pick<AssetOption, "chainId">;
+  readonly recipient: string;
+  /** The checked transfer out of Osmosis, for a To elsewhere. */
+  readonly delivery: RoutePlanView | null;
+  /** This wallet's address on Osmosis. */
+  readonly osmosisAddress: string | null;
+}): SkipDelivery | null {
+  if (args.to.chainId === VENUE_CHAIN_ID) return { kind: "osmosis", toAddress: args.recipient };
+  const hop = args.delivery?.plan.hops[0];
+  if (!hop?.channelId || !args.osmosisAddress) return null;
+  return { kind: "ibc", sourceChannel: hop.channelId, receiver: args.recipient, recoverAddress: args.osmosisAddress };
+}
+
+/**
  * Why a pool swap has no price, with the tickers on screen when the reason
  * is a known one (lib/pool-swap.ts `PoolQuoteBlockedCode`); the module's own
  * sentence otherwise.
@@ -1168,7 +1266,10 @@ export function poolQuoteText(
 }
 
 /** What becomes of the fee, and of the transfer, when the swap does not happen. */
-export function poolFeeOutcome(path: "pool" | "pool-deliver"): string {
+export function poolFeeOutcome(path: "pool" | "pool-deliver" | "relay"): string {
+  if (path === "relay") {
+    return "The fee is paid on this chain when the transfer is sent: if the swap then fails on Osmosis, the amount swapped comes back to you, but the fee does not.";
+  }
   return path === "pool"
     ? "The swap and the fee are one transaction: if the swap fails, no fee is taken."
     : "The swap, the fee and the transfer are one transaction: if the swap would pay less than the minimum, none of them happens.";
@@ -1257,6 +1358,7 @@ export function poolSwapTermsProblems(
     readonly now: number;
   },
 ): string[] {
+  if (review.path === "relay") return relaySwapTermsProblems(review, signing);
   if (!facts) return [UNREADABLE_SWAP];
   // The swap, then the fee when there is a bank send, then the transfer when
   // delivering. Anything left over is a message nobody reviewed.
@@ -1328,6 +1430,84 @@ export function poolSwapTermsProblems(
   return problems;
 }
 
+/**
+ * Everything a one-signature swap's transaction does that the review did not
+ * say; empty when it is exactly: the transfer to Skip's entry point that
+ * {@link relayMessageProblems} accepts (amount, channel, memo, deadline,
+ * delivery), then the one bank send that pays the Zunia fee when one is due,
+ * and nothing else.
+ */
+export function relaySwapTermsProblems(
+  review: ReviewedPoolSwap,
+  signing: {
+    readonly chainId: string;
+    readonly signerAddress: string;
+    readonly msgs: readonly BuiltMsg[];
+    readonly recipients?: SwapFeeRecipients;
+    readonly now: number;
+  },
+): string[] {
+  const [first, ...rest] = signing.msgs;
+  const feeMsg = rest[0]?.typeUrl === BANK_SEND_TYPE_URL ? rest[0] : undefined;
+  const afterFee = feeMsg ? rest.slice(1) : rest;
+  if (afterFee.length > 0) return [EXTRA_MESSAGES];
+  if (!review.inbound || !review.relayDelivery || !review.venueInputDenom) return [UNREADABLE_SWAP];
+  const { from, to } = review;
+  const problems = relayMessageProblems(
+    readRelayMsg(first),
+    {
+      chainId: from.chainId,
+      denom: from.denom,
+      net: review.fee.net.toString(),
+      inbound: review.inbound.plan,
+      venueInputDenom: review.venueInputDenom,
+      venueOutputDenom: review.venueOutputDenom,
+      routes: review.routes,
+      minOut: review.minOut,
+      delivery: review.relayDelivery,
+    },
+    signing,
+  );
+  const expected = osmosisDenomFor(to);
+  if (expected !== null && expected !== review.venueOutputDenom) {
+    problems.push(`The swap would buy another token than the ${to.identity.ticker} you picked.`);
+  }
+  const due = swapFeeFor(signing.chainId, review.amountUnits, signing.recipients);
+  if (!sameSwapFee(review.fee, due)) {
+    problems.push(
+      `The Zunia fee in this review is not the one Zunia charges on ${from.chainName}, so Zunia will not ask you to sign it.`,
+    );
+  }
+  const issues = swapFeeIssues(feeMsg, {
+    chainId: signing.chainId,
+    signer: signing.signerAddress,
+    denom: from.denom,
+    amountUnits: review.amountUnits,
+    ...(signing.recipients ? { recipients: signing.recipients } : {}),
+  });
+  problems.push(...issues.map((issue) => swapFeeProblem(issue, review)));
+  return problems;
+}
+
+/**
+ * A one-signature swap's transfer read as the pool swap it carries, for the
+ * confirm screen's terms and summary: what leaves the account, the routes,
+ * the floor and what it buys. `null` when the transfer or its memo cannot be
+ * read whole.
+ */
+export function relayPoolFacts(msg: BuiltMsg | undefined): PoolSwapFacts | null {
+  const facts = readRelayMsg(msg);
+  if (!facts) return null;
+  return {
+    split: facts.swap.routes.length > 1,
+    sender: facts.transfer.sender,
+    sold: facts.transfer.token,
+    outputDenom: facts.swap.outputDenom,
+    minOut: facts.swap.minOut,
+    routes: facts.swap.routes,
+  };
+}
+
 /** What the form would sign right now, for a pool review to be checked against. */
 export interface LivePoolSwap {
   readonly from: AssetOption | undefined;
@@ -1339,8 +1519,10 @@ export interface LivePoolSwap {
   /** {@link swapPlanKey} of the form's inputs; `""` when it cannot plan. */
   readonly planKey: string;
   readonly planning: boolean;
-  /** The form's checked transfer leg, for `pool-deliver`. */
+  /** The form's checked transfer leg, for `pool-deliver` (and `relay` to another chain). */
   readonly delivery: PoolDelivery | null;
+  /** The form's checked transfer to Osmosis, for `relay`. */
+  readonly inbound?: PoolDelivery | null;
   /** The form's own reason it cannot plan or sign, when it has one. */
   readonly blockedReason: string | null;
 }
@@ -1351,7 +1533,8 @@ export interface LivePoolSwap {
  * built from, and the confirm screen refreshes both together.
  */
 export function poolReviewDrift(
-  review: Pick<ReviewedPoolSwap, "from" | "to" | "path" | "amountUnits" | "fee" | "planKey" | "delivery">,
+  review: Pick<ReviewedPoolSwap, "from" | "to" | "path" | "amountUnits" | "fee" | "planKey" | "delivery"> &
+    Partial<Pick<ReviewedPoolSwap, "inbound">>,
   live: LivePoolSwap,
 ): string | null {
   if (live.from?.key !== review.from.key) {
@@ -1369,6 +1552,15 @@ export function poolReviewDrift(
   if (live.path !== review.path) return "Zunia now swaps this pair another way. Review it again.";
   if (live.planKey !== review.planKey) {
     return (live.planKey === "" ? live.blockedReason : null) ?? "The swap's settings changed after this review.";
+  }
+  if (review.inbound) {
+    if (live.planning) return "Zunia is checking the transfer again.";
+    const current = live.inbound?.view ?? null;
+    if (!current) return live.inbound?.error ?? "The transfer to Osmosis you reviewed is no longer offered.";
+    if (current !== review.inbound && planFingerprint(current) !== planFingerprint(review.inbound)) {
+      return "Zunia planned the transfer to Osmosis again, and it is not the one you reviewed.";
+    }
+    if (current.blockedReason) return current.blockedReason;
   }
   if (!review.delivery) return null;
   if (live.planning) return "Zunia is checking the transfer again.";
@@ -1751,9 +1943,14 @@ export function SwapTerms({
 /** Whose an address in a pool swap's messages is: the signer's on Osmosis, the To's chain's, or nobody's here. */
 function poolOwnerNote(
   address: string,
-  review: Pick<ReviewedPoolSwap, "signer" | "recipient" | "to">,
+  review: Pick<ReviewedPoolSwap, "signer" | "recipient" | "to"> & Partial<Pick<ReviewedPoolSwap, "path" | "from">>,
 ): { text: string; tone: "plain" | "danger" } {
-  if (address === review.signer) return { text: "Your address on Osmosis", tone: "plain" };
+  if (address === review.signer) {
+    return {
+      text: review.path === "relay" && review.from ? `Your address on ${review.from.chainName}` : "Your address on Osmosis",
+      tone: "plain",
+    };
+  }
   if (address === review.recipient) return { text: `Your address on ${review.to.chainName}`, tone: "plain" };
   return { text: "Not one of your addresses", tone: "danger" };
 }
@@ -1816,7 +2013,9 @@ export function PoolSwapTerms({
       <p className="mt-1 min-w-0 text-[11px] leading-snug text-fg [overflow-wrap:anywhere]">
         {review.path === "pool"
           ? `One swap in ${venueName}'s own pools, paid from your balance there. No contract, and nothing is transferred before it.`
-          : `One transaction on ${venueName}: a swap in its own pools, then an IBC transfer of the swap's minimum to ${review.to.chainName}.`}
+          : review.path === "relay"
+            ? `One transaction on ${review.from.chainName}, one signature: an IBC transfer to Skip's swap contract on ${venueName}, which swaps in ${venueName}'s pools and pays out ${review.to.chainId === VENUE_CHAIN_ID ? `to your address there` : `to your address on ${review.to.chainName}`}. No OSMO needed.`
+            : `One transaction on ${venueName}: a swap in its own pools, then an IBC transfer of the swap's minimum to ${review.to.chainName}.`}
       </p>
       <div className="mt-1.5 flex flex-col gap-1.5">
         <KeyValueRow
@@ -1838,19 +2037,29 @@ export function PoolSwapTerms({
         <KeyValueRow
           label="Minimum received"
           value={
-            <Fact note="If the swap would pay less, the chain refuses the whole transaction.">
+            <Fact
+              note={
+                review.path === "relay"
+                  ? `If the swap would pay less, or runs too late, it does not happen and the tokens come back to you on ${review.from.chainName}.`
+                  : "If the swap would pay less, the chain refuses the whole transaction."
+              }
+            >
               {tickerAmount(facts.minOut, bought, "confirm")}
             </Fact>
           }
         />
-        <KeyValueRow
-          label="Pays out to"
-          value={
-            <Fact note={payee.text} tone={payee.tone}>
-              <AddressText address={facts.sender} />
-            </Fact>
-          }
-        />
+        {review.path === "relay" && review.relayDelivery ? (
+          <RelayPayout review={review} />
+        ) : (
+          <KeyValueRow
+            label="Pays out to"
+            value={
+              <Fact note={payee.text} tone={payee.tone}>
+                <AddressText address={facts.sender} />
+              </Fact>
+            }
+          />
+        )}
         {transfer && delivered && sentOn ? (
           <>
             <KeyValueRow
@@ -1897,6 +2106,46 @@ export function PoolSwapTerms({
         </div>
       ) : null}
     </section>
+  );
+}
+
+/** Where a one-signature swap pays out, and where the output goes if that delivery fails. */
+function RelayPayout({ review }: { review: ReviewedPoolSwap }) {
+  const delivery = review.relayDelivery;
+  if (!delivery) return null;
+  if (delivery.kind === "osmosis") {
+    const owner = poolOwnerNote(delivery.toAddress, review);
+    return (
+      <KeyValueRow
+        label="Pays out to"
+        value={
+          <Fact note={owner.text === "Not one of your addresses" ? owner.text : "Your address on Osmosis"} tone={owner.tone}>
+            <AddressText address={delivery.toAddress} />
+          </Fact>
+        }
+      />
+    );
+  }
+  const owner = poolOwnerNote(delivery.receiver, review);
+  return (
+    <>
+      <KeyValueRow
+        label="Pays out to"
+        value={
+          <Fact note={owner.text} tone={owner.tone}>
+            Over {delivery.sourceChannel} to <AddressText address={delivery.receiver} />
+          </Fact>
+        }
+      />
+      <KeyValueRow
+        label="If delivery fails"
+        value={
+          <Fact note="Skip's contract pays the output to your address on Osmosis instead">
+            <AddressText address={delivery.recoverAddress} />
+          </Fact>
+        }
+      />
+    </>
   );
 }
 
@@ -1975,7 +2224,8 @@ export function poolReviewSummary(review: ReviewedPoolSwap, facts: PoolSwapFacts
     rate: view.rate ?? null,
     zuniaFee: zuniaFeeFact(review),
   };
-  if (review.path === "pool") {
+  if (review.path === "pool" || review.path === "relay") {
+    // A relay swap pays out everything the pools return, at least the floor.
     return {
       ...base,
       receive: `≈ ${view.outputAmount} ${view.outputSymbol}`,
@@ -2189,6 +2439,7 @@ export function SwapScreen({
   const balancesLoaded = Object.keys(balances).length > 0;
   const osmosis = useOsmosisAssets(liveReads);
   const venue = useSwapVenue(liveReads);
+  const skipEntry = useSkipEntryPoint(liveReads);
   // What the wallet holds, one row per chain and exact denom (lib/swap-assets.ts).
   // The SQS list only checks decimals here: a disagreement makes the field Max-only.
   const sources = useMemo(
@@ -2452,7 +2703,8 @@ export function SwapScreen({
     !(from?.chainId === to?.chainId && from?.denom === to?.denom) &&
     path !== null &&
     !pathPending &&
-    (path !== "contract" || (Boolean(venue.check?.venue) && Boolean(recoveryAddress)));
+    (path !== "contract" || (Boolean(venue.check?.venue) && Boolean(recoveryAddress))) &&
+    (path !== "relay" || (skipEntry.check?.ok === true && Boolean(recoveryAddress)));
 
   // The key carries what both tokens on screen are called on Osmosis, from
   // their identities (lib/swap-assets.ts). The planner refuses a route that
@@ -2491,12 +2743,24 @@ export function SwapScreen({
           amountBaseUnits: sells.toString(),
           slippagePercent: slippage,
           delivery:
-            path === "pool-deliver"
+            path === "pool-deliver" || (path === "relay" && to!.chainId !== VENUE_CHAIN_ID)
               ? {
                   destChainId: to!.chainId,
                   destDenom: to!.denom,
-                  sender: sourceAccount!.address,
+                  // A relay swap's output leaves Osmosis from Skip's contract;
+                  // the channel planned is the same, from this wallet's address there.
+                  sender: path === "relay" ? recoveryAddress! : sourceAccount!.address,
                   recipient: destAddress!,
+                  manualChannels: manual,
+                  resolveAddresses,
+                }
+              : null,
+          inbound:
+            path === "relay"
+              ? {
+                  sourceChainId: from!.chainId,
+                  inputDenom: from!.denom,
+                  sender: sourceAccount!.address,
                   manualChannels: manual,
                   resolveAddresses,
                 }
@@ -2549,8 +2813,11 @@ export function SwapScreen({
   const plan = result?.best ?? null;
   // The transfer leg of a `pool-deliver` swap: the route panel and the channel
   // controls work on it as they do on the contract's route.
-  const delivery = path === "pool-deliver" ? (poolPlan?.delivery ?? null) : null;
-  const routeView = path === "contract" ? plan : (delivery?.view ?? null);
+  const delivery =
+    path === "pool-deliver" || (path === "relay" && to?.chainId !== VENUE_CHAIN_ID) ? (poolPlan?.delivery ?? null) : null;
+  // The transfer to Osmosis that carries a one-signature swap.
+  const inbound = path === "relay" ? (poolPlan?.inbound ?? null) : null;
+  const routeView = path === "contract" ? plan : path === "relay" ? (inbound?.view ?? null) : (delivery?.view ?? null);
 
   /* ---------------------------------------------------------------- *
    * The price, and how old it is
@@ -2738,6 +3005,17 @@ export function SwapScreen({
       if (venue.loading || pathPending) return null;
       if (venue.check?.reason) return venue.check.reason;
     }
+    // A one-signature swap goes through Skip's entry point, checked on Osmosis first.
+    if (path === "relay") {
+      if (skipEntry.loading) return null;
+      if (!skipEntry.check?.ok) {
+        return skipEntry.check?.reason ?? "Skip's swap contract could not be checked, so one-signature swaps stay off.";
+      }
+      if (recoveryFailed) {
+        return `Zunia could not derive your address on ${VENUE_CHAIN_ID}, which a one-signature swap pays to if its delivery fails, so the swap is refused.`;
+      }
+      if (!recoveryAddress) return null;
+    }
     if (!sourceAccount?.address) {
       return `Zunia has no address on ${from.chainName}, so it cannot sign there.`;
     }
@@ -2767,7 +3045,11 @@ export function SwapScreen({
       if (planning || !poolPlan) return null;
       if (quoteError) return quoteError;
       if (!quote) return "Waiting for a price from the Osmosis router.";
-      if (path === "pool-deliver") {
+      if (path === "relay") {
+        if (!inbound) return `Zunia is checking the channel from ${from.chainName} to Osmosis.`;
+        if (inbound.error) return inbound.error;
+      }
+      if (path === "pool-deliver" || (path === "relay" && to.chainId !== VENUE_CHAIN_ID)) {
         if (!delivery) return `Zunia is planning the transfer to ${to.chainName}.`;
         if (delivery.error) return delivery.error;
       }
@@ -2797,9 +3079,12 @@ export function SwapScreen({
     Boolean(quote && from && sourceAccount) &&
     (path === "contract"
       ? plan !== null
-      : isPoolPath(path) &&
+      : (isPoolPath(path) || path === "relay") &&
         Boolean(poolQuote?.routes && poolQuote.minOut) &&
-        (path === "pool" || Boolean(delivery?.view && !delivery.error)));
+        (path !== "relay" || Boolean(inbound?.view && !inbound.error)) &&
+        (path === "pool" ||
+          (path === "relay" && to?.chainId === VENUE_CHAIN_ID) ||
+          Boolean(delivery?.view && !delivery.error)));
 
   // A channel check that failed on the plan's path (lib/route-plan.ts
   // `failedCheck`): the contract's route, or a pool swap's transfer leg. One
@@ -2852,7 +3137,11 @@ export function SwapScreen({
     : null;
   // The same for a pool swap: its messages, read; what the review did not say;
   // whether the form still stands behind it.
-  const poolFacts = poolReview ? readPoolSwapMsg(pending?.msgs[0]) : null;
+  const poolFacts = poolReview
+    ? poolReview.path === "relay"
+      ? relayPoolFacts(pending?.msgs[0])
+      : readPoolSwapMsg(pending?.msgs[0])
+    : null;
   const poolFeeMsg =
     poolReview && pending?.msgs[1]?.typeUrl === BANK_SEND_TYPE_URL ? readSwapFeeMsg(pending.msgs[1]) : null;
   const poolTransfer =
@@ -2876,6 +3165,7 @@ export function SwapScreen({
         planKey,
         planning,
         delivery,
+        inbound,
         blockedReason,
       })
     : null;
@@ -3005,7 +3295,7 @@ export function SwapScreen({
     setError(null);
     try {
       const next = await quotePoolSwap({
-        venueInputDenom: target.from.denom,
+        venueInputDenom: target.venueInputDenom ?? target.from.denom,
         venueOutputDenom: target.venueOutputDenom,
         amountBaseUnits: target.fee.net.toString(),
         slippagePercent: target.slippagePercent,
@@ -3019,16 +3309,32 @@ export function SwapScreen({
         return;
       }
       const { quote: priced, routes: order, minOut } = next;
-      const msgs = poolSwapTxMsgs({
-        sender: target.signer,
-        denom: target.from.denom,
-        routes: order,
-        minOut,
-        fee: target.fee,
-        delivery: target.delivery,
-      });
+      // A relay swap's delivery out of Osmosis carries the whole output, so a
+      // new floor changes only the memo; the channels stay the ones reviewed.
+      const msgs =
+        target.path === "relay" && target.inbound && target.relayDelivery && target.venueInputDenom
+          ? relaySwapTxMsgs({
+              sender: target.signer,
+              denom: target.from.denom,
+              inbound: target.inbound,
+              venueInputDenom: target.venueInputDenom,
+              venueOutputDenom: target.venueOutputDenom,
+              routes: order,
+              minOut,
+              delivery: target.relayDelivery,
+              fee: target.fee,
+              nowMs: Date.now(),
+            })
+          : poolSwapTxMsgs({
+              sender: target.signer,
+              denom: target.from.denom,
+              routes: order,
+              minOut,
+              fee: target.fee,
+              delivery: target.delivery,
+            });
       const built = await sendToBackground<TxPreview>("BUILD_TX_PREVIEW", {
-        chainId: VENUE_CHAIN_ID,
+        chainId: target.path === "relay" ? target.from.chainId : VENUE_CHAIN_ID,
         signerAddress: target.signer,
         msgs,
       });
@@ -3090,7 +3396,28 @@ export function SwapScreen({
         notifyBroadcastAccepted(toast, broadcastResult.txhash);
       } else if (pending.kind === "pool") {
         const signed = pending.review;
-        if (signed.delivery) {
+        if (signed.path === "relay" && signed.inbound) {
+          // One transfer to Osmosis carries the swap: tracking follows it, and
+          // its acknowledgement says whether the swap ran (or the tokens came back).
+          const record: PendingTransfer = {
+            kind: "swap",
+            txHash: broadcastResult.txhash,
+            chainId: pending.chainId,
+            plan: signed.inbound.plan,
+            amountBaseUnits: signed.fee.net.toString(),
+            label: swapRouteLabel(signed.fee.net, signed.from.identity, signed.to.identity),
+            path: "relay",
+            startedAt: Date.now(),
+          };
+          setSignedSwap({
+            txHash: broadcastResult.txhash,
+            headline: `${tickerAmount(signed.fee.net, signed.from.identity, "confirm")} → ${signed.to.identity.ticker}`,
+            identity: shownIdentity(signed.from),
+          });
+          await savePendingTransfer(record);
+          pendingRoutes.reload();
+          setTracked(record);
+        } else if (signed.delivery) {
           // The transfer after the swap is a route like any other: followed
           // across a popup close, from the one transaction on Osmosis. Its
           // amount is the floor the transfer sends.
@@ -3171,7 +3498,7 @@ export function SwapScreen({
    */
   async function reviewPoolSwap() {
     if (
-      !isPoolPath(path) ||
+      !(isPoolPath(path) || path === "relay") ||
       !poolPlan ||
       !from ||
       !to ||
@@ -3182,8 +3509,16 @@ export function SwapScreen({
     ) {
       return;
     }
-    const leg = path === "pool-deliver" ? (delivery?.view ?? null) : null;
-    if (path === "pool-deliver" && (!leg || delivery?.error)) return;
+    const deliversElsewhere = path === "pool-deliver" || (path === "relay" && to.chainId !== VENUE_CHAIN_ID);
+    const leg = deliversElsewhere ? (delivery?.view ?? null) : null;
+    if (deliversElsewhere && (!leg || delivery?.error)) return;
+    const carrier = path === "relay" ? (inbound?.view ?? null) : null;
+    if (path === "relay" && (!carrier || inbound?.error)) return;
+    const payout =
+      path === "relay"
+        ? relayDeliveryFor({ to, recipient: destAddress, delivery: leg, osmosisAddress: recoveryAddress })
+        : null;
+    if (path === "relay" && !payout) return;
     setBusy(true);
     setError(null);
     const priced = await refreshPoolQuote();
@@ -3204,14 +3539,28 @@ export function SwapScreen({
       kind: "pool",
       chainId: from.chainId,
       signerAddress: signer,
-      msgs: poolSwapTxMsgs({
-        sender: signer,
-        denom: from.denom,
-        routes: next.routes,
-        minOut: next.minOut,
-        fee: swapFee,
-        delivery: leg,
-      }),
+      msgs:
+        path === "relay" && carrier && payout
+          ? relaySwapTxMsgs({
+              sender: signer,
+              denom: from.denom,
+              inbound: carrier,
+              venueInputDenom: poolPlan.venueInputDenom,
+              venueOutputDenom: poolPlan.venueOutputDenom,
+              routes: next.routes,
+              minOut: next.minOut,
+              delivery: payout,
+              fee: swapFee,
+              nowMs: Date.now(),
+            })
+          : poolSwapTxMsgs({
+              sender: signer,
+              denom: from.denom,
+              routes: next.routes,
+              minOut: next.minOut,
+              fee: swapFee,
+              delivery: leg,
+            }),
       title: "Confirm swap",
       review: {
         id: reviewCount.current,
@@ -3221,6 +3570,9 @@ export function SwapScreen({
         amountUnits,
         fee: swapFee,
         venueOutputDenom: poolPlan.venueOutputDenom,
+        ...(path === "relay"
+          ? { venueInputDenom: poolPlan.venueInputDenom, inbound: carrier, relayDelivery: payout }
+          : {}),
         slippagePercent: slippage,
         price: { quote: next.quote, at: priced.at },
         routes: next.routes,
@@ -3246,7 +3598,7 @@ export function SwapScreen({
   }
 
   async function reviewSwap() {
-    if (isPoolPath(path)) {
+    if (isPoolPath(path) || path === "relay") {
       await reviewPoolSwap();
       return;
     }
@@ -4068,7 +4420,11 @@ export function SwapScreen({
                   requiresIbcHooks={routeView?.plan.requiresIbcHooks ?? false}
                   swapVenueName={venue.check?.venue?.label ?? "Osmosis"}
                   loading={planning && !routeView}
-                  error={result?.error ?? (path === "pool-deliver" ? (delivery?.error ?? null) : null)}
+                  error={
+                    result?.error ??
+                    (path === "relay" ? (inbound?.error ?? delivery?.error ?? null) : null) ??
+                    (path === "pool-deliver" ? (delivery?.error ?? null) : null)
+                  }
                   onRetry={() => setRetryToken((n) => n + 1)}
                   emptyTitle={liveReads ? "No route yet" : "Route planning is off"}
                   emptyDescription={

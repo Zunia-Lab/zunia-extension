@@ -37,7 +37,7 @@ import {
   type OsmosisSwapQuote,
 } from "@zunialab/interchain";
 
-import { SWAP_VENUE_CHAIN_ID } from "../config/interchain";
+import { SKIP_ENTRY_POINT, SWAP_VENUE_CHAIN_ID } from "../config/interchain";
 import { chainRegistry, describeInterchainError, lcdFor, swapRouterClient } from "./interchain";
 import { planTransfer, type ManualChannel, type RoutePlanView } from "./route-plan";
 
@@ -541,6 +541,71 @@ export async function planPoolDelivery(input: PoolDeliveryInput): Promise<PoolDe
 }
 
 /* -------------------------------------------------------------------------- *
+ * The transfer to Osmosis of a one-signature swap
+ * -------------------------------------------------------------------------- */
+
+/** What the transfer that carries a one-signature swap to Osmosis needs (lib/skip-swap.ts). */
+export interface PoolInboundInput {
+  /** The chain holding the tokens: the transfer leaves it. */
+  readonly sourceChainId: string;
+  /** The From's exact bank denom there. */
+  readonly inputDenom: string;
+  /** The same token as Osmosis names it: what the transfer must deliver. */
+  readonly venueInputDenom: string;
+  /** Base units sent: what the swap sells. */
+  readonly amountBaseUnits: string;
+  /** The signer on the holding chain. */
+  readonly sender: string;
+  readonly manualChannels?: readonly ManualChannel[];
+  readonly resolveAddresses: (chainIds: readonly string[]) => Promise<Readonly<Record<string, string>>>;
+  readonly signal?: AbortSignal;
+}
+
+/**
+ * Plan the transfer that takes the tokens to Skip's entry point on Osmosis:
+ * one direct hop over a channel checked on both chains, arriving as exactly
+ * the denom the swap's route starts from. Anything else (a route through
+ * another chain, a voucher that would arrive as another variant) is refused:
+ * the swap's memo names the denom the pools take, and a token arriving under
+ * another name would only bounce back.
+ */
+export async function planPoolInbound(input: PoolInboundInput): Promise<PoolDelivery> {
+  const planned = await planTransfer({
+    sourceChainId: input.sourceChainId,
+    destChainId: VENUE,
+    inputDenom: input.inputDenom,
+    amountBaseUnits: input.amountBaseUnits,
+    sender: input.sender,
+    recipient: SKIP_ENTRY_POINT.address,
+    resolveAddresses: input.resolveAddresses,
+    ...(input.manualChannels ? { manualChannels: input.manualChannels } : {}),
+    ...(input.signal ? { signal: input.signal } : {}),
+  });
+  if (planned.error) return { view: null, error: planned.error };
+  const view = planned.best;
+  if (!view) {
+    return { view: null, error: planned.warnings[0] ?? "Zunia found no channel to Osmosis for this token." };
+  }
+  if (view.blockedReason) return { view, error: view.blockedReason };
+  const { plan } = view;
+  if (plan.hops.length !== 1 || plan.memo !== "") {
+    return {
+      view,
+      error:
+        "This token reaches Osmosis only through another chain, so it cannot be swapped in one signature. Send it to Osmosis first, then swap it there.",
+    };
+  }
+  if (plan.outputDenom !== input.venueInputDenom) {
+    return {
+      view,
+      error:
+        "Sent from this chain, the token would arrive on Osmosis as another variant than the one its pools trade, so it cannot be swapped in one signature. Send it to its own chain first.",
+    };
+  }
+  return { view, error: null };
+}
+
+/* -------------------------------------------------------------------------- *
  * One plan
  * -------------------------------------------------------------------------- */
 
@@ -558,6 +623,11 @@ export interface PoolSwapPlanInput {
    * the amount it will send. `null` or absent for a swap delivered on Osmosis.
    */
   readonly delivery?: Omit<PoolDeliveryInput, "venueOutputDenom" | "amountBaseUnits" | "signal"> | null;
+  /**
+   * The transfer to Osmosis of a one-signature swap (`relay`), planned with
+   * the price. `null` or absent when the funds are already on Osmosis.
+   */
+  readonly inbound?: Omit<PoolInboundInput, "venueInputDenom" | "amountBaseUnits" | "signal"> | null;
   readonly signal?: AbortSignal;
 }
 
@@ -570,6 +640,8 @@ export interface PoolSwapPlan {
   readonly quote: PoolQuote;
   /** `null` when no transfer was asked for, or there was no price to send. */
   readonly delivery: PoolDelivery | null;
+  /** The checked transfer to Osmosis of a `relay` swap; `null` when none was asked for. */
+  readonly inbound: PoolDelivery | null;
 }
 
 /**
@@ -593,6 +665,7 @@ export async function planPoolSwap(input: PoolSwapPlanInput): Promise<PoolSwapPl
         code: null,
       },
       delivery: null,
+      inbound: null,
     };
   }
   const quote = await quotePoolSwap({
@@ -602,14 +675,23 @@ export async function planPoolSwap(input: PoolSwapPlanInput): Promise<PoolSwapPl
     slippagePercent: input.slippagePercent,
     ...(input.signal ? { signal: input.signal } : {}),
   });
-  const delivery =
+  const [delivery, inbound] = await Promise.all([
     input.delivery && quote.minOut
-      ? await planPoolDelivery({
+      ? planPoolDelivery({
           ...input.delivery,
           venueOutputDenom: input.venueOutputDenom,
           amountBaseUnits: quote.minOut,
           ...(input.signal ? { signal: input.signal } : {}),
         })
-      : null;
-  return { ...base, quote, delivery };
+      : Promise.resolve(null),
+    input.inbound
+      ? planPoolInbound({
+          ...input.inbound,
+          venueInputDenom: input.venueInputDenom,
+          amountBaseUnits: input.amountBaseUnits,
+          ...(input.signal ? { signal: input.signal } : {}),
+        })
+      : Promise.resolve(null),
+  ]);
+  return { ...base, quote, delivery, inbound };
 }

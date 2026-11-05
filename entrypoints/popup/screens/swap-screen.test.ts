@@ -50,7 +50,12 @@ import {
   minimumTerms,
   ownerOf,
   pickTo,
+  poolFeeOutcome,
+  poolSwapTermsProblems,
   priceExpired,
+  relayDeliveryFor,
+  relaySwapTxMsgs,
+  type ReviewedPoolSwap,
   quoteBlockText,
   readSwapMessage,
   reviewDrift,
@@ -887,7 +892,7 @@ describe("the To side", () => {
     expect(pickTo(buy(refused), null, refused)).toBeUndefined();
   });
 
-  it("sells SAF on Safrochain for USDC on Osmosis by default: every row is two steps, and that one needs nothing after the swap", () => {
+  it("sells SAF on Safrochain for USDC on Osmosis by default, in one signature through Skip's entry point", () => {
     const saf = row(sell, "safrochain-1:usaf");
     const rows = buy(saf);
     // Pool 3600 trades SAF on Osmosis: nothing is refused as "not traded".
@@ -895,19 +900,22 @@ describe("the To side", () => {
     const to = pickTo(rows, null, saf);
     expect(to).toMatchObject({ chainId: "osmosis-1", disabledReason: null });
     expect(to?.identity.family).toBe("USDC");
-    expect(swapPathFor(saf, to!, to!.executable)).toBe("move-first");
+    expect(swapPathFor(saf, to!, to!.executable)).toBe("relay");
     // A held row the user picks stays picked.
     const atom = row(rows, "cosmoshub-4:uatom");
     expect(pickTo(rows, atom.key, saf)).toBe(atom);
   });
 
-  it("prefers a row one transaction reaches over a held one that needs a move first", () => {
+  it("prefers USDC on Osmosis among the rows one signature reaches", () => {
     const atom = row(sell, "cosmoshub-4:uatom");
     const rows = buy(atom);
-    // SAF is held and listed first, but buying it with ATOM needs two steps;
-    // the contract reaches OSMO in one.
+    // SAF is held and listed first; ATOM reaches every row in one signature
+    // now, so the default is the stable one on Osmosis.
     expect(row(rows, "safrochain-1:usaf").disabledReason).toBeNull();
-    expect(pickTo(rows, null, atom)?.key).toBe("osmosis-1:uosmo");
+    const to = pickTo(rows, null, atom);
+    expect(to).toMatchObject({ chainId: "osmosis-1" });
+    expect(to?.identity.family).toBe("USDC");
+    expect(swapPathFor(atom, to!, to!.executable)).toBe("relay");
   });
 
   it("draws the two USDC.inj rows with their location and their token logo, both pickable", () => {
@@ -1669,10 +1677,15 @@ describe("the review the confirm screen signs", () => {
   const keyOf = (from: AssetOption, to: AssetOption, amountUnits: bigint, slippage = 1) =>
     swapPlanKey({ from, to, amountUnits, slippage, manual: [], contract: XCS, retryToken: 0 });
 
-  /** A review made once the route table loaded, with the To nobody picked. */
+  /**
+   * A review of the contract's route, ATOM to OSMO, made once the route table
+   * loaded. (The screen now sends ATOM on the Hub through Skip's entry point;
+   * these tests keep the contract path's review honest for the pairs it still
+   * serves.)
+   */
   async function reviewWithAutoTo() {
     const from = row(sell, "cosmoshub-4:uatom");
-    const to = pickTo(buy(from), null, from);
+    const to = row(buy(from), "osmosis-1:uosmo");
     if (!to) throw new Error("no To to review");
     const amountUnits = typed(from, "1");
     const fee = swapFeeFor(from.chainId, amountUnits, NO_TREASURY);
@@ -1823,5 +1836,98 @@ describe("the review the confirm screen signs", () => {
     // The confirm screen still reads, and would sign, the message it opened with.
     expect(readSwapMessage(JSON.parse(reviewed.msg) as BuiltMsg)?.sold).toEqual({ denom: "uosmo", amount: "63000000" });
     expect(reviewed.msg).toBe(OSMO_TO_ATOM_MSG);
+  });
+});
+
+describe("a swap in one signature (relay)", () => {
+  const SAF_ON_OSMOSIS = "ibc/DBAA4846F611A7603EFCE6F9F46F4F561D48B1F492A576022F000614A17089CE";
+  const ALL_USDC = "factory/osmo147h5x9pcj7lm0cttlaefx6sqq5vdfnmwfcqxkmjd7exqm9gc7grqhr75m0/alloyed/allUSDC";
+  const SAFRO_ME = "addr_safro1qyqszqgpqyqszqgpqyqszqgpqyqszqgpwdhzlz";
+  const OSMO_ME = "osmo1emc0hs8lp84f2dmsje9xth8r4hw655t9u422ns";
+  const inbound = {
+    plan: {
+      sourceChainId: "safrochain-1",
+      destChainId: "osmosis-1",
+      inputDenom: "usaf",
+      outputDenom: SAF_ON_OSMOSIS,
+      hops: [{ kind: "transfer", chainId: "safrochain-1", counterpartyChainId: "osmosis-1", channelId: "channel-1", port: "transfer" }],
+      memo: "",
+      warnings: [],
+      estimatedDurationSeconds: 30,
+      requiresPfm: false,
+      requiresIbcHooks: false,
+    },
+    hops: [],
+    warnings: [],
+    blockedReason: null,
+  } as unknown as RoutePlanView;
+
+  function relayReview(): { review: ReviewedPoolSwap; msgs: ReturnType<typeof relaySwapTxMsgs> } {
+    const from = row(sell, "safrochain-1:usaf");
+    const to = row(buy(from), `osmosis-1:${ALL_USDC}`);
+    const amountUnits = typed(from, "100");
+    const fee = swapFeeFor(from.chainId, amountUnits, NO_TREASURY);
+    const routes = [{ hops: [{ poolId: "3600", tokenOutDenom: ALL_USDC }], inAmount: fee.net.toString() }];
+    const delivery = relayDeliveryFor({ to, recipient: OSMO_ME, delivery: null, osmosisAddress: OSMO_ME })!;
+    const msgs = relaySwapTxMsgs({
+      sender: SAFRO_ME,
+      denom: from.denom,
+      inbound,
+      venueInputDenom: SAF_ON_OSMOSIS,
+      venueOutputDenom: ALL_USDC,
+      routes,
+      minOut: "46800",
+      delivery,
+      fee,
+      nowMs: Date.now(),
+    });
+    const review = {
+      id: 1,
+      path: "relay",
+      from,
+      to,
+      amountUnits,
+      fee,
+      venueOutputDenom: ALL_USDC,
+      venueInputDenom: SAF_ON_OSMOSIS,
+      inbound,
+      relayDelivery: delivery,
+      slippagePercent: 1,
+      price: { quote: null, at: Date.now() },
+      routes,
+      minOut: "46800",
+      delivery: null,
+      signer: SAFRO_ME,
+      recipient: OSMO_ME,
+      planKey: "k",
+    } as unknown as ReviewedPoolSwap;
+    return { review, msgs };
+  }
+
+  it("signs one transfer on Safrochain that the review reads back whole, and nothing else", () => {
+    const { review, msgs } = relayReview();
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0]?.typeUrl).toBe("/ibc.applications.transfer.v1.MsgTransfer");
+    const signing = { chainId: "safrochain-1", signerAddress: SAFRO_ME, msgs, recipients: NO_TREASURY, now: Date.now() };
+    expect(poolSwapTermsProblems(null, review, signing)).toEqual([]);
+    expect(poolSwapTermsProblems(null, review, { ...signing, msgs: [...msgs, msgs[0]!] })).toEqual([EXTRA_MESSAGES]);
+    expect(poolSwapTermsProblems(null, { ...review, inbound: null }, signing)).toEqual([UNREADABLE_SWAP]);
+  });
+
+  it("pays on Osmosis for a To there, and over the checked channel otherwise", () => {
+    const to = { chainId: "noble-1" } as AssetOption;
+    expect(relayDeliveryFor({ to: { chainId: "osmosis-1" }, recipient: OSMO_ME, delivery: null, osmosisAddress: OSMO_ME })).toEqual({
+      kind: "osmosis",
+      toAddress: OSMO_ME,
+    });
+    const leg = { plan: { hops: [{ channelId: "channel-750" }] } } as unknown as RoutePlanView;
+    expect(relayDeliveryFor({ to, recipient: "noble1me", delivery: leg, osmosisAddress: OSMO_ME })).toEqual({
+      kind: "ibc",
+      sourceChannel: "channel-750",
+      receiver: "noble1me",
+      recoverAddress: OSMO_ME,
+    });
+    expect(relayDeliveryFor({ to, recipient: "noble1me", delivery: null, osmosisAddress: OSMO_ME })).toBeNull();
+    expect(poolFeeOutcome("relay")).toMatch(/fee does not/);
   });
 });

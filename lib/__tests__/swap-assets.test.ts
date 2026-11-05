@@ -442,10 +442,14 @@ describe("buyOptions", () => {
     const rows = buy(atomFrom, { routes: null });
     expect(rows.every((option) => option.executable === "unknown")).toBe(true);
     const disabled = rows.filter((option) => option.disabledReason !== null);
-    expect(disabled.map((option) => [option.key, option.disabledReason])).toEqual([
+    // No row is refused for want of the table. ATOM on the Hub goes through
+    // Skip's entry point in one signature, which swaps in Osmosis's pools, so
+    // only what Osmosis does not trade is refused (as for the pools).
+    expect(disabled.filter((option) => !/is not traded on Osmosis/.test(option.disabledReason ?? "")).map((option) => [option.key, option.disabledReason])).toEqual([
       ["cosmoshub-4:uatom", SELF_REASON],
       [`osmosis-1:${ATOM}`, SAME_TOKEN_REASON],
     ]);
+    expect(disabled.every((option) => option.identity.osmosisDenom === null || option.key.startsWith("osmosis-1:") || option.key === "cosmoshub-4:uatom")).toBe(true);
     expect(row(rows, `injective-1:${USDC_INJ_ERC20}`)).toMatchObject({ disabledReason: null, searchOnly: false });
     // With the table, the contract cannot take ATOM to USDC.inj, but the row
     // stays: ATOM moves to Osmosis first, then swaps in its pools.
