@@ -324,17 +324,35 @@ function rateLine(
  * The To on screen. A row the user picked stays picked, even once the From
  * or the route table turns it off: its reason is then shown and nothing is
  * planned for it, rather than the destination changing under them. With no
- * pick, the first row that can be used, picked again whenever that changes
- * (the route table loading, another From).
+ * pick, the first row a single transaction is known to reach (a swap in
+ * Osmosis's pools when the funds are there, or a pair the contract's table
+ * holds), picked again whenever that changes (the route table loading,
+ * another From).
+ *
+ * Otherwise (SAF on Safrochain: the table has no SAF route, so every pair
+ * moves the tokens to Osmosis first) the second step is a swap in Osmosis's
+ * pools, so a row delivered on Osmosis needs nothing after it, and USDC is
+ * what a sale is most often for (pool 3600 pairs SAF with it). A row the
+ * table cannot answer for, such as a held voucher nothing identifies (an IBC
+ * USDC on Safrochain), is never the default: it would need the output sent
+ * on through a third chain.
  */
 export function pickTo(
   destinations: readonly AssetOption[],
   toKey: string | null,
+  from?: Pick<AssetOption, "chainId"> | null,
 ): AssetOption | undefined {
-  return (
-    (toKey ? destinations.find((asset) => asset.key === toKey) : undefined) ??
-    destinations.find((asset) => asset.disabledReason === null)
-  );
+  const picked = toKey ? destinations.find((asset) => asset.key === toKey) : undefined;
+  if (picked) return picked;
+  const usable = destinations.filter((asset) => asset.disabledReason === null);
+  if (!from) return usable[0];
+  const oneStep = usable.find((asset) => {
+    const path = swapPathFor(from, asset, asset.executable);
+    return isPoolPath(path) || (path === "contract" && asset.executable === "yes");
+  });
+  if (oneStep) return oneStep;
+  const onVenue = usable.filter((asset) => asset.chainId === VENUE_CHAIN_ID);
+  return onVenue.find((asset) => asset.identity.family === "USDC") ?? onVenue[0] ?? usable[0];
 }
 
 /**
@@ -2217,7 +2235,7 @@ export function SwapScreen({
     () => buyOptions(chains, balances, { from: from ?? null, osmosis: osmosis.assets, routes }),
     [chains, balances, from, osmosis.assets, routes],
   );
-  const to = pickTo(destinations, toKey);
+  const to = pickTo(destinations, toKey, from);
   // How this pair reaches Osmosis (lib/swap-path.ts): the crosschain-swaps
   // contract, Osmosis's own pools now, or the pools once the tokens have moved.
   const path: SwapPath | null = from && to ? swapPathFor(from, to, to.executable) : null;
@@ -3966,19 +3984,13 @@ export function SwapScreen({
         ) : null}
 
         {path === "move-first" && from && to ? (
-          <Callout compact tone="neutral" title="Two steps, both on Osmosis">
+          <Callout compact tone="neutral" title="Two steps">
             <span className="block">
-              Osmosis's swap contract has no route from {from.identity.ticker} to {to.identity.ticker}, and
-              Osmosis's own pools swap only tokens already on Osmosis.
+              1. Move your {from.identity.ticker} to your Osmosis address (IBC, no Zunia fee).
             </span>
             <span className="mt-1 block">
-              1. Move your {from.identity.ticker} from {from.chainName} to your Osmosis address with Send: an
-              IBC transfer, with no Zunia fee.
-            </span>
-            <span className="mt-1 block">
-              2. Come back here: Swap opens on your {from.identity.ticker} on Osmosis and swaps it in one
-              transaction
-              {quoteView ? `, for about ${quoteView.outputAmount} ${quoteView.outputSymbol} at today's price` : ""}.
+              2. Swap it there in one transaction
+              {quoteView ? `, for about ${quoteView.outputAmount} ${quoteView.outputSymbol} today` : ""}.
             </span>
           </Callout>
         ) : null}

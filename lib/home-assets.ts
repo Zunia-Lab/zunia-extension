@@ -44,10 +44,27 @@ export interface HomeAsset {
   readonly kindLabel: string;
   /** {@link assetSubtitle}: `Noble USDC · on Osmosis`, `Native on Injective`. */
   readonly subtitle: string;
-  /** Fiat value, or null when no trusted price applies ({@link priceChainOf}). */
+  /**
+   * The staking coin's row only: base units staked or unbonding, and rewards
+   * ready to claim, as far as the chain answered. Still the account's, so the
+   * row shows them and its value counts them.
+   */
+  readonly position?: { readonly staked: string; readonly rewards: string };
+  /** Base units the row shows: the balance, plus {@link position} for the staking coin. */
+  readonly totalAmount: string;
+  /**
+   * Fiat value of everything the row stands for, {@link position} included,
+   * or null when no trusted price applies ({@link priceChainOf}).
+   */
   readonly fiatValue: number | null;
+  /** Fiat value of the spendable balance alone: the headline adds the position itself. */
+  readonly spendableFiat: number | null;
   /** The priced coin's 24h change, null when the row is not priced. */
   readonly change24h: number | null;
+}
+
+function units(amount: string | undefined): bigint {
+  return amount && /^\d+$/.test(amount) ? BigInt(amount) : 0n;
 }
 
 /**
@@ -180,10 +197,12 @@ function toAsset(
   token: TokenBalance,
   prices: PriceMap,
   identify: HeldIdentify,
+  position?: { readonly staked: string; readonly rewards: string },
 ): HomeAsset {
   const identity = identify(chain.chainId, token);
   const priceChain = priceChainOf(identity);
   const spot = priceChain ? prices[priceChain] : undefined;
+  const totalAmount = (units(token.amount) + units(position?.staked) + units(position?.rewards)).toString();
   return {
     key: `${chain.chainId}:${token.denom}`,
     chainId: chain.chainId,
@@ -194,7 +213,10 @@ function toAsset(
     identity,
     kindLabel: tokenKindLabel(identity.kind),
     subtitle: assetSubtitle(identity),
-    fiatValue: spot ? toWholeCoins(token.amount, identity.decimals) * spot.price : null,
+    ...(position ? { position } : {}),
+    totalAmount,
+    fiatValue: spot ? toWholeCoins(totalAmount, identity.decimals) * spot.price : null,
+    spendableFiat: spot ? toWholeCoins(token.amount, identity.decimals) * spot.price : null,
     change24h: spot ? spot.change24h : null,
   };
 }
@@ -207,8 +229,8 @@ const KIND_RANK: Record<TokenKind, number> = {
 };
 
 function compareAssets(a: HomeAsset, b: HomeAsset): number {
-  const aZero = a.token.amount === "0";
-  const bZero = b.token.amount === "0";
+  const aZero = a.totalAmount === "0";
+  const bZero = b.totalAmount === "0";
   if (aZero !== bZero) return aZero ? 1 : -1;
   const aFiat = a.fiatValue;
   const bFiat = b.fiatValue;
@@ -250,7 +272,15 @@ export function homeAssets(
             baseDenom: balance.denom,
           }
         : nativePlaceholder(chain));
-    out.push(toAsset(chain, native, prices, identify));
+    // The coin's row counts what is staked, unbonding and earned: it is still
+    // the account's money, so its figure and value include it.
+    const position = balance
+      ? {
+          staked: (units(balance.staked) + units(balance.unbonding)).toString(),
+          rewards: units(balance.rewards).toString(),
+        }
+      : undefined;
+    out.push(toAsset(chain, native, prices, identify, position));
     for (const token of tokens) {
       if (token.kind === "native" || token.amount === "0") continue;
       out.push(toAsset(chain, token, prices, identify));
@@ -261,17 +291,22 @@ export function homeAssets(
 
 /**
  * The rows as the headline counts them (`computePortfolio`): each row's value
- * exactly as the row shows it, so the total is the sum of what Home lists.
+ * as the row shows it, so the total is the sum of what Home lists. The
+ * staking coin's row passes its spendable value: the headline adds what the
+ * chain stakes, unbonds and has earned from the balance itself, once.
  */
 export function assetValues(assets: readonly HomeAsset[]): AssetValue[] {
-  return assets.map((asset) => ({
-    chainId: asset.chainId,
-    staking: asset.token.kind === "native",
-    // Base units: a positive integer is a balance, "0" (or anything else) is not.
-    held: /^\d*[1-9]\d*$/.test(asset.token.amount),
-    value: asset.fiatValue,
-    change24h: asset.change24h,
-  }));
+  return assets.map((asset) => {
+    const staking = asset.token.kind === "native";
+    return {
+      chainId: asset.chainId,
+      staking,
+      // Base units: a positive integer is a balance, "0" (or anything else) is not.
+      held: /^\d*[1-9]\d*$/.test(asset.token.amount),
+      value: staking ? asset.spendableFiat : asset.fiatValue,
+      change24h: asset.change24h,
+    };
+  });
 }
 
 export interface HomeAssetGroup {

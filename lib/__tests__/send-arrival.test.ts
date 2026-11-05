@@ -177,8 +177,9 @@ describe("sendArrival", () => {
     expect(arrival.warning?.body).toContain("Osmosis lists USDC.inj as ibc/794C…476138.");
   });
 
-  it("a token no registry lists anywhere arrives as a new voucher, without a warning", () => {
+  it("SAF sent to Osmosis arrives as the voucher Osmosis lists and pool 3600 trades", () => {
     const delivered = ibcDenomFor("transfer/channel-110497", "usaf");
+    expect(delivered).toBe("ibc/DBAA4846F611A7603EFCE6F9F46F4F561D48B1F492A576022F000614A17089CE");
     const arrival = sendArrival({
       sourceChainId: "safrochain-1",
       inputDenom: "usaf",
@@ -186,10 +187,28 @@ describe("sendArrival", () => {
       outputDenom: delivered,
       links: [{ channelId: "channel-1", counterpartyChannelId: "channel-110497" }],
     });
+    expect(arrival.kind).toBe("named");
+    expect(arrival.denom).toBe(delivered);
+    expect(arrival.identity?.ticker).toBe("SAF");
+    expect(arrival.identity?.originChainId).toBe("safrochain-1");
+    expect(arrival.warning).toBeNull();
+  });
+
+  it("a token no registry lists anywhere arrives as a new voucher, without a warning", () => {
+    // Safrochain's DYMA: a catalog currency, but not one Osmosis lists.
+    const dyma = "factory/addr_safro1zlqc8hf3drqz9ntaklfhddetfay3tt9n9c2tar/udyma";
+    const delivered = ibcDenomFor("transfer/channel-110497", dyma);
+    const arrival = sendArrival({
+      sourceChainId: "safrochain-1",
+      inputDenom: dyma,
+      destChainId: "osmosis-1",
+      outputDenom: delivered,
+      links: [{ channelId: "channel-1", counterpartyChannelId: "channel-110497" }],
+    });
     expect(arrival.kind).toBe("unnamed");
     expect(arrival.denom).toBe(delivered);
     expect(arrival.listedDenom).toBeNull();
-    expect(arrival.text).toBe("SAF voucher · on Osmosis");
+    expect(arrival.text).toBe("DYMA voucher · on Osmosis");
     expect(arrival.warning).toBeNull();
   });
 

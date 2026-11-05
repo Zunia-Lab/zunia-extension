@@ -316,8 +316,12 @@ function aminoFee(value: unknown): DecodedDirectTx["fee"] {
  * The resolved line under a raw summary
  * -------------------------------------------------------------------------- */
 
-/** How a proven identity was proven, in the prompt's words. */
-function provenBy(identity: TokenIdentity): string {
+/**
+ * How a proven identity was proven, in the prompt's words; null for an asset
+ * Osmosis lists without having verified it, which is never called verified.
+ */
+function provenBy(identity: TokenIdentity): string | null {
+  if (identity.unverifiedOnOsmosis) return null;
   return identity.provenance === "table" || identity.provenance === "channel-walk"
     ? "verified by channel"
     : "verified by registry";
@@ -346,7 +350,8 @@ export function resolvedCoinLine(chainId: string, coin: SignedCoin): string | nu
     identity.originChainId === identity.heldOnChainId
       ? `native on ${identity.heldOnChainName}`
       : `${identity.originChainName ?? "Unknown chain"} → on ${identity.heldOnChainName}`;
-  return `= ${amount} · ${where} · ${provenBy(identity)}`;
+  const proof = provenBy(identity);
+  return `= ${amount} · ${where}${proof ? ` · ${proof}` : ""}`;
 }
 
 /** A coin as the kernel writes it: base units, a space, the denom (no spaces, no commas). */

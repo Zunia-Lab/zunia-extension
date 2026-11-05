@@ -94,6 +94,30 @@ export interface ArrivalNotice {
   readonly at: number;
 }
 
+/** Arrivals older than this are dropped: history has long since caught up. */
+export const ARRIVAL_TTL_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * The stored arrivals (`zunia.recentArrivals`) still worth showing. Storage
+ * is shared by every context, so each row is checked. The worker writes them
+ * and the popup's feed reads them too, so a transfer a socket just reported
+ * shows in the open list, not only on the badge.
+ */
+export function parseArrivals(stored: unknown, now: number = Date.now()): ArrivalNotice[] {
+  if (!Array.isArray(stored)) return [];
+  const cutoff = now - ARRIVAL_TTL_MS;
+  return stored.filter(
+    (row): row is ArrivalNotice =>
+      typeof row === "object" &&
+      row !== null &&
+      typeof (row as ArrivalNotice).hash === "string" &&
+      typeof (row as ArrivalNotice).chainId === "string" &&
+      Array.isArray((row as ArrivalNotice).coins) &&
+      typeof (row as ArrivalNotice).at === "number" &&
+      (row as ArrivalNotice).at > cutoff,
+  );
+}
+
 function hostOf(origin: string): string {
   try {
     return new URL(origin).host;

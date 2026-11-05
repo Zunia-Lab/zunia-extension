@@ -55,6 +55,7 @@ import {
   announceNotices,
   arrivalFrom,
   deriveNotices,
+  parseArrivals,
   readNoticeIds,
   type ArrivalNotice,
 } from "./notices";
@@ -84,8 +85,6 @@ const MAX_LIVE_CHAINS = 8;
 /** The alarm period. Also the poll interval for chains with no live socket. */
 const ALARM_MINUTES = 1;
 
-/** Arrivals older than this are dropped: history has long since caught up. */
-const ARRIVAL_TTL_MS = 6 * 60 * 60 * 1000;
 const MAX_ARRIVALS = 30;
 
 /**
@@ -128,18 +127,7 @@ async function readArrivals(): Promise<ArrivalNotice[]> {
   const stored = (await browser.storage.local.get(STORAGE_KEYS.recentArrivals))[
     STORAGE_KEYS.recentArrivals
   ];
-  if (!Array.isArray(stored)) return [];
-  const cutoff = Date.now() - ARRIVAL_TTL_MS;
-  return stored.filter(
-    (row): row is ArrivalNotice =>
-      typeof row === "object" &&
-      row !== null &&
-      typeof (row as ArrivalNotice).hash === "string" &&
-      typeof (row as ArrivalNotice).chainId === "string" &&
-      Array.isArray((row as ArrivalNotice).coins) &&
-      typeof (row as ArrivalNotice).at === "number" &&
-      (row as ArrivalNotice).at > cutoff,
-  );
+  return parseArrivals(stored);
 }
 
 async function rememberArrival(arrival: ArrivalNotice): Promise<ArrivalNotice[]> {

@@ -257,10 +257,19 @@ async function readAccountPath(
   }
 }
 
-/** True when a broadcast failed because the sign doc used a stale sequence. */
+/**
+ * True when a broadcast failed because the sign doc used a stale sequence:
+ * by its words, or by the SDK's code 32 when a node returns no log at all
+ * ("Transaction rejected (code 32)" matched no words, so it was never retried).
+ */
 export function isSequenceMismatch(error: unknown): boolean {
+  if (error instanceof BroadcastError && error.code === 32) return true;
+  if (error && typeof error === "object" && "failure" in error) {
+    const kind = (error as { failure?: { kind?: string } | null }).failure?.kind;
+    if (kind === "sequence-mismatch") return true;
+  }
   const text = sequenceErrorText(error);
-  return /account sequence mismatch|incorrect account sequence|sequence mismatch/i.test(
+  return /account sequence mismatch|incorrect account sequence|sequence mismatch|\(code 32\)/i.test(
     text,
   );
 }

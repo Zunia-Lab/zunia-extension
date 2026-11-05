@@ -40,7 +40,7 @@ import {
 import { nftChainSupport } from "../../../lib/nft";
 import { ActivityBadge } from "../components/ActivityBadge";
 import { ListSkeleton } from "../components/ListSkeleton";
-import { TokenAvatar, TokenTicker, provenanceLabel } from "../components/TokenLabel";
+import { TokenAvatar, TokenTicker, listingNote, provenanceLabel } from "../components/TokenLabel";
 import { ActivityAmountText, assetRowLabel, useHeldIdentify } from "./HomeScreen";
 
 function Action({
@@ -107,7 +107,7 @@ function TokenDetails({
   onCopy: (denom: string) => void;
 }) {
   const path = pathText(identity);
-  const proof = provenanceLabel(identity);
+  const proof = provenanceLabel(identity) ?? listingNote(identity);
   const row = "flex min-w-0 items-baseline justify-between gap-3";
   const label = "shrink-0 text-fg-muted";
   const value = "min-w-0 text-right text-fg [overflow-wrap:anywhere]";
@@ -401,7 +401,8 @@ export function ChainDetailScreen({
           (
             BigInt(balance.available) +
             BigInt(balance.staked) +
-            BigInt(balance.rewards)
+            BigInt(balance.rewards) +
+            BigInt(balance.unbonding ?? "0")
           ).toString(),
         )
       : null;
@@ -541,6 +542,14 @@ export function ChainDetailScreen({
             denom={chainTicker(entry)}
             fiat={fiat(balance?.staked)}
           />
+          {balance?.unbonding && balance.unbonding !== "0" ? (
+            <Breakdown
+              label="Unbonding"
+              value={show(balance.unbonding)}
+              denom={chainTicker(entry)}
+              fiat={fiat(balance.unbonding)}
+            />
+          ) : null}
           <Breakdown
             label="Rewards"
             value={show(balance?.rewards)}

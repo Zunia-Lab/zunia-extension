@@ -484,6 +484,18 @@ describe("the resolved line under an approval summary", () => {
     );
   });
 
+  it("never calls a coin verified while Osmosis lists it without having verified it", () => {
+    expect(resolvedCoinLine("safrochain-1", { amount: "1500000", denom: "usaf" })).toBe(
+      "= 1.5 SAF · native on Safrochain",
+    );
+    expect(
+      resolvedCoinLine("osmosis-1", {
+        amount: "1500000",
+        denom: "ibc/DBAA4846F611A7603EFCE6F9F46F4F561D48B1F492A576022F000614A17089CE",
+      }),
+    ).toBe("= 1.5 SAF · Safrochain → on Osmosis");
+  });
+
   it("says nothing for a coin whose identity is not proven", () => {
     expect(resolvedCoinLine("osmosis-1", { amount: "12340000", denom: UNLISTED })).toBeNull();
     // Anyone can mint factory/<self>/USDC.n; it never gets a reassuring line.

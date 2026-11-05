@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Button,
   EmptyState,
@@ -151,7 +151,7 @@ export function NotificationsScreen({
   const proposals = useProposals(chainIds, live);
   const unbonding = useUnbonding(chainIds, live);
 
-  const { notices, unreadCount, markRead, markAllRead } = useNotifications({
+  const { notices, unreadCount, markRead, markAllRead, latestArrival } = useNotifications({
     approvals,
     balances,
     chainNames,
@@ -160,6 +160,13 @@ export function NotificationsScreen({
     unbonding: unbonding.rows,
     prefs,
   });
+  // A transfer a socket just reported is already in the list; read the
+  // history again so its row (and anything a polled chain received) follows
+  // while the screen stays open, instead of on the next visit.
+  const reloadActivity = activity.reload;
+  useEffect(() => {
+    if (latestArrival > 0) reloadActivity();
+  }, [latestArrival, reloadActivity]);
   const [filter, setFilter] = useState<"all" | NoticeKind>("all");
   // A filter for a kind the user turned off would always be empty.
   const active = kindEnabled(filter, prefs) ? filter : "all";

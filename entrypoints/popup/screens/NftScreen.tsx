@@ -273,35 +273,31 @@ export function NftScreen({
    * Blocking states, most specific first
    * ------------------------------------------------------------------ */
 
-  const blocked = useMemo((): { title: string; body: string } | null => {
-    if (chains.length === 0) {
-      return {
-        title: "No networks enabled",
-        body: "Turn on a network that runs CosmWasm before Zunia can look for NFTs.",
-      };
-    }
-    if (supported.length === 0) {
-      return {
-        title: "None of your networks can hold NFTs",
-        body: `None of your ${chains.length} enabled network${
-          chains.length === 1 ? "" : "s"
-        } exposes CosmWasm or the nft module. Enable a network that does and Zunia will list what you own.`,
-      };
-    }
-    if (!liveReads) {
-      return {
-        title: "Live reads are off",
-        body: "Finding NFTs means asking each chain who this address owns. Turn on live balances in Settings, Preferences and Zunia will look.",
-      };
-    }
-    if (supported.every((row) => !row.address)) {
-      return {
-        title: "No address on these networks",
-        body: "Zunia could not derive your address on any CosmWasm network, so it has no owner to ask about. Unlock the wallet and try again.",
-      };
-    }
-    return null;
-  }, [chains.length, supported, liveReads]);
+  // One short line each, with the one action that unblocks it: the screen is
+  // a gallery, and a paragraph in place of the art reads as an error.
+  const blocked = useMemo(
+    (): { title: string; body: string; action: "networks" | "preferences" | null } | null => {
+      if (chains.length === 0 || supported.length === 0) {
+        return {
+          title: "No NFT network on",
+          body: "Turn on a network that supports NFTs, such as Stargaze or Safrochain.",
+          action: "networks",
+        };
+      }
+      if (!liveReads) {
+        return {
+          title: "Live balances are off",
+          body: "Turn them on to see your NFTs.",
+          action: "preferences",
+        };
+      }
+      if (supported.every((row) => !row.address)) {
+        return { title: "No address yet", body: "Unlock the wallet to load your NFTs.", action: null };
+      }
+      return null;
+    },
+    [chains.length, supported, liveReads],
+  );
 
   /* ------------------------------------------------------------------ *
    * Cards
@@ -410,31 +406,18 @@ export function NftScreen({
         ) : null}
 
         {blocked ? (
-          <>
-            <Callout tone="neutral" title={blocked.title}>
-              {blocked.body}
-            </Callout>
-            {supported.length === 0 ? (
-              <Button
-                size="sm"
-                variant="secondary"
-                className="self-start"
-                onClick={() => onNavigate("networks")}
-              >
-                Manage networks
-              </Button>
-            ) : null}
-            {!liveReads ? (
-              <Button
-                size="sm"
-                variant="secondary"
-                className="self-start"
-                onClick={() => onNavigate("preferences")}
-              >
-                Open Preferences
-              </Button>
-            ) : null}
-          </>
+          <EmptyState
+            icon={<IconNft width={16} height={16} />}
+            title={blocked.title}
+            description={blocked.body}
+            action={
+              blocked.action ? (
+                <Button size="sm" variant="secondary" onClick={() => onNavigate(blocked.action!)}>
+                  {blocked.action === "networks" ? "Manage networks" : "Open Preferences"}
+                </Button>
+              ) : null
+            }
+          />
         ) : null}
 
         {visibleScans
@@ -487,14 +470,16 @@ export function NftScreen({
                   {collection.info?.name ??
                     truncateAddress(collection.contractAddress, 8, 6)}
                 </span>
-                <span className="block truncate font-mono text-[9px] text-fg-dim">
+                <span className="block truncate text-[10.5px] text-fg-dim">
                   {collection.chainName}
-                  {` · ${collection.tokenIds.length} held`}
-                  {collection.info?.symbol ? ` · ${collection.info.symbol}` : ""}
-                  {collection.truncated ? " · list cut short" : ""}
+                  {` · ${collection.tokenIds.length}${collection.truncated ? "+" : ""} ${
+                    collection.tokenIds.length === 1 && !collection.truncated ? "item" : "items"
+                  }`}
                 </span>
               </span>
-              <SourcePill source={collection.source} />
+              {/* Only a collection the user added carries a tag: it is the one
+                  they can remove below. */}
+              {collection.source === "user" ? <SourcePill source={collection.source} /> : null}
             </div>
             {/* No `onToggleMedia` / `onRequestMedia` here on purpose: the
                 artwork decision is one decision for the whole screen and it is
@@ -519,21 +504,25 @@ export function NftScreen({
           </section>
         ))}
 
-        {/* Zero collections is only ever rendered when something really was
-            queried. `ScanDisclosure` owns the other case and says nothing was
-            asked, so this sentence is never a claim the wallet cannot make. */}
+        {/* Once every network on screen has answered (or failed, which its
+            own callout says) and nothing is held. "None yet" claims nothing
+            about what was asked, so it also stands when a scan had no
+            collection to ask: before, that case left the screen blank. */}
         {!blocked &&
         !discovery.loading &&
         collections.length === 0 &&
-        visibleScans.some((row) => row.result && !row.result.scan.queriedNothing) ? (
+        visibleScans.length > 0 &&
+        visibleScans.every((row) => row.result || row.error) &&
+        visibleScans.some((row) => row.result) ? (
           <EmptyState
             icon={<IconNft width={16} height={16} />}
-            title="No NFTs on these networks"
+            title="No NFTs yet"
+            description="Collectibles you own show up here."
           />
         ) : null}
 
         {discovery.loading && collections.length === 0 ? (
-          <NftGallerySkeleton collections={2} tiles={4} label="Asking each collection" />
+          <NftGallerySkeleton collections={2} tiles={4} label="Loading NFTs" />
         ) : null}
 
         {detail.errors.length > 0 ? (

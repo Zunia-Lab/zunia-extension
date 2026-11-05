@@ -79,13 +79,33 @@ describe("computePortfolio", () => {
   const rows = homeAssets([OSMOSIS, HUB, SAFRO], BALANCES, PRICES);
   const totals = computePortfolio(BALANCES, PRICES, assetValues(rows));
 
-  it("adds up the rows Home lists, plus what is staked and earned", () => {
+  it("adds up the rows Home lists, each coin's row counting what it stakes and earns", () => {
     const listed = rows.reduce((sum, row) => sum + (row.fiatValue ?? 0), 0);
-    // OSMO 2 x 0.5, USDC.n 3 x 1; staked 4 OSMO + 0.25 ATOM; rewards 0.5 OSMO.
-    expect(listed).toBeCloseTo(4, 9);
+    // OSMO (2 + 4 staked + 0.5 earned) x 0.5, USDC.n 3 x 1, ATOM 0.25 staked x 4.
+    expect(listed).toBeCloseTo(3.25 + 3 + 1, 9);
     expect(totals.staked).toBeCloseTo(2 + 1, 9);
     expect(totals.claimable).toBeCloseTo(0.25, 9);
-    expect(totals.total).toBeCloseTo(listed + totals.staked + totals.claimable, 9);
+    // Nothing counted twice: the headline is what the rows show.
+    expect(totals.total).toBeCloseTo(listed, 9);
+    const osmo = rows.find((row) => row.key === "osmosis-1:uosmo");
+    expect(osmo?.totalAmount).toBe("6500000");
+    expect(osmo?.spendableFiat).toBeCloseTo(1, 9);
+    // Fully staked, the coin still lists with its value.
+    const atom = rows.find((row) => row.key === "cosmoshub-4:uatom");
+    expect(atom?.totalAmount).toBe("250000");
+    expect(atom?.fiatValue).toBeCloseTo(1, 9);
+  });
+
+  it("counts unbonding in the coin's row and the total, not in what is staked", () => {
+    const unbonding: Record<string, ChainBalance> = {
+      ...BALANCES,
+      "osmosis-1": { ...BALANCES["osmosis-1"]!, unbonding: "2000000" },
+    };
+    const withUnbonding = homeAssets([OSMOSIS, HUB, SAFRO], unbonding, PRICES);
+    const next = computePortfolio(unbonding, PRICES, assetValues(withUnbonding));
+    expect(withUnbonding.find((row) => row.key === "osmosis-1:uosmo")?.totalAmount).toBe("8500000");
+    expect(next.total).toBeCloseTo(totals.total + 1, 9);
+    expect(next.staked).toBeCloseTo(totals.staked, 9);
   });
 
   it("leaves out and counts the holdings with no trusted price", () => {

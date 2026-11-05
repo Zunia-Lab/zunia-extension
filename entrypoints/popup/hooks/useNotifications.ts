@@ -9,7 +9,9 @@ import type {
 import {
   INITIAL_REWARDS_NOTICE,
   deriveNotices,
+  parseArrivals,
   parseRewardsNotice,
+  type ArrivalNotice,
   type Notice,
   type NoticeKind,
   type RewardsNoticeState,
@@ -48,6 +50,10 @@ export function useNotifications({
   prefs: NotifyPrefs;
 }) {
   const [read, setRead] = useState<string[]>([]);
+  // Transfers the worker's sockets reported: in the list as soon as they
+  // land, before the history catches up (the shared `transfer:<hash>` id
+  // collapses the two).
+  const [arrivals, setArrivals] = useState<ArrivalNotice[]>([]);
   const [rewards, setRewards] = useState<RewardsNoticeState>(INITIAL_REWARDS_NOTICE);
   // The feed's timestamps and "Nd left" labels need a clock, but reading it
   // inside the memo below makes the derivation impure: React can re-render the
@@ -67,12 +73,13 @@ export function useNotifications({
   useEffect(() => {
     let cancelled = false;
     void browser.storage.local
-      .get([STORAGE_KEYS.readNotifications, STORAGE_KEYS.rewardsNotice])
+      .get([STORAGE_KEYS.readNotifications, STORAGE_KEYS.rewardsNotice, STORAGE_KEYS.recentArrivals])
       .then((store) => {
         if (cancelled) return;
         const ids = store[STORAGE_KEYS.readNotifications];
         if (Array.isArray(ids)) setRead(ids.filter((id): id is string => typeof id === "string"));
         setRewards(parseRewardsNotice(store[STORAGE_KEYS.rewardsNotice]));
+        setArrivals(parseArrivals(store[STORAGE_KEYS.recentArrivals]));
       });
     const onChanged = (
       changes: Record<string, { newValue?: unknown }>,
@@ -85,6 +92,8 @@ export function useNotifications({
       }
       const cycle = changes[STORAGE_KEYS.rewardsNotice];
       if (cycle) setRewards(parseRewardsNotice(cycle.newValue));
+      const landed = changes[STORAGE_KEYS.recentArrivals];
+      if (landed) setArrivals(parseArrivals(landed.newValue));
     };
     browser.storage.onChanged.addListener(onChanged);
     return () => {
@@ -102,15 +111,13 @@ export function useNotifications({
         activity,
         proposals,
         unbonding,
-        // The worker's socket arrivals reach this list through its own feed;
-        // here, history covers transfers.
-        arrivals: [],
+        arrivals,
         read,
         now,
         rewards,
         prefs,
       }),
-    [approvals, balances, chainNames, activity, proposals, unbonding, read, now, rewards, prefs],
+    [approvals, balances, chainNames, activity, proposals, unbonding, arrivals, read, now, rewards, prefs],
   );
 
   /** Mark rows read through the worker, which also lowers the toolbar badge. */
@@ -126,5 +133,8 @@ export function useNotifications({
 
   const unreadCount = notices.filter((n) => !n.read).length;
 
-  return { notices, unreadCount, markRead, markAllRead };
+  /** When the newest socket arrival landed: a screen re-reads history on it. */
+  const latestArrival = arrivals.reduce((latest, row) => Math.max(latest, row.at), 0);
+
+  return { notices, unreadCount, markRead, markAllRead, latestArrival };
 }

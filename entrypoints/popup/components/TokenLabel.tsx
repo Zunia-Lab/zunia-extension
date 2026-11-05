@@ -168,14 +168,17 @@ export function tokenA11yName(identity: TokenIdentity, location: TokenLocation =
 }
 
 /**
- * The seal's words: how the identity was proven, or null when it was not.
+ * The seal's words: how the identity was proven, or null when no seal shows.
  * Never derived from the holding chain being in a registry; only `proven`
- * (the registry, the hash-verified table or a canonical channel walk) counts.
+ * (the registry, the hash-verified table or a canonical channel walk) counts,
+ * and never for an asset Osmosis lists without having verified it: there the
+ * word is Osmosis's to give ({@link listingNote} is shown instead).
  */
 export function provenanceLabel(
-  identity: Pick<TokenIdentity, "proven" | "provenance" | "originChainName" | "heldOnChainName">,
+  identity: Pick<TokenIdentity, "proven" | "provenance" | "originChainName" | "heldOnChainName"> &
+    Partial<Pick<TokenIdentity, "unverifiedOnOsmosis">>,
 ): string | null {
-  if (!identity.proven) return null;
+  if (!identity.proven || identity.unverifiedOnOsmosis) return null;
   switch (identity.provenance) {
     case "native":
       return `Verified: issued on ${identity.originChainName ?? identity.heldOnChainName}`;
@@ -188,6 +191,17 @@ export function provenanceLabel(
     case "unknown":
       return null;
   }
+}
+
+/**
+ * What a token's facts say in place of the seal while Osmosis lists the asset
+ * without having verified it; null otherwise. The identity is still proven,
+ * so this is no warning.
+ */
+export function listingNote(
+  identity: Pick<TokenIdentity, "proven"> & Partial<Pick<TokenIdentity, "unverifiedOnOsmosis">>,
+): string | null {
+  return identity.proven && identity.unverifiedOnOsmosis ? "Listed on Osmosis, not verified yet" : null;
 }
 
 /**

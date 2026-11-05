@@ -28,6 +28,7 @@ import {
   TokenLabel,
   TokenPill,
   TokenTicker,
+  listingNote,
   networkTag,
   provenanceLabel,
   showsLocationBadge,
@@ -69,6 +70,8 @@ const MBTC_MIDAS_ON_HUB = "ibc/62F1A800DCE1AA0FD47B3592DEBB7A8956A383A14A4F756E4
 const ALL_USDC = "factory/osmo147h5x9pcj7lm0cttlaefx6sqq5vdfnmwfcqxkmjd7exqm9gc7grqhr75m0/alloyed/allUSDC";
 /** A voucher nothing lists. */
 const UNLISTED = "ibc/0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF";
+/** SAF on Osmosis (transfer/channel-110497/usaf), listed there before Osmosis verified it. */
+const SAF_ON_OSMOSIS = "ibc/DBAA4846F611A7603EFCE6F9F46F4F561D48B1F492A576022F000614A17089CE";
 
 const usdcN = () => identityOf("osmosis-1", USDC_N_ON_OSMOSIS);
 const usdcInjHome = () => identityOf("injective-1", USDC_INJ_ERC20);
@@ -550,6 +553,22 @@ describe("token words", () => {
     expect(provenanceLabel({ ...usdcN(), provenance: "channel-walk" })).toBe("Verified: IBC path traced to Noble");
     expect(provenanceLabel({ ...usdcN(), proven: false })).toBeNull();
     expect(provenanceLabel(unknown())).toBeNull();
+  });
+
+  it("give no seal to an asset Osmosis lists without having verified it, wherever it is held", () => {
+    for (const saf of [identityOf("osmosis-1", SAF_ON_OSMOSIS), identityOf("safrochain-1", "usaf")]) {
+      // Still SAF, still proven: named, priced and swapped as before.
+      expect(saf).toMatchObject({ ticker: "SAF", proven: true, unverifiedOnOsmosis: true });
+      expect(provenanceLabel(saf)).toBeNull();
+      expect(listingNote(saf)).toBe("Listed on Osmosis, not verified yet");
+      expect(tokenPickerItem(saf).srNote).toBeUndefined();
+    }
+    // What Osmosis verified keeps its seal.
+    for (const verified of [identityOf("cosmoshub-4", "uatom"), usdcN(), identityOf("osmosis-1", "uosmo")]) {
+      expect(verified.unverifiedOnOsmosis, verified.ticker).toBe(false);
+      expect(provenanceLabel(verified), verified.ticker).not.toBeNull();
+      expect(listingNote(verified), verified.ticker).toBeNull();
+    }
   });
 
   it("badge the location chain away from the origin, or always when asked", () => {

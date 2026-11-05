@@ -58,7 +58,7 @@ import { tokenKeywords, type TokenIdentity } from "../../../lib/token-identity";
 import { ActivityBadge } from "../components/ActivityBadge";
 import { HeroSkeleton, ListSkeleton } from "../components/ListSkeleton";
 import { PopupHeader } from "../components/PopupHeader";
-import { TokenAvatar, TokenLabel, TokenTicker, tokenA11yName } from "../components/TokenLabel";
+import { TokenAvatar, TokenLabel, TokenTicker, provenanceLabel, tokenA11yName } from "../components/TokenLabel";
 import type { ChainAccountView } from "../hooks/useChainAccounts";
 import { useActivity } from "../hooks/useChainQuery";
 import { usePrefs } from "../state/Prefs";
@@ -134,7 +134,7 @@ export function assetRowLabel(
   hidden: boolean,
 ): string {
   const parts = [tokenA11yName(identity)];
-  if (identity.proven) parts.push("verified");
+  if (provenanceLabel(identity)) parts.push("verified");
   if (hidden) {
     parts.push("amount hidden");
   } else {
@@ -164,10 +164,16 @@ function AssetRow({
   grouped?: boolean;
   onOpen: () => void;
 }) {
-  const { identity, token } = asset;
+  const { identity } = asset;
   // `12340000 base units` stacks: the number, then the words where a price
-  // would go, so the subtitle keeps its room.
-  const { figure, words } = listAmount(token.amount, identity, hidden);
+  // would go, so the subtitle keeps its room. The coin's row shows all of it,
+  // staked, unbonding and earned included, and says how much is staked.
+  const { figure, words } = listAmount(asset.totalAmount, identity, hidden);
+  const locked = asset.position
+    ? (BigInt(asset.position.staked) + BigInt(asset.position.rewards)).toString()
+    : "0";
+  const stakeNote =
+    locked !== "0" && !hidden ? `incl. ${listAmount(locked, identity, false).figure} staked` : null;
   const subtitle = grouped ? groupedSubtitle(identity) : null;
   const fiat =
     asset.fiatValue !== null ? formatFiat(asset.fiatValue, currency) : null;
@@ -177,7 +183,9 @@ function AssetRow({
     <button
       type="button"
       onClick={onOpen}
-      aria-label={assetRowLabel(identity, { figure, words }, fiat, hidden)}
+      aria-label={[assetRowLabel(identity, { figure, words }, fiat, hidden), stakeNote]
+        .filter(Boolean)
+        .join(", ")}
       className={cn(
         "flex w-full min-w-0 items-center text-left",
         "transition-[background-color] duration-[var(--z-duration-fast)] ease-[var(--z-ease)]",
@@ -208,6 +216,14 @@ function AssetRow({
               {subtitle}
             </span>
           ) : null}
+          {stakeNote ? (
+            <span className="mt-0.5 block truncate text-[11px] text-fg-dim">{stakeNote}</span>
+          ) : null}
+        </span>
+      ) : stakeNote ? (
+        <span className="flex min-w-0 flex-1 flex-col">
+          <TokenLabel identity={identity} className="min-w-0" />
+          <span className="mt-0.5 block truncate text-[11px] text-fg-dim">{stakeNote}</span>
         </span>
       ) : (
         <TokenLabel identity={identity} className="flex-1" />
@@ -230,7 +246,7 @@ function AssetRow({
           <span className={cn(amountSecondaryClass, "mt-0.5 block text-[10px]")}>
             {words}
           </span>
-        ) : fiat || (change !== null && token.amount !== "0") ? (
+        ) : fiat || (change !== null && asset.totalAmount !== "0") ? (
           <span
             className={cn(
               amountSecondaryClass,

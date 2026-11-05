@@ -29,7 +29,7 @@ import type { PendingTransfer } from "../../../lib/pending-transfers";
 import { formatTokenAmount } from "../../../lib/token-amount";
 import { identityOf, tokenText, type TokenIdentity } from "../../../lib/token-identity";
 import { ActivityBadge } from "../components/ActivityBadge";
-import { TokenAvatar, TokenTicker, provenanceLabel } from "../components/TokenLabel";
+import { TokenAvatar, TokenTicker, listingNote, provenanceLabel } from "../components/TokenLabel";
 import { useTxDetail } from "../hooks/useChainQuery";
 import { usePrefs } from "../state/Prefs";
 import { useToast } from "../state/Toasts";
@@ -86,6 +86,7 @@ function TokenFacts({
   const path = pathText(identity);
   const proof =
     provenanceLabel(identity) ??
+    listingNote(identity) ??
     (identity.provenance === "unknown" ? "Not verified: no registry names this denom" : "Not verified");
   return (
     <div className="rounded-[14px] border border-[var(--z-line)] bg-[var(--z-glass)] px-3.5 py-2.5">

@@ -12,7 +12,7 @@ import type { PriceMap } from "./prices";
 
 export interface ChainValue {
   chainId: string;
-  /** Whole-coin amount of the chain's own coin across available + staked + rewards. */
+  /** Whole-coin amount of the chain's own coin across available + staked + rewards + unbonding. */
   amount: number;
   /** Fiat value of everything held on the chain, or null when none of it is priced. */
   value: number | null;
@@ -137,8 +137,10 @@ export function computePortfolio(
     const available = toWholeCoins(balance.available, decimals);
     const stakedCoins = toWholeCoins(balance.staked, decimals);
     const rewards = toWholeCoins(balance.rewards, decimals);
+    // Unbonding is still the account's coin: in the total, not in "Staked".
+    const unbonding = toWholeCoins(balance.unbonding ?? "0", decimals);
     const entry = tally(balance.chainId);
-    entry.amount = available + stakedCoins + rewards;
+    entry.amount = available + stakedCoins + rewards + unbonding;
     if (spot) pricedChains += 1;
 
     // The coin as Home's row shows it, else from the balance.
@@ -152,7 +154,7 @@ export function computePortfolio(
     stakingRows.delete(balance.chainId);
     if (row.value !== null) add(balance.chainId, row.value, row.change24h);
 
-    const position = stakedCoins + rewards;
+    const position = stakedCoins + rewards + unbonding;
     if (spot && position !== 0) {
       staked += stakedCoins * spot.price;
       claimable += rewards * spot.price;
