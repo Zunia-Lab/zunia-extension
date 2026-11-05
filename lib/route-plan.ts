@@ -113,6 +113,10 @@ export interface RouteHopView {
   readonly channelSource?: "discovered" | "manual" | "seed";
   readonly channelVerified?: boolean;
   readonly channelState?: "open" | "closed" | "init" | "tryopen" | "unknown";
+  /** The route preview is asking both chains about this channel right now (lib/route-preview-check.ts). */
+  readonly channelChecking?: boolean;
+  /** The chains answered that this channel cannot carry the transfer. */
+  readonly channelRefused?: boolean;
 }
 
 /** A plan plus everything the confirm screen needs to describe and block it. */

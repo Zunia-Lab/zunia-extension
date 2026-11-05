@@ -499,6 +499,9 @@ function hopStatus(
   }
   if (!hop.channelId) return { text: "No channel found yet", tone: VERDICT_TONE.inconclusive };
   if (hop.channelVerified) return { text: "Found on chain, open", tone: VERDICT_TONE.verified };
+  // Asked as soon as both networks are known: neutral until the chains answer.
+  if (hop.channelChecking) return { text: "Checking on both chains…", tone: "text-fg-dim" };
+  if (hop.channelRefused) return { text: "Refused by the chains", tone: VERDICT_TONE.rejected };
   if (hop.channelSource === "seed") {
     return { text: "Known channel, not checked yet", tone: "text-fg-dim" };
   }
