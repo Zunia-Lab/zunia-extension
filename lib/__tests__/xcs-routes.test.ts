@@ -36,6 +36,8 @@ const ATOM = "ibc/27394FB092D2ECCD56123C74F36E4C1F926001CEADA9CA97EA622B25F41E5E
 const STATOM = "ibc/C140AFD542AE77BD7DCC83F13FDD8C5E5BB8C4929785E6EC2F4C636F98F17901";
 const USDC_INJ_ERC20 = "erc20:0xa00C59fF5a080D2b954d0c75e46E22a0c371235a";
 const UNLISTED = "ibc/0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF";
+/** Safrochain's SAF on Osmosis: `transfer/channel-110497/usaf`, traded in pool 3600. */
+const SAF_ON_OSMOSIS = "ibc/DBAA4846F611A7603EFCE6F9F46F4F561D48B1F492A576022F000614A17089CE";
 
 const table: XcsRouteTable = { xcsContract: XCS, swapContract: ROUTER, routes: parseRouterState(MODELS), readAt: 0 };
 
@@ -211,8 +213,9 @@ describe("executable", () => {
     const osmo = side("osmosis-1", "uosmo");
     expect(executableBetween(table, side("cosmoshub-4", "uatom"), side("axelar-dojo-1", "uusdc"))).toBe("no");
     expect(executableBetween(table, osmo, side("axelar-dojo-1", "uusdc"))).toBe("yes");
-    expect(executableBetween(table, osmo, side("safrochain-1", "usaf"))).toBe("no");
-    expect(executableBetween(table, side("safrochain-1", "usaf"), osmo)).toBe("no");
+    // Pocket's POKT has no voucher Osmosis lists, and none of the table's assets is it.
+    expect(executableBetween(table, osmo, side("pocket", "upokt"))).toBe("no");
+    expect(executableBetween(table, side("pocket", "upokt"), osmo)).toBe("no");
     expect(executableBetween(table, osmo, side("injective-1", UNLISTED))).toBe("unknown");
     // A held Osmosis denom is its own name, identified or not.
     expect(executableBetween(table, osmo, side("osmosis-1", UNLISTED))).toBe("no");
@@ -221,14 +224,23 @@ describe("executable", () => {
       ...table,
       routes: [...table.routes, { input: "uosmo", output: UNLISTED, poolIds: ["1"] }],
     };
-    expect(executableBetween(unnamed, osmo, side("safrochain-1", "usaf"))).toBe("unknown");
+    expect(executableBetween(unnamed, osmo, side("pocket", "upokt"))).toBe("unknown");
     expect(executableBetween(null, osmo, side("axelar-dojo-1", "uusdc"))).toBe("unknown");
   });
 
   it("names a side on Osmosis by its held denom there, else by its canonical voucher", () => {
     expect(osmosisDenomFor(side("osmosis-1", USDC_N))).toBe(USDC_N);
     expect(osmosisDenomFor(side("injective-1", USDC_INJ_ERC20))).toBe(USDC_INJ);
-    expect(osmosisDenomFor(side("safrochain-1", "usaf"))).toBeNull();
+    expect(osmosisDenomFor(side("pocket", "upokt"))).toBeNull();
+  });
+
+  it("names SAF by the voucher pool 3600 trades, though Osmosis has not verified it yet", () => {
+    // Osmosis lists SAF over channel-110497 unverified; Zunia's registry has it
+    // as Safrochain's staking coin, and the voucher hashes to its trace.
+    expect(osmosisDenomFor(side("safrochain-1", "usaf"))).toBe(SAF_ON_OSMOSIS);
+    expect(osmosisDenomFor(side("osmosis-1", SAF_ON_OSMOSIS))).toBe(SAF_ON_OSMOSIS);
+    // Not in the contract's table: a pair with it is a pool swap, never "not traded".
+    expect(executableBetween(table, side("osmosis-1", "uosmo"), side("safrochain-1", "usaf"))).toBe("no");
   });
 });
 
@@ -250,14 +262,14 @@ describe("gateOption", () => {
   });
 
   it("refuses a side Osmosis does not trade, in either direction", () => {
-    // SAF has no denom on Osmosis: neither the contract nor the pools can take it.
-    expect(gateOption(osmo, side("safrochain-1", "usaf"), table)).toEqual({
+    // POKT has no denom on Osmosis: neither the contract nor the pools can take it.
+    expect(gateOption(osmo, side("pocket", "upokt"), table)).toEqual({
       executable: "no",
-      disabledReason: notTradedReason("SAF"),
+      disabledReason: notTradedReason("POKT"),
     });
-    expect(gateOption(side("safrochain-1", "usaf"), osmo, table)).toEqual({
+    expect(gateOption(side("pocket", "upokt"), osmo, table)).toEqual({
       executable: "no",
-      disabledReason: notTradedReason("SAF"),
+      disabledReason: notTradedReason("POKT"),
     });
     // Funds elsewhere that Osmosis does trade move there first: not refused.
     expect(gateOption(side("cosmoshub-4", "uatom"), side("injective-1", USDC_INJ_ERC20), table)).toEqual({

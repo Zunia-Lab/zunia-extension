@@ -32,6 +32,7 @@ import {
   type SwapChain,
 } from "../../../lib/swap-assets";
 import { MAX_ONLY_NOTE, amountFieldText, canTypeAmount } from "../../../lib/token-amount";
+import { swapPathFor } from "../../../lib/swap-path";
 import { resolveTxMemo } from "../../../lib/tx-memo";
 import { notTradedReason, parseRouterState, type XcsRouteTable } from "../../../lib/xcs-routes";
 import sqs from "../../../lib/__tests__/fixtures/swap/sqs-tokens-metadata.json";
@@ -877,14 +878,36 @@ describe("the To side", () => {
   const fromOsmo = buy(osmo);
 
   it("defaults to the first row that can be used, and keeps a refused pick with its reason", () => {
-    const first = pickTo(fromOsmo, null);
+    const first = pickTo(fromOsmo, null, osmo);
     expect(first?.disabledReason).toBeNull();
-    // SAF is not traded on Osmosis: a pick of it stays, with the reason.
-    const refused = row(fromOsmo, "safrochain-1:usaf");
-    expect(pickTo(fromOsmo, refused.key)).toBe(refused);
-    expect(refused.disabledReason).toBe(notTradedReason("SAF"));
+    // POKT is not traded on Osmosis: a pick of it stays, with the reason.
+    const refused = row(fromOsmo, "pocket:upokt");
+    expect(pickTo(fromOsmo, refused.key, osmo)).toBe(refused);
+    expect(refused.disabledReason).toBe(notTradedReason("POKT"));
+    expect(pickTo(buy(refused), null, refused)).toBeUndefined();
+  });
+
+  it("sells SAF on Safrochain for USDC on Osmosis by default: every row is two steps, and that one needs nothing after the swap", () => {
     const saf = row(sell, "safrochain-1:usaf");
-    expect(pickTo(buy(saf), null)).toBeUndefined();
+    const rows = buy(saf);
+    // Pool 3600 trades SAF on Osmosis: nothing is refused as "not traded".
+    expect(rows.some((option) => option.disabledReason === notTradedReason("SAF"))).toBe(false);
+    const to = pickTo(rows, null, saf);
+    expect(to).toMatchObject({ chainId: "osmosis-1", disabledReason: null });
+    expect(to?.identity.family).toBe("USDC");
+    expect(swapPathFor(saf, to!, to!.executable)).toBe("move-first");
+    // A held row the user picks stays picked.
+    const atom = row(rows, "cosmoshub-4:uatom");
+    expect(pickTo(rows, atom.key, saf)).toBe(atom);
+  });
+
+  it("prefers a row one transaction reaches over a held one that needs a move first", () => {
+    const atom = row(sell, "cosmoshub-4:uatom");
+    const rows = buy(atom);
+    // SAF is held and listed first, but buying it with ATOM needs two steps;
+    // the contract reaches OSMO in one.
+    expect(row(rows, "safrochain-1:usaf").disabledReason).toBeNull();
+    expect(pickTo(rows, null, atom)?.key).toBe("osmosis-1:uosmo");
   });
 
   it("draws the two USDC.inj rows with their location and their token logo, both pickable", () => {
@@ -912,9 +935,9 @@ describe("the To side", () => {
   it("words what the list leaves out, with no 'more' when it lists nothing", () => {
     const listed = buyListCopy(fromOsmo, "OSMO");
     expect(listed.searchOnlyNote(351)).toBe("351 more cannot be bought with OSMO. Search to see why.");
-    const saf = row(sell, "safrochain-1:usaf");
-    const none = buyListCopy(buy(saf), "SAF");
-    expect(none.empty).toBe("Nothing can be bought with SAF here. Search to see each token and why.");
+    const pokt = row(fromOsmo, "pocket:upokt");
+    const none = buyListCopy(buy(pokt), "POKT");
+    expect(none.empty).toBe("Nothing can be bought with POKT here. Search to see each token and why.");
     expect(none.searchOnlyNote(366)).toBe("366 tokens appear when you search.");
     expect(none.searchOnlyNote(1)).toBe("1 token appears when you search.");
     expect(buyListCopy([], undefined).empty).toBe("No token to receive yet.");
@@ -1649,7 +1672,7 @@ describe("the review the confirm screen signs", () => {
   /** A review made once the route table loaded, with the To nobody picked. */
   async function reviewWithAutoTo() {
     const from = row(sell, "cosmoshub-4:uatom");
-    const to = pickTo(buy(from), null);
+    const to = pickTo(buy(from), null, from);
     if (!to) throw new Error("no To to review");
     const amountUnits = typed(from, "1");
     const fee = swapFeeFor(from.chainId, amountUnits, NO_TREASURY);

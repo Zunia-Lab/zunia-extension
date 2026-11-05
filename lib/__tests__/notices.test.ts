@@ -10,6 +10,7 @@ import {
   reminderInterval,
   type NoticeInput,
   type RewardsNoticeState,
+  parseArrivals,
 } from "../notices";
 import { DEFAULT_NOTIFY_PREFS, parseNotifyPrefs } from "../settings";
 
@@ -257,5 +258,20 @@ describe("transfer notices named by identity", () => {
       arrivals: [arrival("R1", USDC_N, "12340000")],
     });
     expect(both.map((row) => row.id)).toEqual(["transfer:R1"]);
+  });
+});
+
+describe("parseArrivals", () => {
+  const now = Date.UTC(2026, 10, 5, 12);
+  const arrival = { chainId: "safrochain-1", hash: "AB12", coins: [{ denom: "usaf", amount: "5" }], at: now - 60_000 };
+
+  it("keeps the arrivals a socket reported in the last six hours, as the popup reads them", () => {
+    expect(parseArrivals([arrival], now)).toEqual([arrival]);
+    expect(parseArrivals([{ ...arrival, at: now - 7 * 60 * 60 * 1000 }], now)).toEqual([]);
+  });
+
+  it("drops rows that are not arrivals, since storage is shared by every context", () => {
+    expect(parseArrivals("nope", now)).toEqual([]);
+    expect(parseArrivals([null, { hash: 1 }, { ...arrival, coins: "5usaf" }], now)).toEqual([]);
   });
 });

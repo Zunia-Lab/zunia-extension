@@ -14,6 +14,8 @@ const USDC_INJ = "ibc/794C7D7F3B857713878A3A1927251FA6AC1EEE520424C1F6FAFE9BA26D
 const USDC_N = "ibc/498A0751C798A0D9A389AA3691123DADA57DAA4FE165D5C75894505B876BA6E4";
 const USDC_AXL = "ibc/D189335C6E4A68B513C10AB227BF1C1D38C746766278BA3EEB4FB14124F1D858";
 const ALL_USDC = "factory/osmo147h5x9pcj7lm0cttlaefx6sqq5vdfnmwfcqxkmjd7exqm9gc7grqhr75m0/alloyed/allUSDC";
+/** Safrochain's SAF on Osmosis: `transfer/channel-110497/usaf`, traded in pool 3600. */
+const SAF = "ibc/DBAA4846F611A7603EFCE6F9F46F4F561D48B1F492A576022F000614A17089CE";
 
 describe("parseOsmosisTokenMetadata", () => {
   it("keeps listed tokens keyed by denom, sorted by symbol", () => {
@@ -67,7 +69,7 @@ describe("osmosisSwapAssets", () => {
     expect(assets).toHaveLength(106);
     for (const asset of assets) {
       expect(asset.row.denom).toBe(asset.denom);
-      expect(asset.row.verified && asset.row.stable).toBe(true);
+      expect((asset.row.verified || asset.row.listedByZunia) && asset.row.stable).toBe(true);
     }
     // 131 fixture rows: 106 proven, 4 previews, and 21 the old list offered.
     const offered = new Set(assets.map((asset) => asset.denom));
@@ -84,6 +86,26 @@ describe("osmosisSwapAssets", () => {
       .map((asset) => asset.denom)
       .sort();
     expect(usdc).toEqual([ALL_USDC, USDC_N, USDC_INJ, USDC_AXL].sort());
+  });
+
+  it("offers SAF on Osmosis while its verification waits: listed by SQS, staking coin of Zunia's Safrochain", () => {
+    // SQS's own row for it on 2026-11-05 (osmosis-labs/assetlists#3876 still open).
+    const withSaf = parseOsmosisTokenMetadata({
+      [SAF]: { name: "Safrochain", symbol: "SAF", coinMinimalDenom: SAF, decimals: 6, preview: false, coingeckoId: "" },
+    });
+    const [saf] = osmosisSwapAssets(withSaf);
+    expect(saf).toMatchObject({ denom: SAF, symbol: "SAF", decimals: 6 });
+    expect(saf?.row).toMatchObject({
+      originChainId: "safrochain-1",
+      originDenom: "usaf",
+      channelId: "channel-110497",
+      verified: false,
+      listedByZunia: true,
+      stable: true,
+    });
+    // A preview listing is still left out, vouched for or not.
+    const preview = parseOsmosisTokenMetadata({ [SAF]: { symbol: "SAF", decimals: 6, preview: true } });
+    expect(osmosisSwapAssets(preview)).toEqual([]);
   });
 
   it("drops a row SQS no longer lists", () => {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  BroadcastError,
   expectedSequenceOf,
   isSequenceMismatch,
   parseAccountBody,
@@ -45,5 +46,14 @@ describe("sequence mismatch", () => {
     );
     expect(isSequenceMismatch(error)).toBe(true);
     expect(expectedSequenceOf(error)).toBe("36");
+  });
+
+  it("knows the refusal by its code when the node returns no log", () => {
+    const silent = new BroadcastError("Transaction rejected (code 32)", 32, "", "ABC");
+    expect(isSequenceMismatch(silent)).toBe(true);
+    // No number to read: the retry re-reads the account instead.
+    expect(expectedSequenceOf(silent)).toBeNull();
+    expect(isSequenceMismatch(new Error("Transaction rejected (code 32)"))).toBe(true);
+    expect(isSequenceMismatch(new BroadcastError("insufficient fees", 13, "insufficient fees"))).toBe(false);
   });
 });

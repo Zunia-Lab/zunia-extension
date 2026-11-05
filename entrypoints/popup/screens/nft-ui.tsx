@@ -262,7 +262,7 @@ export function ScanDisclosure({
 }) {
   if (result.issues.length === 0) return null;
   return (
-    <Callout tone="warning" title={`Some lookups failed on ${chainName}`}>
+    <Callout tone="warning" title={`Some collections on ${chainName} did not answer`}>
       <ul className="flex flex-col gap-1">
         {result.issues.map((issue) => (
           <li key={`${issue.contractAddress ?? "indexer"}-${issue.message}`}>
@@ -289,7 +289,7 @@ export function SourcePill({
 }) {
   const label =
     source === "user"
-      ? "You added"
+      ? "Added"
       : source === "indexer"
         ? "Indexed"
         : source === "module"
@@ -440,12 +440,9 @@ export function ContractManager({
           focusRing,
         )}
       >
-        Missing a collection?
+        Add a collection
       </summary>
       <div className="mt-2 flex flex-col gap-2">
-        <p className="m-0 text-[10.5px] leading-snug text-fg-muted">
-          Paste a contract only if a collection never showed up. Test it, then add it.
-        </p>
         {contracts.length > 0 ? (
           <ul className="flex flex-col divide-y divide-[var(--z-line)] rounded-[13px] border border-[var(--z-line)] px-2.5">
             {contracts.map((address) => (

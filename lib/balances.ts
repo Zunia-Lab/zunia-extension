@@ -95,6 +95,13 @@ export interface ChainBalance {
   available: string;
   staked: string;
   rewards: string;
+  /**
+   * Base units of the staking denom on their way back from validators: still
+   * the account's, spendable once the period ends. Absent in a record cached
+   * by an older build, and when the chain did not answer: then left out of
+   * every total, never guessed.
+   */
+  unbonding?: string;
   denom: string;
   decimals: number;
   symbol: string;
@@ -297,6 +304,27 @@ async function getJson(url: string): Promise<unknown> {
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * Every unbonding entry's balance, in base units of the staking denom (the
+ * chain's bond denom, so no denom to check). `null` for a body that is not
+ * the schema asked for.
+ */
+export function sumUnbonding(body: unknown): string | null {
+  const responses = (body as { unbonding_responses?: unknown } | null)?.unbonding_responses;
+  if (responses === undefined) return "0";
+  if (!Array.isArray(responses)) return null;
+  let total = 0n;
+  for (const response of responses) {
+    const entries = (response as { entries?: unknown } | null)?.entries;
+    if (!Array.isArray(entries)) continue;
+    for (const entry of entries) {
+      const balance = (entry as { balance?: unknown } | null)?.balance;
+      if (typeof balance === "string" && /^\d+$/.test(balance)) total += BigInt(balance);
+    }
+  }
+  return total.toString();
 }
 
 function sumDenom(
@@ -803,12 +831,13 @@ async function fetchChainBalance(
   if (!rest) return { ...base, error: "No REST endpoint in the registry" };
 
   const denom = native.denom;
-  const [bank, staking, rewards] = await Promise.allSettled([
+  const [bank, staking, rewards, unbonding] = await Promise.allSettled([
     fetchBankBalances(rest, address),
     getJson(`${rest}/cosmos/staking/v1beta1/delegations/${address}`),
     getJson(
       `${rest}/cosmos/distribution/v1beta1/delegators/${address}/rewards`,
     ),
+    getJson(`${rest}/cosmos/staking/v1beta1/delegators/${address}/unbonding_delegations`),
   ]);
 
   if (bank.status === "rejected") {
@@ -848,11 +877,13 @@ async function fetchChainBalance(
   const metadata = await metadataFor(chainId, rest, unnamed);
   const tokens = parseBankTokens(held, native, named.identities, metadata.facts);
 
+  const unbondingTotal = unbonding.status === "fulfilled" ? sumUnbonding(unbonding.value) : null;
   const balance: ChainBalance = {
     ...base,
     available: sumDenom(bankRows, denom),
     staked: sumDenom(stakedRows, denom),
     rewards: sumDenom(rewardRows, denom),
+    ...(unbondingTotal !== null ? { unbonding: unbondingTotal } : {}),
     tokens,
   };
   if (!named.settled || !metadata.settled) provisional.add(balance);

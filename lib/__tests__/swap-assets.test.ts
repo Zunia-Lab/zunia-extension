@@ -39,6 +39,8 @@ const USDC_N_ON_INJECTIVE = "ibc/2CBC2EA121AE42563B08028466F37B600F2D7D4282342DE
 const USDC_AXL = "ibc/D189335C6E4A68B513C10AB227BF1C1D38C746766278BA3EEB4FB14124F1D858";
 const ATOM = "ibc/27394FB092D2ECCD56123C74F36E4C1F926001CEADA9CA97EA622B25F41E5EB2";
 const UNLISTED = "ibc/0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF";
+/** Safrochain's SAF on Osmosis: `transfer/channel-110497/usaf`, traded in pool 3600. */
+const SAF_ON_OSMOSIS = "ibc/DBAA4846F611A7603EFCE6F9F46F4F561D48B1F492A576022F000614A17089CE";
 
 const chains: SwapChain[] = wallet.chains.map(({ chainId }) => {
   const entry = findCatalogEntry(chainId);
@@ -355,9 +357,12 @@ describe("buyOptions", () => {
       expect(row(rows, key)).toMatchObject({ executable: "yes", disabledReason: null, searchOnly: false });
     }
     expect(row(rows, "osmosis-1:uosmo").disabledReason).toBe(SELF_REASON);
+    // SAF trades in pool 3600 before Osmosis verifies it: bought there, then
+    // sent home to Safrochain in the same transaction.
+    expect(row(rows, "safrochain-1:usaf")).toMatchObject({ executable: "no", disabledReason: null, searchOnly: false });
     // A coin Osmosis does not trade is still refused, with its own reason.
-    expect(row(rows, "safrochain-1:usaf")).toMatchObject({
-      disabledReason: notTradedReason("SAF"),
+    expect(row(rows, "pocket:upokt")).toMatchObject({
+      disabledReason: notTradedReason("POKT"),
       searchOnly: true,
     });
     // The search lists every USDC row, all of them pickable.
@@ -381,11 +386,13 @@ describe("buyOptions", () => {
     expect(groups).toEqual([...groups].sort((a, b) => a - b));
     expect(rows[0]?.held).toBe(true);
     // Held rows keep the balance order, the ones on Osmosis included: OSMO
-    // swaps into them in Osmosis's pools. Then what the contract reaches reads
-    // alphabetically, each token at home before its Osmosis row. MARS.old and
-    // STARS.og have routes but no row: Osmosis flags their vouchers unstable
-    // and Mars and Stargaze are not bundled chains.
+    // swaps into them in Osmosis's pools, SAF too (pool 3600, then home to
+    // Safrochain). Then what the contract reaches reads alphabetically, each
+    // token at home before its Osmosis row. MARS.old and STARS.og have routes
+    // but no row: Osmosis flags their vouchers unstable and Mars and Stargaze
+    // are not bundled chains.
     expect(rows.filter((option) => group(option) === 0).map((option) => option.key)).toEqual([
+      "safrochain-1:usaf",
       "cosmoshub-4:uatom",
       `osmosis-1:${USDC_N}`,
       `osmosis-1:${UNLISTED}`,
@@ -495,8 +502,13 @@ describe("expectedVenueDenoms", () => {
       expectedVenueInputDenom: USDC_N,
       expectedVenueOutputDenom: USDC_INJ,
     });
-    // Safrochain's SAF is not on Osmosis: that half of the check is left out.
+    // Safrochain's SAF arrives on Osmosis as the voucher pool 3600 trades.
     expect(expectedVenueDenoms(held("safrochain-1:usaf"), row(rows, "axelar-dojo-1:uusdc"))).toEqual({
+      expectedVenueInputDenom: SAF_ON_OSMOSIS,
+      expectedVenueOutputDenom: USDC_AXL,
+    });
+    // Pocket's POKT is not on Osmosis: that half of the check is left out.
+    expect(expectedVenueDenoms(row(rows, "pocket:upokt"), row(rows, "axelar-dojo-1:uusdc"))).toEqual({
       expectedVenueOutputDenom: USDC_AXL,
     });
   });

@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { Switch, cn, focusRing, interactiveSurface } from "@zunialab/ui";
-import { IconChevronRight } from "../screens/icons";
+import { IconChevronRight, IconExternal } from "../screens/icons";
 
 export function SettingsGroup({
   label,
@@ -63,12 +63,15 @@ export function SettingsLink({
   description,
   meta,
   danger,
+  external,
   onClick,
 }: {
   title: string;
   description?: string;
   meta?: string;
   danger?: boolean;
+  /** Opens a page outside the wallet: the arrow says so instead of a chevron. */
+  external?: boolean;
   onClick: () => void;
 }) {
   return (
@@ -102,11 +105,15 @@ export function SettingsLink({
           {meta}
         </span>
       ) : null}
-      <IconChevronRight
-        width={16}
-        height={16}
-        className="shrink-0 text-fg-dim"
-      />
+      {external ? (
+        <IconExternal width={14} height={14} className="shrink-0 text-fg-dim" aria-hidden />
+      ) : (
+        <IconChevronRight
+          width={16}
+          height={16}
+          className="shrink-0 text-fg-dim"
+        />
+      )}
     </button>
   );
 }

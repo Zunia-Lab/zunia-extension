@@ -41,6 +41,22 @@ const BROWSER_NAMES: Record<string, string> = {
 /** Which build this is: worth saying when someone reports a problem. */
 const BUILD_NAME = BROWSER_NAMES[import.meta.env.BROWSER] ?? "browser";
 
+/**
+ * Where help lives. The support page has the guides and the only two contact
+ * addresses; reports go to the public tracker, where a version and steps can
+ * be attached. Nothing here ever asks for a recovery phrase.
+ */
+const HELP_LINKS = {
+  support: "https://zunialab.com/support",
+  report: "https://updates.zunialab.com/requests/new",
+  guides: "https://docs.zunialab.com/docs/use-wallet/extension/",
+} as const;
+
+function openTab(url: string): void {
+  void browser.tabs.create({ url });
+  window.close();
+}
+
 /** Settings hub. Each group links to a focused screen instead of one long list. */
 export function SettingsScreen({
   status,
@@ -141,6 +157,27 @@ export function SettingsScreen({
             description="Which notifications show, and reward reminders"
             meta={NOTIFY_LABELS[settings.notify.rewards]}
             onClick={() => onNavigate("notification-settings")}
+          />
+        </SettingsGroup>
+
+        <SettingsGroup label="Help">
+          <SettingsLink
+            title="Help center"
+            description="Guides, and how to reach the team"
+            external
+            onClick={() => openTab(HELP_LINKS.support)}
+          />
+          <SettingsLink
+            title="Extension guide"
+            description="Send, swap, stake and connect, step by step"
+            external
+            onClick={() => openTab(HELP_LINKS.guides)}
+          />
+          <SettingsLink
+            title="Report a problem"
+            description={version ? `Mention Zunia v${version} · ${BUILD_NAME}` : "Tell us what went wrong"}
+            external
+            onClick={() => openTab(HELP_LINKS.report)}
           />
         </SettingsGroup>
 

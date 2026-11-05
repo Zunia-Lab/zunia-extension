@@ -104,15 +104,17 @@ export function parseOsmosisTokenMetadata(body: unknown): OsmosisListing[] {
 }
 
 /**
- * The listed rows the bundled table proves on Osmosis and Osmosis neither
- * leaves unverified nor flags unstable, in the listing's order. This is the
- * whole Osmosis side of the To list: 106 rows on 2026-10-05, where USDC reads
- * allUSDC, USDC.n, USDC.inj and USDC.axl, and no LP share appears.
+ * The listed rows the bundled table proves on Osmosis, in the listing's
+ * order: the ones Osmosis verified, and the staking coins of Zunia's own
+ * mainnets it lists before its review (`listedByZunia`: SAF, traded in pool
+ * 3600), never one it flags unstable. This is the whole Osmosis side of the
+ * To list: 106 rows on 2026-10-05, where USDC reads allUSDC, USDC.n, USDC.inj
+ * and USDC.axl, and no LP share appears.
  */
 export function osmosisSwapAssets(listed: readonly OsmosisListing[]): OsmosisAsset[] {
   const rows = new Map<string, TokenTableRow>();
   for (const row of tokenTableRows(OSMOSIS)) {
-    if (row.verified && row.stable) rows.set(row.denom, row);
+    if ((row.verified || row.listedByZunia) && row.stable) rows.set(row.denom, row);
   }
   const out: OsmosisAsset[] = [];
   const seen = new Set<string>();

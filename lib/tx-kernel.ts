@@ -422,7 +422,10 @@ export async function signAndBroadcastTx(
         const error = new Error(
           result.rawLog || `Transaction rejected (code ${result.code})`,
         );
-        if (isSequenceMismatch(error) && attempt === 0) {
+        if (
+          attempt === 0 &&
+          (result.failure?.kind === "sequence-mismatch" || isSequenceMismatch(error))
+        ) {
           lastError = error;
           forcedSequence =
             result.failure?.expectedSequence ?? expectedSequenceOf(error);

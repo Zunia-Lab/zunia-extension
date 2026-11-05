@@ -16,7 +16,10 @@
  * same SHAs produces no diff:
  * - osmosis-labs/assetlists `osmosis-1/generated/frontend/assetlist.json`:
  *   every token Osmosis lists, with its issuer chain, the exact source denom
- *   and the transfer channel pair. Verified rows only.
+ *   and the transfer channel pair. Verified rows, plus the listed rows
+ *   Osmosis has not verified yet that carry a mainnet's staking coin from
+ *   Zunia's own registry (see `zuniaListed`): Safrochain's SAF traded in
+ *   pool 3600 while its verification still waited for review.
  * - cosmos/chain-registry `<chain>/assetlist.json` and `<chain>/chain.json`:
  *   the IBC vouchers of the hub chains (including the ones a bridge minted
  *   over a light-client hop, such as the Hub's Eureka tokens), the issuer
@@ -336,6 +339,8 @@ function readZuniaRegistry(dir) {
       testnet,
       chainImage: raw.chainSymbolImageUrl ?? null,
       natives,
+      /** The chain's staking coin, the one currency the registry vouches for on its own. */
+      stake: raw.stakeCurrency?.coinMinimalDenom ?? null,
       currencies: (raw.currencies ?? []).filter((c) => c?.coinMinimalDenom && c?.coinDenom),
     });
   }
@@ -431,12 +436,46 @@ function symbolFor(zunia, chainId, denom, fallback) {
   return hit?.coinDenom ?? fallback;
 }
 
+/**
+ * Whether `denom` is the staking coin of `chainId`, a mainnet in Zunia's own
+ * registry. Osmosis's `verified` flag is its frontend's review of a listing,
+ * which can take weeks after the pool trades (Safrochain's SAF, pool 3600).
+ * A chain's staking coin is the one currency the wallet already offers on
+ * every chain of its catalog, so a listed voucher of it is the same asset,
+ * not a new one. Only the staking coin: the registry is a Keplr fork whose
+ * currency lists carry every factory and bridge token of a chain, and those
+ * still wait for Osmosis's review. The row still has to hash to its trace
+ * like any other, so this vouches for which token it is, never for a guess.
+ */
+function zuniaListed(zunia, chainId, denom) {
+  const chain = zunia.chains.get(chainId);
+  if (!chain || chain.testnet || !chain.stake) return false;
+  return foldDenom(chain.stake) === foldDenom(denom);
+}
+
+/**
+ * A cheap first pass before the issuer is proven: the listing's source denom
+ * is some mainnet's staking coin in Zunia's registry. `buildOsmosisRows`
+ * decides with the proven issuer; this only keeps the prefetch from skipping
+ * the row.
+ */
+function mayBeZuniaListed(zunia, asset) {
+  const source = asset.sourceDenom;
+  if (typeof source !== "string" || !source) return false;
+  for (const chain of zunia.chains.values()) {
+    if (zuniaListed(zunia, chain.chainId, source)) return true;
+  }
+  return false;
+}
+
 function buildOsmosisRows(ctx, frontend) {
   const { registry, zunia, stats } = ctx;
   const osmosisRegistryRows = new Map(registry.assetsSync("osmosis").map((a) => [a.base, a]));
   const rows = [];
   for (const asset of [...frontend].sort((a, b) => (a.coinMinimalDenom < b.coinMinimalDenom ? -1 : 1))) {
-    if (!asset.verified || asset.preview) continue;
+    if (asset.preview) continue;
+    // An unverified listing is decided once its issuer is proven, below.
+    if (!asset.verified && !mayBeZuniaListed(zunia, asset)) continue;
     const denom = asset.coinMinimalDenom;
     let issuerName = asset.chainName;
     let originDenom = asset.sourceDenom;
@@ -489,6 +528,13 @@ function buildOsmosisRows(ctx, frontend) {
       stats.dropped.push(`${denom} (${asset.symbol}): a local denom with issuer ${issuerName}`);
       continue;
     }
+    // Osmosis's own unverified tokens are never vouched for: its registry
+    // entry lists the chain's coins, not every factory token minted there.
+    const vouched = !asset.verified && originChainId !== OSMOSIS_CHAIN_ID && zuniaListed(zunia, originChainId, originDenom);
+    if (!asset.verified && !vouched) {
+      stats.dropped.push(`${denom} (${asset.symbol}): unverified on Osmosis and not in Zunia's registry`);
+      continue;
+    }
     const { row: issuerRow, bridge, network } = classify(registry, issuerName, originDenom);
     const symbol = asset.isAlloyed
       ? asset.symbol
@@ -505,7 +551,11 @@ function buildOsmosisRows(ctx, frontend) {
       symbol,
       bridge: asset.isAlloyed ? "" : bridge,
       network: asset.isAlloyed ? "" : network,
-      flags: (asset.isAlloyed ? 1 : 0) | 2 | (asset.unstable || asset.disabled ? 0 : 4),
+      flags:
+        (asset.isAlloyed ? 1 : 0) |
+        (asset.verified ? 2 : 0) |
+        (asset.unstable || asset.disabled ? 0 : 4) |
+        (vouched ? 8 : 0),
       decimals: asset.decimals,
       logo: asset.logoURIs?.png ?? asset.logoURIs?.svg ?? "",
       coinGeckoId: asset.coingeckoId ?? "",
@@ -808,7 +858,8 @@ function emit({ rows, logos, chains, shas, zuniaSha }) {
   lines.push(" * transfer), base (\"\" = origin denom), first-hop chain index (-1 = origin,");
   lines.push(" * or none when the first hop is a light client rather than a channel), its");
   lines.push(" * channel number (-1 unknown), issuer symbol, bridge tag, source network,");
-  lines.push(" * flags (1 alloyed, 2 verified, 4 stable), decimals, logo index (-1 none),");
+  lines.push(" * flags (1 alloyed, 2 verified, 4 stable, 8 unverified on Osmosis but listed by");
+  lines.push(" * Zunia's registry), decimals, logo index (-1 none),");
   lines.push(" * CoinGecko id, variant group index (-1 none), aliases joined by \"|\".");
   lines.push(" */");
   lines.push("export type TokenRowTuple = readonly [");
@@ -863,7 +914,7 @@ async function main() {
   const osmosisRegistryRows = new Map(registry.assetsSync("osmosis").map((a) => [a.base, a]));
   const walks = [];
   for (const asset of frontend) {
-    if (!asset.verified || asset.preview) continue;
+    if (asset.preview || (!asset.verified && !mayBeZuniaListed(zunia, asset))) continue;
     walks.push([asset.chainName, asset.sourceDenom]);
     const fallback = [...(osmosisRegistryRows.get(asset.coinMinimalDenom)?.traces ?? [])].reverse().find((t) => t.chain?.path);
     if (fallback?.counterparty?.chain_name) walks.push([fallback.counterparty.chain_name, fallback.counterparty.base_denom ?? ""]);
