@@ -68,6 +68,13 @@ import {
   type TransferPlanResult,
 } from "../../../lib/route-plan";
 import {
+  previewHopKey,
+  runPreviewChecks,
+  sessionPreviewChecks,
+  withPreviewChecks,
+  type PreviewChecks,
+} from "../../../lib/route-preview-check";
+import {
   removePendingTransfer,
   savePendingTransfer,
   type PendingTransfer,
@@ -940,6 +947,37 @@ export function SendScreen({
       },
     ];
   })();
+
+  // The preview's channels are checked as soon as both networks are known,
+  // not when an amount is typed: the same check the plan runs, kept for the
+  // session (lib/route-preview-check.ts). Neutral while it runs.
+  const previewKey =
+    cross && liveReads ? previewHops.map((hop) => previewHopKey(hop) ?? "").filter(Boolean).join("|") : "";
+  const [previewChecks, setPreviewChecks] = useState<{ key: string; settled: PreviewChecks }>(() => ({
+    key: "",
+    settled: sessionPreviewChecks(),
+  }));
+  useEffect(() => {
+    if (!previewKey) return;
+    const controller = new AbortController();
+    void runPreviewChecks(previewHops, { signal: controller.signal }).then((settled) => {
+      if (!controller.signal.aborted) setPreviewChecks({ key: previewKey, settled });
+    });
+    return () => controller.abort();
+    // previewKey names every channel the preview shows.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [previewKey]);
+  const previewChecking = previewKey !== "" && previewChecks.key !== previewKey;
+  const checkedPreviewHops = withPreviewChecks(previewHops, previewChecks.settled, previewChecking);
+  const checkedRouteOptions = routeOptions.map((option) =>
+    option.verified ||
+    !option.hops.every((hop) => {
+      const key = previewHopKey(hop);
+      return key !== null && previewChecks.settled.get(key) === "verified";
+    })
+      ? option
+      : { ...option, verified: true },
+  );
 
   const routeHint = ((): string => {
     if (!chain || !destChain) return "";
@@ -1935,13 +1973,13 @@ export function SendScreen({
             <section className="flex flex-col gap-1.5">
               <SectionLabel>Route</SectionLabel>
               <RouteChoiceList
-                options={routeOptions}
+                options={checkedRouteOptions}
                 selectedKey={selectedRoute?.key ?? ""}
                 onSelect={(key) => setRouteChoice({ pair: routePair, key })}
               />
-              {previewHops.length > 0 ? (
+              {checkedPreviewHops.length > 0 ? (
                 <HopChannelList
-                  hops={previewHops}
+                  hops={checkedPreviewHops}
                   manual={manual}
                   onPick={pinChannel}
                   onClear={unpinChannel}

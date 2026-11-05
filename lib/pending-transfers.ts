@@ -35,8 +35,10 @@ export interface PendingTransfer {
    * `pool-deliver`: a swap in Osmosis's own pools whose output is sent on in
    * the same transaction (lib/pool-swap.ts). `plan` is that transfer, which
    * is what tracking follows, so only {@link label} names the swap.
+   * `relay`: a one-signature swap (lib/skip-swap.ts). `plan` is the transfer
+   * to Osmosis that carries it; its acknowledgement says whether it ran.
    */
-  readonly path?: "pool-deliver";
+  readonly path?: "pool-deliver" | "relay";
   readonly startedAt: number;
 }
 
