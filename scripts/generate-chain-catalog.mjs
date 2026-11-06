@@ -31,6 +31,22 @@ function parseArgs(argv) {
   return args;
 }
 
+/**
+ * The `ethsecp256k1` type URL a chain's nodes decode, when it is not Ethermint's:
+ * the registry's explicit field (Injective), else Keplr's flags
+ * (`eth-secp256k1-cosmos` → cosmos/evm, `eth-secp256k1-initia` → Initia).
+ * Same rule as `ethPubKeyTypeUrlOf` in lib/chain-catalog.ts.
+ */
+function ethPubKeyTypeUrlOf(raw) {
+  if (typeof raw.ethPubKeyTypeUrl === "string" && raw.ethPubKeyTypeUrl.startsWith("/")) {
+    return raw.ethPubKeyTypeUrl;
+  }
+  const features = Array.isArray(raw.features) ? raw.features : [];
+  if (features.includes("eth-secp256k1-cosmos")) return "/cosmos.evm.crypto.v1.ethsecp256k1.PubKey";
+  if (features.includes("eth-secp256k1-initia")) return "/initia.crypto.v1beta1.ethsecp256k1.PubKey";
+  return undefined;
+}
+
 const TESTNET_HINT = /(testnet|devnet|test-net|-test\b|localnet)/i;
 
 function catalogCurrencies(raw) {
@@ -258,10 +274,7 @@ function readRegistry(registryDir, official, cosmostation) {
       // publish no feature list at all, and "absent" is not "declared none".
       features: Array.isArray(raw.features) ? raw.features : undefined,
       currencies: catalogCurrencies(raw),
-      ethPubKeyTypeUrl:
-        typeof raw.ethPubKeyTypeUrl === "string" && raw.ethPubKeyTypeUrl.startsWith("/")
-          ? raw.ethPubKeyTypeUrl
-          : undefined,
+      ethPubKeyTypeUrl: ethPubKeyTypeUrlOf(raw),
       // Only ~40% of the registry carries a price id; the rest stay unpriced.
       coinGeckoId: currency.coinGeckoId ?? raw.stakeCurrency?.coinGeckoId,
       rpc: raw.rpc,

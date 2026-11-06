@@ -254,9 +254,34 @@ export function chainUsesEthKeySign(chainId: string): boolean {
   return findCatalogEntry(chainId)?.features?.includes("eth-key-sign") === true;
 }
 
+/** `ethsecp256k1` type URLs a chain can name instead of Ethermint's. */
+export const COSMOS_EVM_PUBKEY_TYPE_URL = "/cosmos.evm.crypto.v1.ethsecp256k1.PubKey";
+export const INITIA_PUBKEY_TYPE_URL = "/initia.crypto.v1beta1.ethsecp256k1.PubKey";
+
+/**
+ * The `ethsecp256k1` type URL a chain's nodes decode, when it is not
+ * Ethermint's; `undefined` means Ethermint's.
+ *
+ * Read from the chain document: its explicit `ethPubKeyTypeUrl` (Injective),
+ * then Keplr's flags, `eth-secp256k1-cosmos` for cosmos/evm chains (KiiChain,
+ * NVNM, turkchain) and `eth-secp256k1-initia` for Initia. A node refuses to
+ * decode a transaction whose key type it does not register, so signing those
+ * chains with the Ethermint default failed before it reached the signature
+ * check. zunia-core's `ChainInfo::eth_pub_key_type_url`, the dashboard's
+ * `pubKeyTypeUrlFor` and the app's `ChainEntry.ethKeyTypeUrl` apply the same rule.
+ */
+export function ethPubKeyTypeUrlOf(
+  entry: Pick<CatalogEntry, "features" | "ethPubKeyTypeUrl"> | undefined,
+): string | undefined {
+  const url = entry?.ethPubKeyTypeUrl?.trim();
+  if (url) return url;
+  if (entry?.features?.includes("eth-secp256k1-cosmos")) return COSMOS_EVM_PUBKEY_TYPE_URL;
+  if (entry?.features?.includes("eth-secp256k1-initia")) return INITIA_PUBKEY_TYPE_URL;
+  return undefined;
+}
+
 export function ethPubKeyTypeUrlFor(chainId: string): string | undefined {
-  const url = findCatalogEntry(chainId)?.ethPubKeyTypeUrl?.trim();
-  return url ? url : undefined;
+  return ethPubKeyTypeUrlOf(findCatalogEntry(chainId));
 }
 
 function denomIndexKey(denom: string): string {

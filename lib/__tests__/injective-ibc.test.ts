@@ -76,6 +76,20 @@ describe("injective pubkey type", () => {
       "/ethermint.crypto.v1.ethsecp256k1.PubKey",
     );
   });
+
+  // Their nodes answer an Ethermint-typed key with "unable to resolve type URL".
+  it("follows Keplr's flags for cosmos/evm chains and Initia", () => {
+    for (const chainId of ["kiichain_1783-1", "nvnm-1", "1919"]) {
+      expect(ethPubKeyTypeUrlFor(chainId), chainId).toBe(
+        "/cosmos.evm.crypto.v1.ethsecp256k1.PubKey",
+      );
+    }
+    expect(ethPubKeyTypeUrlFor("interwoven-1")).toBe(
+      "/initia.crypto.v1beta1.ethsecp256k1.PubKey",
+    );
+    expect(ethPubKeyTypeUrlFor("dymension_1100-1")).toBeUndefined();
+    expect(ethPubKeyTypeUrlFor("cosmoshub-4")).toBeUndefined();
+  });
 });
 
 describe("injective bank denoms", () => {
