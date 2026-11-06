@@ -1,6 +1,7 @@
 import {
   CHAIN_CATALOG,
   catalogIconFor,
+  ethPubKeyTypeUrlOf,
   findCatalogEntry,
   sortCatalog,
   type CatalogEntry,
@@ -112,7 +113,7 @@ export function chainJsonFor(chainId: string): string {
     currencies: [currency],
     feeCurrencies: [feeCurrency],
     features: found?.features ?? [],
-    ...(found?.ethPubKeyTypeUrl ? { ethPubKeyTypeUrl: found.ethPubKeyTypeUrl } : {}),
+    ...(ethPubKeyTypeUrlOf(found) ? { ethPubKeyTypeUrl: ethPubKeyTypeUrlOf(found) } : {}),
     bech32Prefix: prefix,
     coinType,
   });
