@@ -9,11 +9,11 @@
  * "The request could not be satisfied". The per-coin route still returns
  * JSON, including the USD price and the 24h change, so that is the call we
  * make. A demo key is not shipped in the extension. A chain with no
- * `coinGeckoId` stays unpriced, unless config/prices.ts names one exchange
- * market for it (SAF on Coinstore): that price carries its `source`.
+ * `coinGeckoId` stays unpriced, unless config/prices.ts names an on-chain pool
+ * for it (SAF on Osmosis): that price carries its `source`.
  */
 
-import { EXCHANGE_PRICE_SOURCES, type ExchangePriceSource } from "../config/prices";
+import { POOL_PRICE_SOURCES, type PoolPriceSource } from "../config/prices";
 import { findCatalogEntry } from "./chain-catalog";
 import { hasLiveBalancePermission } from "./balances";
 import { getSettings } from "./settings";
@@ -29,7 +29,7 @@ export interface SpotPrice {
   /** 24h change as a percentage, e.g. `-1.24`. */
   change24h: number;
   /**
-   * Set when the price comes from one exchange market rather than CoinGecko's
+   * Set when the price comes from one on-chain pool rather than CoinGecko's
    * aggregate, so every surface can say where it comes from.
    */
   source?: { name: string; pair: string; url: string };
@@ -39,10 +39,6 @@ export interface SpotPrice {
 export type PriceMap = Record<string, SpotPrice>;
 
 const COIN_ENDPOINT = "https://api.coingecko.com/api/v3/coins/";
-/** Coinstore's public candles: 24 hourly bars give the last price and the 24h change in one small read. */
-const COINSTORE_KLINE_ENDPOINT = "https://api.coinstore.com/api/v1/market/kline/";
-/** CoinGecko's id for USDT, the quote currency of the exchange markets. */
-const TETHER_ID = "tether";
 /** A few at a time. The free CoinGecko route rejects a burst with 429. */
 const CONCURRENCY = 4;
 const CACHE_TTL_MS = 120_000;
@@ -67,42 +63,35 @@ export function normaliseCurrency(value: string): SupportedCurrency {
     : "usd";
 }
 
-/** The exchange market a chain is priced from, when it has no CoinGecko id. */
-export function exchangeSourceFor(
+/** The on-chain pool a chain is priced from, when it has no CoinGecko id. */
+export function poolSourceFor(
   chainId: string,
-  sources: Readonly<Record<string, ExchangePriceSource>> = EXCHANGE_PRICE_SOURCES,
-): ExchangePriceSource | null {
+  sources: Readonly<Record<string, PoolPriceSource>> = POOL_PRICE_SOURCES,
+): PoolPriceSource | null {
   if (findCatalogEntry(chainId)?.coinGeckoId) return null;
   return sources[chainId] ?? null;
 }
 
 /** Chain ids that can be priced at all, so callers can explain the gap. */
 export function priceableChainIds(chainIds: readonly string[]): string[] {
-  return chainIds.filter((id) => findCatalogEntry(id)?.coinGeckoId || exchangeSourceFor(id));
+  return chainIds.filter((id) => findCatalogEntry(id)?.coinGeckoId || poolSourceFor(id));
 }
 
 /**
- * Last price and 24h change from Coinstore's hourly candles, in the market's
- * quote currency: the newest close, against the open of the oldest of the
- * last 24 bars. Null for anything it cannot read whole.
+ * The pool's price and its 24h change, in the pool's quote asset: the spot
+ * price (`/osmosis/poolmanager/v2/pools/{id}/prices`) against the arithmetic
+ * TWAP over the hour that ended 24 hours ago. Null for anything it cannot read
+ * whole; a missing TWAP leaves the change at 0 rather than inventing one.
  */
-export function parseCoinstoreKlines(body: unknown): { price: number; change24h: number } | null {
-  const items = (body as { data?: { item?: unknown } } | null)?.data?.item;
-  if (!Array.isArray(items) || items.length === 0) return null;
-  const bars: Array<{ start: number; open: number; close: number }> = [];
-  for (const raw of items) {
-    const row = raw as { startTime?: unknown; open?: unknown; close?: unknown } | null;
-    const start = Number(row?.startTime);
-    const open = Number(row?.open);
-    const close = Number(row?.close);
-    if (!Number.isFinite(start) || !(open > 0) || !(close > 0)) return null;
-    bars.push({ start, open, close });
-  }
-  bars.sort((a, b) => a.start - b.start);
-  const window = bars.slice(-24);
-  const first = window[0]!;
-  const last = window[window.length - 1]!;
-  return { price: last.close, change24h: ((last.close - first.open) / first.open) * 100 };
+export function parsePoolQuote(
+  spotBody: unknown,
+  twapBody: unknown,
+): { price: number; change24h: number } | null {
+  const price = Number((spotBody as { spot_price?: unknown } | null)?.spot_price);
+  if (!Number.isFinite(price) || !(price > 0)) return null;
+  const before = Number((twapBody as { arithmetic_twap?: unknown } | null)?.arithmetic_twap);
+  const change24h = Number.isFinite(before) && before > 0 ? ((price - before) / before) * 100 : 0;
+  return { price, change24h };
 }
 
 export async function getPrices(
@@ -116,14 +105,14 @@ export async function getPrices(
 
   // One registry id can back several chains, so map both directions.
   const idsByChain = new Map<string, string>();
-  const exchangeChains = new Map<string, ExchangePriceSource>();
+  const poolChains = new Map<string, PoolPriceSource>();
   for (const chainId of chainIds) {
     const geckoId = findCatalogEntry(chainId)?.coinGeckoId;
     if (geckoId) idsByChain.set(chainId, geckoId);
-    const source = exchangeSourceFor(chainId);
-    if (source) exchangeChains.set(chainId, source);
+    const source = poolSourceFor(chainId);
+    if (source) poolChains.set(chainId, source);
   }
-  if (idsByChain.size === 0 && exchangeChains.size === 0) return {};
+  if (idsByChain.size === 0 && poolChains.size === 0) return {};
 
   const cached = (await browser.storage.local.get(STORAGE_KEYS.priceCache))[
     STORAGE_KEYS.priceCache
@@ -133,19 +122,19 @@ export async function getPrices(
     cached &&
     cached.currency === currency &&
     Date.now() - cached.fetchedAt < CACHE_TTL_MS &&
-    [...idsByChain.keys(), ...exchangeChains.keys()].every((id) => cached.prices[id]);
+    [...idsByChain.keys(), ...poolChains.keys()].every((id) => cached.prices[id]);
   if (fresh && cached) return cached.prices;
 
-  // Tether too when an exchange market needs converting from USDT.
+  // The pools' quote assets too (USDC), to convert into the user's currency.
   const unique = [
-    ...new Set([...idsByChain.values(), ...(exchangeChains.size > 0 ? [TETHER_ID] : [])]),
+    ...new Set([...idsByChain.values(), ...[...poolChains.values()].map((s) => s.quoteGeckoId)]),
   ].sort();
-  const [quotes, markets] = await Promise.all([
+  const [quotes, pools] = await Promise.all([
     mapPool(unique, CONCURRENCY, (id) => fetchCoinQuote(id, currency)),
-    mapPool([...exchangeChains.entries()], CONCURRENCY, async ([chainId, source]) => ({
+    mapPool([...poolChains.entries()], CONCURRENCY, async ([chainId, source]) => ({
       chainId,
       source,
-      quote: await fetchExchangeQuote(source),
+      quote: await fetchPoolQuote(source),
     })),
   ]);
   const byId = new Map(
@@ -158,12 +147,13 @@ export async function getPrices(
     if (!quote) continue;
     prices[chainId] = { price: quote.price, change24h: quote.change24h };
   }
-  // USDT in the user's currency; without a Tether quote only USD can assume par.
-  const usdt = byId.get(TETHER_ID)?.price ?? (currency === "usd" ? 1 : null);
-  for (const { chainId, source, quote } of markets) {
-    if (!quote || usdt === null) continue;
+  for (const { chainId, source, quote } of pools) {
+    // The quote asset (USDC) in the user's currency; without its quote only
+    // USD can assume par.
+    const unit = byId.get(source.quoteGeckoId)?.price ?? (currency === "usd" ? 1 : null);
+    if (!quote || unit === null) continue;
     prices[chainId] = {
-      price: quote.price * usdt,
+      price: quote.price * unit,
       change24h: quote.change24h,
       source: { name: source.name, pair: source.pair, url: source.url },
     };
@@ -215,13 +205,26 @@ async function fetchCoinQuote(
   }
 }
 
-async function fetchExchangeQuote(
-  source: ExchangePriceSource,
+async function fetchPoolQuote(
+  source: PoolPriceSource,
 ): Promise<{ price: number; change24h: number } | null> {
-  if (source.exchange !== "coinstore") return null;
+  const rest = findCatalogEntry(source.chainId)?.rest?.replace(/\/+$/, "");
+  if (!rest) return null;
+  const base = encodeURIComponent(source.baseDenom);
+  const quote = encodeURIComponent(source.quoteDenom);
+  const hour = 3_600_000;
+  const start = new Date(Date.now() - 25 * hour).toISOString().replace(/\.\d{3}Z$/, "Z");
+  const end = new Date(Date.now() - 24 * hour).toISOString().replace(/\.\d{3}Z$/, "Z");
   try {
-    const url = `${COINSTORE_KLINE_ENDPOINT}${encodeURIComponent(source.market)}?period=60min&size=24`;
-    return parseCoinstoreKlines(await fetchJson(url));
+    const [spot, twap] = await Promise.all([
+      fetchJson(
+        `${rest}/osmosis/poolmanager/v2/pools/${source.poolId}/prices?base_asset_denom=${base}&quote_asset_denom=${quote}`,
+      ),
+      fetchJson(
+        `${rest}/osmosis/twap/v1beta1/ArithmeticTwap?pool_id=${source.poolId}&base_asset=${base}&quote_asset=${quote}&start_time=${start}&end_time=${end}`,
+      ).catch(() => null),
+    ]);
+    return parsePoolQuote(spot, twap);
   } catch {
     return null;
   }
