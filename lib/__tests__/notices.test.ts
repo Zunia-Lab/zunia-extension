@@ -210,10 +210,10 @@ describe("transfer notices named by identity", () => {
   it("names a voucher arrival by the chain it landed on, held or not", () => {
     // Noble USDC used to read as Axelar's USDC.axl here.
     const [held] = feed([osmosisRow([])], quiet, { arrivals: [arrival("H1", USDC_N, "12340000")] });
-    expect(held).toMatchObject({ id: "transfer:H1", kind: "transfer", title: "Received on Osmosis", meta: "12.34 USDC.n" });
+    expect(held).toMatchObject({ id: "transfer:H1", kind: "transfer", title: "Received on Osmosis", meta: "12.34 USDC.n (Noble USDC)" });
     // No balance row for the chain at all: still named by the arrival's chain.
     const [bare] = feed([], quiet, { arrivals: [arrival("H2", USDC_N, "5000000")] });
-    expect(bare?.meta).toBe("5 USDC.n");
+    expect(bare?.meta).toBe("5 USDC.n (Noble USDC)");
     expect(describeCoin({ denom: "uosmo", amount: "1500000" }, undefined, "osmosis-1")).toBe("1.5 OSMO");
   });
 

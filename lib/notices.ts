@@ -29,7 +29,7 @@ import type { MovedCoin, TxNotice } from "./realtime-protocol";
 import type { NotifyPrefs, RewardReminder } from "./settings";
 import { STORAGE_KEYS } from "./storage-keys";
 import { formatTokenAmount } from "./token-amount";
-import { identityOf } from "./token-identity";
+import { identityOf, type TokenIdentity } from "./token-identity";
 
 export type NoticeKind =
   | "approval"
@@ -153,7 +153,25 @@ export function describeCoin(
   if (!/^\d+$/.test(coin.amount)) return `${coin.amount} ${coin.denom}`;
   const token = chainBalance?.tokens.find((row) => row.denom === coin.denom);
   const identity = token ? heldTokenIdentity(chainId, token) : identityOf(chainId, coin.denom);
-  return formatTokenAmount(coin.amount, identity, "history", { unit: true });
+  const text = formatTokenAmount(coin.amount, identity, "history", { unit: true });
+  return withIssuer(text, identity, chainId);
+}
+
+/**
+ * `15 USDC.inj` becomes `15 USDC.inj (Injective USDC)` when the token was
+ * issued elsewhere than the chain holding it, so a notice says both what
+ * arrived and where it comes from. A coin nothing names, or one native to the
+ * chain, is left as it is.
+ */
+export function withIssuer(
+  text: string,
+  identity: Pick<TokenIdentity, "name" | "ticker" | "originChainId" | "decimalsKnown">,
+  heldOnChainId: string,
+): string {
+  const { name, ticker, originChainId } = identity;
+  if (!originChainId || originChainId === heldOnChainId) return text;
+  if (!name || name === "Unknown token" || name === ticker || !text.includes(ticker)) return text;
+  return `${text} (${name})`;
 }
 
 /**

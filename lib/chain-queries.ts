@@ -107,6 +107,8 @@ export interface DelegationInfo {
   logoUrl?: string;
   amount: string;
   rewards: string;
+  /** Rewards in denoms other than the staking denom (whole base units, per denom). */
+  otherRewards?: Array<{ denom: string; amount: string }>;
   denom: string;
   decimals: number;
   symbol: string;
@@ -241,6 +243,24 @@ function pickAmount(
   return total.toString();
 }
 
+/**
+ * Whole base units of every denom except `denom` in a DecCoin reward list.
+ * Rewards are fractional (`12.9` is 12 claimable), possibly several denoms.
+ */
+export function otherRewardCoins(
+  rows: Array<{ denom?: string; amount?: string }> | undefined,
+  denom: string,
+): Array<{ denom: string; amount: string }> {
+  const totals = new Map<string, bigint>();
+  for (const row of rows ?? []) {
+    if (!row.denom || row.denom === denom || !row.amount) continue;
+    const whole = row.amount.split(".")[0] || "0";
+    if (!/^\d+$/.test(whole)) continue;
+    totals.set(row.denom, (totals.get(row.denom) ?? 0n) + BigInt(whole));
+  }
+  return [...totals].filter(([, v]) => v > 0n).map(([d, v]) => ({ denom: d, amount: v.toString() }));
+}
+
 /** Bonded validators, strongest first. */
 export async function fetchValidators(
   chainId: string,
@@ -307,12 +327,13 @@ export async function fetchDelegations(
   const meta = denomMeta(chainId);
 
   const [delegations, rewards] = await Promise.allSettled([
-    getJson(`${rest}/cosmos/staking/v1beta1/delegations/${address}`),
+    getJson(`${rest}/cosmos/staking/v1beta1/delegations/${address}?pagination.limit=300`),
     getJson(`${rest}/cosmos/distribution/v1beta1/delegators/${address}/rewards`),
   ]);
   if (delegations.status === "rejected") return [];
 
   const rewardByValidator = new Map<string, string>();
+  const otherByValidator = new Map<string, Array<{ denom: string; amount: string }>>();
   if (rewards.status === "fulfilled") {
     const body = rewards.value as {
       rewards?: Array<{
@@ -326,6 +347,7 @@ export async function fetchDelegations(
         row.validator_address,
         pickAmount(row.reward, meta.denom),
       );
+      otherByValidator.set(row.validator_address, otherRewardCoins(row.reward, meta.denom));
     }
   }
 
@@ -352,6 +374,7 @@ export async function fetchDelegations(
       identity: metaRow?.identity ?? "",
       amount: row.balance?.amount ?? "0",
       rewards: rewardByValidator.get(validator) ?? "0",
+      otherRewards: otherByValidator.get(validator) ?? [],
       jailed: metaRow?.jailed ?? false,
       status: metaRow?.status ?? "",
       ...meta,
