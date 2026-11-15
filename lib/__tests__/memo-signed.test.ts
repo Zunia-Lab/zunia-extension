@@ -75,6 +75,10 @@ vi.mock("../kernel", async (importOriginal) => {
   return { ...actual, loadKernel: async () => kernel };
 });
 
+// wallet-tx simulates and reads the node's minimum price over fetch; these
+// tests never reach a node, so every such call is refused.
+vi.stubGlobal("fetch", async () => new Response("{}", { status: 501 }));
+
 vi.mock("../session", () => ({
   getSessionMnemonic: async () => TEST_MNEMONIC,
   getActiveDerivationIndex: async () => 0,

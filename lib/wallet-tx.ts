@@ -4,7 +4,6 @@
 
 import {
   assembleAminoTxRaw,
-  estimateFee,
   makeStdSignDoc,
   parseSignatureBase64,
   signDocBytes,
@@ -17,6 +16,7 @@ import {
   expectedSequenceOf,
   fetchAccountNumberSequence,
   isSequenceMismatch,
+  restOf,
   waitForInclusion,
   type BroadcastResult,
 } from "./broadcast";
@@ -41,6 +41,16 @@ import {
 import { getSettings } from "./settings";
 import { rememberRecipient } from "./signing";
 import { resolveTxMemo } from "./tx-memo";
+import {
+  buildSimulateBytes,
+  fetchMinGasPrice,
+  isInsufficientFee,
+  planFee,
+  requiredFeeOf,
+  simulateGas,
+  toRatio,
+  type Ratio,
+} from "./tx-fee";
 
 export interface SignAndBroadcastInput {
   chainId: string;
@@ -72,27 +82,53 @@ function defaultGas(msgs: AminoMsg[]): number {
   return 200_000;
 }
 
-async function feeForChain(chainId: string, gasLimit: number): Promise<StdFee> {
+async function walletPriceFor(chainId: string): Promise<{ denom: string; price: Ratio | null }> {
   const entry = findCatalogEntry(chainId);
   const prefs = await getSettings();
   const denom = entry?.feeMinimalDenom ?? entry?.coinMinimalDenom ?? "uatom";
-  const gasPrice = entry?.gasPriceStep?.[prefs.feeSpeed] ?? 0.025;
-  const adjusted = Math.max(1, Math.ceil(gasLimit * prefs.gasAdjustment));
-  return estimateFee({ gasLimit: adjusted, gasPrice, denom });
+  const step = entry?.gasPriceStep?.[prefs.feeSpeed];
+  return { denom, price: toRatio(step ?? 0.025) };
+}
+
+async function getJson(rest: string, path: string): Promise<unknown> {
+  const res = await fetch(`${rest}${path}`, {
+    credentials: "omit",
+    headers: { accept: "application/json" },
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+async function postJson(rest: string, path: string, body: unknown) {
+  const res = await fetch(`${rest}${path}`, {
+    method: "POST",
+    credentials: "omit",
+    headers: { accept: "application/json", "content-type": "application/json" },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(15_000),
+  });
+  return { status: res.status, body: await res.json().catch(() => null) };
 }
 
 /**
  * Sign amino msgs with the unlocked kernel and broadcast via chain REST.
  * Wallet-originated only; never used for dApp `sendTx`.
+ *
+ * Before signing, the exact message list is simulated (zero signature, real
+ * sequence) so the gas limit covers the work (a claim from many validators
+ * needs far more than one), and the fee is raised to the node's own minimum
+ * gas price. A refusal for a stale sequence is retried with the sequence the
+ * node names; a refusal for too small a fee is retried once with the fee it
+ * names.
  */
 export async function signAndBroadcast(
   input: SignAndBroadcastInput,
 ): Promise<SignAndBroadcastResult> {
   const mnemonic = await getSessionMnemonic();
   if (!mnemonic) throw new Error("Wallet is locked");
+  if (input.msgs.length === 0) throw new Error("Nothing to send: the message list is empty");
 
-  const gasLimit = input.gasLimit ?? defaultGas(input.msgs);
-  const fee = input.fee ?? (await feeForChain(input.chainId, gasLimit));
   const kernel = await loadKernel();
   const accountIndex = await getActiveDerivationIndex();
   const chainJson = chainJsonFor(input.chainId);
@@ -110,20 +146,50 @@ export async function signAndBroadcast(
   // out once, so a retry after a sequence mismatch signs the same text.
   const memo = resolveTxMemo(input.memo, input.msgs, input.chainId);
 
+  const callerGas = BigInt(input.fee?.gas ?? input.gasLimit ?? defaultGas(input.msgs));
+  const wallet = await walletPriceFor(input.chainId);
+  const prefs = await getSettings();
+  const rest = restOf(input.chainId);
+  const feeDenom = input.fee?.amount[0]?.denom ?? wallet.denom;
+
+  const first = await fetchAccountNumberSequence(input.chainId, input.signerAddress);
+  const nodeMin = await fetchMinGasPrice((path) => getJson(rest, path), feeDenom);
+  const simBytes = buildSimulateBytes({
+    chainId: input.chainId,
+    accountNumber: first.accountNumber,
+    sequence: first.sequence,
+    msgs: input.msgs,
+    memo,
+    gasLimit: callerGas,
+    pubKey: derived.pubKey,
+    ethKeyType,
+    ethPubKeyTypeUrl,
+  });
+  const simulated = await simulateGas((path, body) => postJson(rest, path, body), simBytes);
+  let plan = planFee({
+    callerGas,
+    callerFee: input.fee?.amount ?? [],
+    feeDenom,
+    walletPrice: wallet.price,
+    nodeMinPrice: nodeMin,
+    gasAdjustment: prefs.gasAdjustment,
+    simulatedGas: simulated,
+  });
+
   let lastError: unknown;
   let forcedSequence: string | null = null;
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const live = await fetchAccountNumberSequence(
-      input.chainId,
-      input.signerAddress,
-    );
-    const accountNumber = live.accountNumber;
+  let feeBumped = false;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const live =
+      attempt === 0
+        ? first
+        : await fetchAccountNumberSequence(input.chainId, input.signerAddress);
     const sequence = forcedSequence ?? live.sequence;
     const signDoc = makeStdSignDoc({
       chainId: input.chainId,
-      accountNumber,
+      accountNumber: live.accountNumber,
       sequence,
-      fee,
+      fee: plan.fee,
       msgs: input.msgs,
       memo,
     });
@@ -157,8 +223,22 @@ export async function signAndBroadcast(
       return { ...included, signDoc };
     } catch (error) {
       lastError = error;
-      if (!isSequenceMismatch(error) || attempt === 1) throw error;
-      forcedSequence = expectedSequenceOf(error);
+      if (isSequenceMismatch(error) && attempt < 3) {
+        forcedSequence = expectedSequenceOf(error);
+        continue;
+      }
+      if (isInsufficientFee(error) && !feeBumped) {
+        feeBumped = true;
+        const need = requiredFeeOf(error);
+        const denom = plan.fee.amount[0]?.denom ?? feeDenom;
+        if (need && need.denom === denom) {
+          // The node's number is the floor; 10% over it absorbs a moving base fee.
+          const amount = (need.amount * 11n + 9n) / 10n;
+          plan = { ...plan, fee: { ...plan.fee, amount: [{ denom, amount: amount.toString() }] } };
+          continue;
+        }
+      }
+      throw error;
     }
   }
   throw lastError instanceof Error ? lastError : new Error(String(lastError));

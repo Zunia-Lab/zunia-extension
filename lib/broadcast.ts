@@ -22,6 +22,12 @@ export interface BroadcastResult {
   code: number;
   rawLog: string;
   success: boolean;
+  /**
+   * True when the broadcast was accepted (CheckTx passed) but the tx was not
+   * seen in a block within the wait. Not a failure, not a confirmation:
+   * screens must say "sent, not yet confirmed", never "done".
+   */
+  pending?: boolean;
 }
 
 export class BroadcastError extends Error {
@@ -36,7 +42,7 @@ export class BroadcastError extends Error {
   }
 }
 
-function restOf(chainId: string): string {
+export function restOf(chainId: string): string {
   const rest = findCatalogEntry(chainId)?.rest?.replace(/\/$/, "");
   if (!rest) {
     throw new BroadcastError(`No REST endpoint configured for ${chainId}`);
@@ -186,7 +192,7 @@ export async function waitForInclusion(
     await new Promise((resolve) => setTimeout(resolve, interval));
     interval = Math.min(6_000, Math.round(interval * 1.4));
   }
-  return { txhash: hash, code: 0, rawLog: "", success: true };
+  return { txhash: hash, code: 0, rawLog: "", success: true, pending: true };
 }
 
 const ACCOUNT_NESTING_KEYS = [

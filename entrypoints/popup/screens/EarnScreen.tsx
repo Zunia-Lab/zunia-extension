@@ -1,3 +1,4 @@
+import { claimFallbackGas, claimTargets, hasClaimable } from "../../../lib/claim-plan";
 import { useMemo, useState } from "react";
 import {
   Button,
@@ -77,6 +78,8 @@ import { useToast } from "../state/Toasts";
 interface EarnResult {
   readonly kind: "stake" | "unstake" | "claim";
   readonly state: "sending" | "done" | "failed";
+  /** Accepted by the node but not yet seen in a block: say so rather than "done". */
+  readonly unconfirmed?: boolean;
   readonly chainId: string;
   readonly chainName: string;
   /** What moved, as the sheet showed it: `10 ATOM`; `null` for a claim whose total is unknown. */
@@ -492,7 +495,7 @@ export function EarnScreen({
       ? formatUnits(rewardsHere.toString(), decimals, 2)
       : NO_VALUE;
 
-  const claimable = chainDelegations.filter((d) => BigInt(d.rewards || "0") > 0n);
+  const { targets: claimable, skipped: claimSkipped } = claimTargets(chainDelegations);
   const claimTotal = claimable.reduce((sum, d) => sum + BigInt(d.rewards || "0"), 0n);
   const pickedValidator = validators.rows.find(
     (v) => v.operatorAddress === picked,
@@ -519,7 +522,7 @@ export function EarnScreen({
   }, [validators.rows, validatorQuery, picked]);
   const position = chainDelegations.find((d) => d.validatorAddress === picked);
   const stakedUnits = position ? BigInt(position.amount) : 0n;
-  const feeGas = sheet === "claim" ? Math.max(250_000, claimable.length * 120_000) : 250_000;
+  const feeGas = sheet === "claim" ? claimFallbackGas(claimable.length) : 250_000;
   const fee = estimateFee({
     gasLimit: Math.max(1, Math.ceil(feeGas * settings.gasAdjustment)),
     gasPrice: chain?.entry.gasPriceStep?.[settings.feeSpeed] ?? 0.025,
@@ -611,7 +614,7 @@ export function EarnScreen({
       error: null,
     };
     try {
-      const result = await signedSend<{ txhash: string }>(
+      const result = await signedSend<{ txhash: string; pending?: boolean }>(
         "SIGN_AND_BROADCAST",
         {
           chainId: chain.chainId,
@@ -627,7 +630,7 @@ export function EarnScreen({
         },
         { onSending: () => setTxResult(base) },
       );
-      setTxResult({ ...base, state: "done", txHash: result.txhash });
+      setTxResult({ ...base, state: "done", txHash: result.txhash, unconfirmed: result.pending === true });
       setDelegateAmount("");
       setUndelegateAmount("");
       delegations.reload();
@@ -681,7 +684,7 @@ export function EarnScreen({
           validatorAddress: d.validatorAddress,
         }),
       ),
-      Math.max(250_000, claimable.length * 120_000),
+      claimFallbackGas(claimable.length),
       {
         kind: "claim",
         amount: claimTotal > 0n ? `${formatUnits(claimTotal.toString(), decimals, 6)} ${symbol}` : null,
@@ -721,7 +724,11 @@ export function EarnScreen({
 
   async function confirmClaimOne() {
     if (!chain || !picked) return;
-    const rewards = BigInt(position?.rewards || "0");
+    if (!position || !hasClaimable(position)) {
+      setError("This validator has no rewards to claim yet.");
+      return;
+    }
+    const rewards = BigInt(position.rewards || "0");
     await runBroadcast(
       [
         msgWithdrawReward({
@@ -782,7 +789,9 @@ export function EarnScreen({
             txResult.state === "sending"
               ? `Signed. Waiting for ${txResult.chainName} to include it.`
               : txResult.state === "done"
-                ? words.doneMessage
+                ? txResult.unconfirmed
+                  ? "Sent to the network; it is not in a block yet. Check the explorer or Activity in a moment before sending it again."
+                  : words.doneMessage
                 : explained?.message
           }
           errorDetail={explained?.detail ?? null}
@@ -1005,7 +1014,7 @@ export function EarnScreen({
   if (sheet === "position" && chain && picked && position) {
     const bond = validatorBondState(pickedValidator ?? position);
     const pill = BOND_PILL[bond];
-    const rewardUnits = BigInt(position.rewards || "0");
+    const claimableHere = hasClaimable(position);
     const stakedText = hidden
       ? "••••"
       : `${formatUnits(position.amount, decimals, 2)} ${symbol}`;
@@ -1097,12 +1106,12 @@ export function EarnScreen({
           <Button
             variant="secondary"
             className="w-full"
-            disabled={!chain.address || rewardUnits <= 0n || busy}
+            disabled={!chain.address || !claimableHere || busy}
             onClick={() => void confirmClaimOne()}
           >
             {busy
               ? "Signing…"
-              : rewardUnits <= 0n
+              : !claimableHere
                 ? "No rewards yet"
                 : `Claim ${rewardText}`}
           </Button>
@@ -1322,7 +1331,7 @@ export function EarnScreen({
                   `— ${symbol}`
                 )
               }
-              line={`From ${claimable.length === 1 ? "1 validator" : `${claimable.length} validators`} · on ${chain.entry.chainName}`}
+              line={`From ${claimable.length === 1 ? "1 validator" : `${claimable.length} validators`} · on ${chain.entry.chainName}${claimSkipped > 0 ? ` · ${claimSkipped} more after this` : ""}`}
             />
             <ReviewFacts>
               <GasFeePrefs
