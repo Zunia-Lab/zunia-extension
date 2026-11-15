@@ -466,7 +466,7 @@ export function ChainDetailScreen({
                   href={price.source.url}
                   target="_blank"
                   rel="noopener noreferrer"
-                  title={`Price from the ${price.source.pair} market on ${price.source.name}`}
+                  title={`Price from the ${price.source.pair} pool on ${price.source.name}`}
                   className="normal-case tracking-normal text-fg-dim underline decoration-dotted underline-offset-2 hover:text-fg"
                 >
                   via {price.source.name}
