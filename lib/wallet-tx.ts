@@ -231,9 +231,9 @@ export async function signAndBroadcast(
         feeBumped = true;
         const need = requiredFeeOf(error);
         const denom = plan.fee.amount[0]?.denom ?? feeDenom;
-        if (need && need.denom === denom) {
-          // The node's number is the floor; 10% over it absorbs a moving base fee.
-          const amount = (need.amount * 11n + 9n) / 10n;
+        const approved = BigInt(plan.fee.amount[0]?.amount ?? "0");
+        const amount = need && need.denom === denom ? raisedFee(need.amount, approved) : null;
+        if (amount !== null) {
           plan = { ...plan, fee: { ...plan.fee, amount: [{ denom, amount: amount.toString() }] } };
           continue;
         }
@@ -242,6 +242,25 @@ export async function signAndBroadcast(
     }
   }
   throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+/**
+ * How far an "insufficient fee" refusal may raise the fee without asking: at
+ * most this many times the fee the user approved. Past it the refusal is
+ * shown, and the user picks a higher speed.
+ */
+export const MAX_FEE_RAISE = 3n;
+
+/**
+ * The fee to retry with after a node said it requires [need]: 10% over its
+ * floor, which absorbs a base fee that moved meanwhile. Null when that is more
+ * than [MAX_FEE_RAISE] times the [approved] fee: the "required" figure comes
+ * from whatever node answered, and a wallet that pays any figure a node names
+ * can be made to pay anything.
+ */
+export function raisedFee(need: bigint, approved: bigint): bigint | null {
+  const amount = (need * 11n + 9n) / 10n;
+  return amount <= approved * MAX_FEE_RAISE ? amount : null;
 }
 
 /** Encode already-signed amino result (e.g. from provider) into tx_bytes. */

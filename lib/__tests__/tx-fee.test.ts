@@ -13,6 +13,7 @@ import {
   simulateGas,
   toRatio,
 } from "../tx-fee";
+import { raisedFee } from "../wallet-tx";
 
 describe("exact gas price math", () => {
   it("never loses digits on an 18-decimal chain", () => {
@@ -125,5 +126,19 @@ describe("issuer in notices", () => {
   it("leaves the home chain, and unnamed coins, alone", () => {
     expect(withIssuer("15 USDC.inj", usdc, "injective-1")).toBe("15 USDC.inj");
     expect(withIssuer("12 base units ibc/AB…", { ...usdc, name: "Unknown token", ticker: "IBC·AB", originChainId: null }, "x")).toBe("12 base units ibc/AB…");
+  });
+});
+
+describe("raisedFee", () => {
+  it("pays 10% over the node's floor, within three times the approved fee", () => {
+    expect(raisedFee(2500n, 1000n)).toBe(2750n);
+    expect(raisedFee(2727n, 1000n)).toBe(3000n);
+  });
+
+  it("refuses a figure past three times the approved fee", () => {
+    // A node naming 100x the fee is not paid without asking.
+    expect(raisedFee(100_000n, 1000n)).toBeNull();
+    expect(raisedFee(2728n, 1000n)).toBeNull();
+    expect(raisedFee(1n, 0n)).toBeNull();
   });
 });
