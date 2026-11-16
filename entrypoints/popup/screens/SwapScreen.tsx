@@ -57,6 +57,14 @@ import {
 
 import type { ChainBalance } from "../../../lib/balances";
 import {
+  DEST_WATCH_INTERVAL_MS,
+  DEST_WATCH_MAX_MS,
+  SOURCE_WATCH_INTERVAL_MS,
+  SOURCE_WATCH_MAX_MS,
+  balanceFingerprint,
+  watchForChange,
+} from "../../../lib/balance-watch";
+import {
   explorerTxUrl,
   MAX_SLIPPAGE_PERCENT,
   QUOTE_TTL_MS,
@@ -141,6 +149,7 @@ import { identityOf, shortDenom, type TokenIdentity } from "../../../lib/token-i
 import type { TxPreview } from "../../../lib/tx-kernel";
 import { TESTNET_REASON, noRouteReason, osmosisDenomFor } from "../../../lib/xcs-routes";
 import { GasFeePrefs } from "../components/GasFeePrefs";
+import { RecheckControl, checkedAgo, useRecheck } from "../components/RecheckButton";
 import { SwapPair, shownIdentity } from "../components/SwapPair";
 import { SwapSettingsDialog } from "../components/SwapSettingsDialog";
 import {
@@ -149,6 +158,7 @@ import {
   tokenLocationText,
   tokenSubtitle,
 } from "../components/TokenLabel";
+import { useBalanceRefresh } from "../hooks/useBalanceRefresh";
 import { usePrices } from "../hooks/usePrices";
 import { useTxDetail } from "../hooks/useChainQuery";
 import type { ChainAccountView } from "../hooks/useChainAccounts";
@@ -2439,6 +2449,10 @@ export function SwapScreen({
   const balancesLoaded = Object.keys(balances).length > 0;
   const osmosis = useOsmosisAssets(liveReads);
   const venue = useSwapVenue(liveReads);
+  const venueRecheck = useRecheck(venue.loading, venue.recheck);
+  // Forced reads of the chains this screen is about (on opening, and after a
+  // swap): their answers reach `balances` through the worker's push.
+  const balanceRefresh = useBalanceRefresh(liveReads);
   const skipEntry = useSkipEntryPoint(liveReads);
   // What the wallet holds, one row per chain and exact denom (lib/swap-assets.ts).
   // The SQS list only checks decimals here: a disagreement makes the field Max-only.
@@ -2512,6 +2526,7 @@ export function SwapScreen({
   // Bumped by the retry controls. Part of the plan key, because re-running the
   // same inputs must actually re-run them; a new array identity would not.
   const [retryToken, setRetryToken] = useState(0);
+  const retryPlan = useCallback(() => setRetryToken((n) => n + 1), []);
   const [phase, setPhase] = useState<Phase>("form");
   // What the confirm phase signs and the kernel's preview of exactly those
   // messages, kept as one value so neither is ever shown with the other's
@@ -2541,6 +2556,17 @@ export function SwapScreen({
     txHash: string;
     headline: string;
     identity: TokenIdentity;
+  } | null>(null);
+  /**
+   * The swap whose balances are being followed: where it was signed, where it
+   * delivers, and what each of those chains read as when it was signed. Kept
+   * after the progress page is closed, so the form shows the new amounts.
+   */
+  const [balanceWatch, setBalanceWatch] = useState<{
+    txHash: string;
+    chainId: string;
+    destChainIds: readonly string[];
+    baselines: Readonly<Record<string, string | null>>;
   } | null>(null);
   const [routeOpen, setRouteOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -2854,6 +2880,19 @@ export function SwapScreen({
         ? poolFresh.at
         : (poolSettled?.quotedAt ?? null);
   const refreshing = Boolean(planKey) && requotingKey === planKey;
+  // What the retry controls act on: the same inputs planned again. One for a
+  // failed price or route, one for the channel check the footer offers, each
+  // remembering its own outcome above the panels that come and go while it runs.
+  const planRecheck = useRecheck(planning || refreshing, retryPlan);
+  const channelRecheck = useRecheck(planning, retryPlan);
+  const planError =
+    quoteError ??
+    result?.error ??
+    (path === "relay"
+      ? (inbound?.error ?? delivery?.error ?? null)
+      : path === "pool-deliver"
+        ? (delivery?.error ?? null)
+        : null);
 
   // The confirm screen counts down its review's own price, whatever the form's is.
   const now = useClock(
@@ -3476,6 +3515,21 @@ export function SwapScreen({
         setPhase("sent");
         notifyBroadcastAccepted(toast, broadcastResult.txhash);
       }
+      // Every kind changes the signer's balance (a recovery spends a fee), and
+      // a swap changes the To chain's when it delivers.
+      const destChainIds =
+        pending.kind === "recover" || pending.review.to.chainId === pending.chainId
+          ? []
+          : [pending.review.to.chainId];
+      const watched = [pending.chainId, ...destChainIds];
+      setBalanceWatch({
+        txHash: broadcastResult.txhash,
+        chainId: pending.chainId,
+        destChainIds,
+        baselines: Object.fromEntries(
+          watched.map((chainId) => [chainId, balanceFingerprint(balances[chainId])]),
+        ),
+      });
     } catch (caught) {
       const message = signingError(caught);
       setError(message);
@@ -3749,6 +3803,99 @@ export function SwapScreen({
     phase === "sent" && Boolean(poolSent) && liveReads,
     { intervalMs: 2_000, maxRetries: 60 },
   );
+
+  /* ---------------------------------------------------------------- *
+   * Keeping the balances current
+   * ---------------------------------------------------------------- */
+
+  const { refresh: refreshBalances } = balanceRefresh;
+  // What the watchers compare against and when they stop, read at the moment
+  // they ask rather than captured when they start.
+  const latestBalances = useRef(balances);
+  const routeSettled = useRef(false);
+  useEffect(() => {
+    latestBalances.current = balances;
+    routeSettled.current = Boolean(
+      balanceWatch && tracked?.txHash === balanceWatch.txHash && outcome !== null,
+    );
+  });
+
+  // On opening: the cache a popup opens with is up to a minute old, and the
+  // worker's own read at start-up may have been served from it. Each chain the
+  // screen is about (the one it was opened from, the From, the To) is read
+  // from the network once, and its cached row stays on screen meanwhile.
+  const openedFor = useRef(new Set<string>());
+  const aboutChains = [...new Set([initialChainId, from?.chainId, to?.chainId])]
+    .filter((id): id is string => Boolean(id))
+    .join(",");
+  useEffect(() => {
+    if (!liveReads || !aboutChains) return;
+    const unread = aboutChains.split(",").filter((id) => !openedFor.current.has(id));
+    if (unread.length === 0) return;
+    for (const id of unread) openedFor.current.add(id);
+    void refreshBalances(unread);
+  }, [liveReads, aboutChains, refreshBalances]);
+
+  // The From's balance is the one the form cannot do without. When its read
+  // gives nothing, the screen says so and offers to read it again.
+  const fromChainId = from?.chainId ?? initialChainId ?? null;
+  // A row the worker kept after a failed read carries when it was read.
+  const keptRow = fromChainId ? balances[fromChainId] : undefined;
+  const keptReadAt = keptRow?.refreshError ? (keptRow.readAt ?? null) : null;
+  const balanceReadFailed =
+    liveReads &&
+    fromChainId !== null &&
+    (balanceRefresh.failed.includes(fromChainId) || Boolean(keptRow?.refreshError));
+  const readClock = useClock(keptReadAt !== null);
+  const balanceRecheck = useRecheck(balanceRefresh.refreshing, () => {
+    if (fromChainId) void refreshBalances([fromChainId]);
+  });
+
+  // After a swap: the source chain changes when the transaction is included
+  // (what was sold, the fee, and the fee of one that failed), the destination
+  // when the packets arrive, or a refund comes back. The chain is read until
+  // its answer differs from what the screen showed at signing, or the
+  // route's tracker has nothing left to say. Only the chain's own answer
+  // ends a watch; the read is what updates the numbers shown.
+  const watchedTx = liveReads ? (balanceWatch?.txHash ?? "") : "";
+  useEffect(() => {
+    if (!watchedTx || !balanceWatch) return;
+    const controller = new AbortController();
+    const watch = (chainId: string, timing: { intervalMs: number; maxMs: number }) =>
+      void watchForChange({
+        read: async () =>
+          balanceFingerprint((await refreshBalances([chainId])).find((row) => row.chainId === chainId)),
+        baseline: balanceWatch.baselines[chainId] ?? null,
+        settled: () => routeSettled.current,
+        signal: controller.signal,
+        ...timing,
+      });
+    watch(balanceWatch.chainId, { intervalMs: SOURCE_WATCH_INTERVAL_MS, maxMs: SOURCE_WATCH_MAX_MS });
+    for (const chainId of balanceWatch.destChainIds) {
+      watch(chainId, { intervalMs: DEST_WATCH_INTERVAL_MS, maxMs: DEST_WATCH_MAX_MS });
+    }
+    return () => controller.abort();
+    // `balanceWatch` is set once per transaction; its hash is its identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [watchedTx, refreshBalances]);
+
+  // When the tracker reports the end of a route, delivered, refunded or
+  // failed, both chains are read once more: a refund or a late arrival
+  // outlives the watchers above, and a failed swap has spent its fee.
+  const settledTx = tracked && outcome !== null ? tracked.txHash : "";
+  const settledChains = settledTx
+    ? [
+        ...new Set([
+          tracked!.chainId,
+          tracked!.plan.destChainId,
+          ...(balanceWatch?.txHash === settledTx ? balanceWatch.destChainIds : []),
+        ]),
+      ].join(",")
+    : "";
+  useEffect(() => {
+    if (settledChains) void refreshBalances(settledChains.split(","));
+    // One read per route that ends: the chains are named by the hash's route.
+  }, [settledTx, settledChains, refreshBalances]);
 
   const startRecovery = useCallback(() => {
     const recovery = tracking.route?.recovery;
@@ -4171,6 +4318,13 @@ export function SwapScreen({
                 Swap
               </h1>
               <span className="truncate text-[11px] text-fg-dim">via Osmosis</span>
+              {/* Old numbers stay readable while the new ones are fetched. */}
+              {balanceRefresh.refreshing ? (
+                <span role="status" className="flex shrink-0 items-center gap-1 text-[10.5px] text-fg-dim">
+                  <Spinner className="size-3" />
+                  Updating balances
+                </span>
+              ) : null}
             </div>
           </div>
           <IconButton
@@ -4202,18 +4356,14 @@ export function SwapScreen({
                 : "Swap"}
           </Button>
           <DisabledReason reason={ready ? null : blockedReason} />
-          {!ready && failedCheck && !planning ? (
-            failedCheck.verdict === "inconclusive" ? (
-              <button
-                type="button"
-                onClick={() => setRetryToken((n) => n + 1)}
-                className={cn(
-                  "mt-1 text-[10.5px] text-accent underline underline-offset-2",
-                  focusRing,
-                )}
-              >
-                Check the channel again
-              </button>
+          {!ready && (channelRecheck.checking || (failedCheck && !planning)) ? (
+            channelRecheck.checking || failedCheck?.verdict === "inconclusive" ? (
+              <RecheckControl
+                className="mt-1.5"
+                recheck={channelRecheck}
+                still="Still not confirmed"
+                label="Check the channel again"
+              />
             ) : pinnedFailure ? (
               <button
                 type="button"
@@ -4250,6 +4400,24 @@ export function SwapScreen({
           }}
           onDismiss={pendingRoutes.forget}
         />
+
+        {balanceReadFailed ? (
+          <Callout
+            compact
+            tone="warning"
+            title={keptReadAt !== null ? "Could not refresh your balance" : "Could not read your balance"}
+          >
+            {keptReadAt !== null
+              ? `Couldn't refresh — showing the balance read ${checkedAgo(keptReadAt, readClock)}.`
+              : "The numbers below may be out of date."}
+            <RecheckControl
+              className="mt-2"
+              recheck={balanceRecheck}
+              label="Read it again"
+              still="Still cannot read it"
+            />
+          </Callout>
+        ) : null}
 
         <SwapPair
           from={from}
@@ -4366,11 +4534,15 @@ export function SwapScreen({
             slippagePresets={SLIPPAGE_PRESETS}
             loading={(planning || refreshing) && !quote}
             error={quoteError ?? result?.error ?? null}
-            // A channel refusal stands for a while, so asking again helps only
-            // a check that did not finish, which the footer offers itself.
-            {...(failedCheck ? {} : { onRetry: () => setRetryToken((n) => n + 1) })}
             footer={expert ? quoteFooter : null}
           />
+        ) : null}
+
+        {/* A channel refusal stands for a while, so asking again helps only a
+            check that did not finish, which the footer offers itself. The row
+            stays while the check runs again, when the error is not on screen. */}
+        {planRecheck.checking || (planError !== null && !failedCheck) ? (
+          <RecheckControl recheck={planRecheck} label="Try again" still="Still failing" />
         ) : null}
 
         {expert ? (
@@ -4425,7 +4597,6 @@ export function SwapScreen({
                     (path === "relay" ? (inbound?.error ?? delivery?.error ?? null) : null) ??
                     (path === "pool-deliver" ? (delivery?.error ?? null) : null)
                   }
-                  onRetry={() => setRetryToken((n) => n + 1)}
                   emptyTitle={liveReads ? "No route yet" : "Route planning is off"}
                   emptyDescription={
                     liveReads
@@ -4496,7 +4667,8 @@ export function SwapScreen({
           </>
         ) : null}
 
-        {venue.loading && (path === "contract" || path === null || pathPending) ? (
+        {/* A check run again keeps the callout below and shows itself on its button. */}
+        {venue.loading && !venue.check && (path === "contract" || path === null || pathPending) ? (
           <div
             role="status"
             aria-label="Checking the swap contract"
@@ -4511,13 +4683,7 @@ export function SwapScreen({
         {venue.check?.reason && (path === "contract" || path === null) ? (
           <Callout tone="danger" title={path === null ? "Cross-chain swaps are off" : "Swaps are off"}>
             {venue.check.reason}
-            <button
-              type="button"
-              onClick={venue.recheck}
-              className={cn("mt-1.5 block underline underline-offset-2", focusRing)}
-            >
-              Check again
-            </button>
+            <RecheckControl className="mt-2" recheck={venueRecheck} still="Still unavailable" />
             {expert && (venue.check.problem === "absent" || venue.check.problem === "unset") ? (
               <SwapContractOverride
                 current={venue.check.contractAddress}

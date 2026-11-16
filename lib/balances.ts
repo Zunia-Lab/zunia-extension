@@ -111,9 +111,22 @@ export interface ChainBalance {
   tokens: TokenBalance[];
   /** Set when the endpoint was unreachable or returned garbage. */
   error?: string;
+  /**
+   * Last good read, served because the latest one failed: why it failed. The
+   * numbers are the ones read at {@link readAt}; a screen that cares says so,
+   * and every other screen keeps showing them. Absent on a row that was just
+   * read, and on a record cached by an older build.
+   */
+  refreshError?: string;
+  /** When the numbers of a row carrying `refreshError` were read, in ms. */
+  readAt?: number;
 }
 
 const CACHE_TTL_MS = 60_000;
+/** The oldest good row a failed read may fall back on. */
+const FALLBACK_MAX_AGE_MS = 10 * 60_000;
+/** After a failed read, how long before the network is tried again. */
+const FALLBACK_RETRY_MS = 15_000;
 const REQUEST_TIMEOUT_MS = 8_000;
 
 /**
@@ -134,7 +147,10 @@ const REQUEST_TIMEOUT_MS = 8_000;
 const CACHE_VERSION = 6;
 
 interface CacheEntry {
+  /** When the row stops being served without a read. 0 once expired. */
   at: number;
+  /** When its numbers were last read from the chain. Absent in older records. */
+  readAt?: number;
   balance: ChainBalance;
 }
 
@@ -985,12 +1001,36 @@ export async function getChainBalances(
     misses.forEach((a, i) => {
       const key = `${a.chainId}:${a.address}`;
       const balance = fetched[i]!;
+      // A read that failed does not replace a good one read in the last ten
+      // minutes. The screens that poll after a transaction would otherwise see
+      // a node blip blank the row they are watching. The older row is served
+      // flagged with why it is old, and stored so the network is tried again
+      // in 15 s, not on every call and not after a whole minute.
+      const entry = cached.balances[key];
+      const previous = entry?.balance;
+      const goodAt = entry ? (entry.readAt ?? entry.at) : 0;
+      if (
+        balance.error &&
+        previous &&
+        !previous.error &&
+        Array.isArray(previous.tokens) &&
+        at - goodAt <= FALLBACK_MAX_AGE_MS
+      ) {
+        const served: ChainBalance = { ...previous, refreshError: balance.error, readAt: goodAt };
+        hits.set(key, served);
+        cached.balances[key] = {
+          at: at - CACHE_TTL_MS + FALLBACK_RETRY_MS,
+          readAt: goodAt,
+          balance: served,
+        };
+        return;
+      }
       hits.set(key, balance);
       // A failed read is cached too, with its error, so a chain whose endpoint
       // is down does not get re-tried on every render. It ages out like any
       // other row, and `force` skips it. A provisional read is stored already
       // expired: it still replaces an older row, but the next read refetches.
-      cached.balances[key] = { at: provisional.has(balance) ? 0 : at, balance };
+      cached.balances[key] = { at: provisional.has(balance) ? 0 : at, readAt: at, balance };
     });
     await browser.storage.local.set({ [STORAGE_KEYS.balanceCache]: cached });
   }
@@ -1013,6 +1053,28 @@ export async function refreshChainBalance(account: {
 }): Promise<ChainBalance | null> {
   const [row] = await getChainBalances([account], { force: true });
   return row ?? null;
+}
+
+/**
+ * Mark every cached row of these chains as expired, keeping what it holds.
+ *
+ * A transaction changes the balance of the chain it was signed on the moment
+ * it is included, and the minute the cache would otherwise keep serving the
+ * old row is the minute the user looks at it. The row stays as the fallback
+ * for a read that fails; the next read of the chain goes to the network.
+ */
+export async function expireChainBalances(chainIds: readonly string[]): Promise<void> {
+  if (chainIds.length === 0) return;
+  const cached = readCacheRecord(
+    (await browser.storage.local.get(STORAGE_KEYS.balanceCache))[STORAGE_KEYS.balanceCache],
+  );
+  let changed = false;
+  for (const [key, entry] of Object.entries(cached.balances)) {
+    if (!chainIds.includes(entry.balance?.chainId) || entry.at === 0) continue;
+    cached.balances[key] = { ...entry, at: 0 };
+    changed = true;
+  }
+  if (changed) await browser.storage.local.set({ [STORAGE_KEYS.balanceCache]: cached });
 }
 
 export async function clearBalanceCache(): Promise<void> {

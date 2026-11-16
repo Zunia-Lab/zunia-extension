@@ -224,6 +224,11 @@ export function useKernelSigning(): {
  *
  * The address is host configuration and the candidates shipped with it are
  * unverified, so the swap path stays off until this resolves with a venue.
+ *
+ * `check` is the last answer, and it stays while a check runs again: a screen
+ * that is showing why swaps are off keeps showing it (with `loading` true)
+ * instead of dropping it for the length of the request, which is what made a
+ * second check look like a click that did nothing.
  */
 export function useSwapVenue(enabled: boolean): {
   check: SwapVenueCheck | null;
@@ -253,7 +258,7 @@ export function useSwapVenue(enabled: boolean): {
 
   const recheck = useCallback(() => setToken((n) => n + 1), []);
   return {
-    check: settled?.requestKey === requestKey ? settled.check : null,
+    check: enabled ? (settled?.check ?? null) : null,
     loading: Boolean(requestKey) && settled?.requestKey !== requestKey,
     recheck,
   };

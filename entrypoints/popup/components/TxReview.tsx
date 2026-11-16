@@ -34,6 +34,7 @@ import {
 import type { TrackedRoute } from "../../../lib/packet-tracking";
 import type { TokenIdentity } from "../../../lib/token-identity";
 import { IconCheck, IconChevronDown, IconCopy } from "../screens/icons";
+import { RecheckControl, useRecheck } from "./RecheckButton";
 import { TokenAvatar } from "./TokenLabel";
 
 /* -------------------------------------------------------------------------- *
@@ -626,6 +627,7 @@ export function TransferProgress({
   onRecover?: () => void;
   recoverDisabledReason?: string | null;
 }) {
+  const recheck = useRecheck(loading, onRefresh);
   const headline = routeHeadline(route, recoveryReady);
   const tone = toneStyle(headline.tone);
   const steps = routeSteps(route, fromChainName, toChainName);
@@ -668,21 +670,9 @@ export function TransferProgress({
             ) : null}
           </div>
         ) : null}
-        <div className="mt-2 flex items-center justify-between gap-2">
+        <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
           <span className="font-mono text-[9.5px] text-fg-dim">{truncateAddress(txHash, 8, 6)}</span>
-          <button
-            type="button"
-            onClick={onRefresh}
-            disabled={loading}
-            className={cn(
-              "-mr-1.5 shrink-0 rounded-full px-1.5 py-0.5 font-mono text-[9.5px] text-accent",
-              "transition-colors duration-[var(--z-duration-base)] hover:bg-[var(--z-state-hover)]",
-              "disabled:cursor-not-allowed disabled:opacity-40",
-              focusRing,
-            )}
-          >
-            {loading ? "Checking…" : "Check again"}
-          </button>
+          <RecheckControl recheck={recheck} still="Still in progress" className="justify-end" />
         </div>
       </ReviewCard>
       <ReviewDisclosure title="Transfer details" hint="hops, channels, hashes">
