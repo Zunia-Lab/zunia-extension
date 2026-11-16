@@ -5,6 +5,19 @@
  * Every rule lives in pure functions over the list, so validation, migration
  * and the usage counters are tested without storage. The storage wrappers at
  * the bottom only read, apply one of them, and write.
+ *
+ * What a contact holds, and where it goes:
+ * - `address` is a public blockchain account address (bech32, for example
+ *   `osmo1…`). It is not a postal address. `label` and `note` are a nickname
+ *   and a reminder the user types, both optional.
+ * - The list is kept in `browser.storage.local` on this device and nowhere
+ *   else. No code in the extension sends it over the network: it is read only
+ *   by the popup, to fill the recipient field and to show "Saved as …" next to
+ *   an address the user typed. It is not put into a transaction, a memo or a
+ *   request. Removing the wallet deletes it (`resetWallet` in session.ts).
+ *
+ * So the address book is not data collection or transmission in the sense of
+ * Firefox's built-in data consent: nothing in it leaves the browser.
  */
 
 import { bech32PrefixOf, isValidBech32Address } from "@zunialab/interchain";
