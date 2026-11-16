@@ -177,7 +177,7 @@ export const SWAP_FEE_RECIPIENTS: Readonly<Record<string, string>> = {
   // Initia, coin type 60, Ethereum-style key
   "interwoven-1": "init1rmgck8u7m0mmhtuyjfhxfcxlactsm97av4j0gq",
   // IRISnet, coin type 118
-  "irishub-1": "iaa1gv86dp8wmnmmatdckgr5xkevnpmy4662djv4hc",
+  "irishub-2": "iaa1gv86dp8wmnmmatdckgr5xkevnpmy4662djv4hc",
   // Impact Hub, coin type 118
   "ixo-5": "ixo1gv86dp8wmnmmatdckgr5xkevnpmy466289jk36",
   // Jackal, coin type 118
@@ -252,8 +252,6 @@ export const SWAP_FEE_RECIPIENTS: Readonly<Record<string, string>> = {
   "planq_7070-2": "plq1rmgck8u7m0mmhtuyjfhxfcxlactsm97atmzq93",
   // QFS, coin type 118
   "qfs-1": "qfs1gv86dp8wmnmmatdckgr5xkevnpmy4662zce83j",
-  // Quicksilver, coin type 118
-  "quicksilver-2": "quick1gv86dp8wmnmmatdckgr5xkevnpmy4662n5ukvm",
   // Qwoyn, coin type 118
   "qwoyn-1": "qwoyn1gv86dp8wmnmmatdckgr5xkevnpmy46629sd6jg",
   // Realio, coin type 60, Ethereum-style key
