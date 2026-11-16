@@ -410,11 +410,38 @@ No library is loaded from a CDN. No library is modified.
 
 Zunia is a non-custodial Cosmos wallet published by Zedeal Group Hub Ltd (https://zedealgroup.mu, DUNS 66-981-0013). The recovery phrase is created on the device and encrypted there. Nothing is loaded from a remote script. The content script injects \`injected.js\`, which is bundled in the extension. It does not inject a stylesheet. Version 0.1.1 had a content-script rule \`body { font-family: "Space Grotesk" }\` that replaced fonts on every site. That file is removed in 0.1.2.
 
-\`data_collection_permissions.required\` is \`financialAndPaymentInfo\` because a broadcast sends the public address and the signed transaction to a public chain endpoint. The user can replace that endpoint. Those requests are not sent to a Zunia or Zedeal server. The extension does not collect card numbers, bank accounts, or payment history.
+A swap includes a 0.5% Zunia service fee. It is paid in the same transaction, in the token sold, to a Zunia address on the chain that signs it, and the review screen shows it before the user signs. Network fees go to the network.
 
 A Keplr-compatible \`window.keplr\` can be turned on by the user and is off by default. The extension does not use the Keplr name, logo, or listing.
 
 There is no account to sign in to. To test: install, open the toolbar button, create a wallet. The phrase is shown on the device. Connecting a site, signing, and approving a transaction each ask for a confirmation in the extension.
+
+## Data collection (Firefox built-in consent)
+
+\`data_collection_permissions.required\` is \`financialAndPaymentInfo\`. To read balances and to broadcast, the add-on sends the public account address and the signed transaction to a public endpoint (REST, RPC or websocket) of the chain the user picked. The default endpoints come from the chain registry, and the user can replace them. Chain endpoints are optional host permissions that the user grants in Settings, Live balances.
+
+Nothing is sent to a Zunia or Zedeal server. The Firefox manifest's \`host_permissions\` are the loopback hosts only (\`localhost\`, \`127.0.0.1\`, \`[::1]\`), for a node the user runs on their own machine.
+
+These are all the requests the add-on makes:
+
+- Chain endpoints: the account address and signed transactions (\`financialAndPaymentInfo\`).
+- Price feed (\`api.coingecko.com\`): a coin id such as \`cosmos\`. No address is sent.
+- Images:
+  - chain icons from \`raw.githubusercontent.com\` (Zunia-Lab/zunia-chain-registry);
+  - a connected site's favicon, from that site's own origin;
+  - NFT artwork, only after the user turns on "Load artwork", which is off by default. It loads with \`referrerPolicy="no-referrer"\`.
+
+The extension has no analytics and no telemetry. It does not collect card numbers, bank accounts, or payment history.
+
+### The address book (review of 0.1.6)
+
+The review of 0.1.6 reported "personallyIdentifyingInfo in zunia-extension/lib/address-book.ts line 136, 138". Those lines rebuild a saved contact that was read back from \`browser.storage.local\`.
+
+A contact is a public blockchain address, such as \`osmo1…\`. It is not a postal address. A contact also has an optional nickname and note that the user typed.
+
+The list stays in \`browser.storage.local\`. No code sends it over the network or puts it into a transaction, a memo or a request. The popup reads it only to fill the recipient field and to show "Saved as …" next to an address. Removing the wallet deletes it.
+
+Firefox's taxonomy defines transmission as data handled "outside the add-on or the local browser". The address book never is, so it is not declared. The comment at the top of \`lib/address-book.ts\` says the same.
 
 ## Firefox-only transform
 

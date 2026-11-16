@@ -13,6 +13,21 @@ import {
 } from "./config/hosts";
 
 const rootDir = path.dirname(fileURLToPath(import.meta.url));
+
+/**
+ * Firefox's host_permissions: the loopback hosts alone.
+ *
+ * No code in the extension calls the three Zunia API hosts in HOST_PERMISSIONS:
+ * balances, prices and broadcasts go to public chain endpoints and price feeds,
+ * under the optional permissions the user grants. The Chromium and Safari
+ * manifests keep them as their stores reviewed them. Firefox's leaves them out,
+ * so it asks only for what the add-on uses and matches its data collection
+ * declaration: nothing is sent to a Zunia server. Worked out here, at build
+ * time, so the bundles of every browser stay exactly as they were.
+ */
+const FIREFOX_HOST_PERMISSIONS = HOST_PERMISSIONS.filter(
+  (host) => !host.includes("zunialab.com"),
+);
 /** Linked workspace packages live outside this repo; Vite must be allowed to read them in dev. */
 const uiPackagesDir = path.resolve(rootDir, "../zunia-ui/packages");
 const localRequire = createRequire(import.meta.url);
@@ -211,7 +226,8 @@ export default defineConfig({
      * dApp RPC / CosmJS traffic runs in the page context (or via
      * externally_connectable / user-granted origins), not via broad https host wildcards.
      */
-    host_permissions: [...HOST_PERMISSIONS],
+    host_permissions:
+      browser === "firefox" ? [...FIREFOX_HOST_PERMISSIONS] : [...HOST_PERMISSIONS],
     optional_host_permissions: [
       ...OPTIONAL_HOST_PERMISSIONS,
       ...REALTIME_HOST_PERMISSIONS,
@@ -291,7 +307,10 @@ export default defineConfig({
               /**
                * Addresses go to the chain endpoints balances are read from, and
                * signed transactions to the node that broadcasts them. Nothing is
-               * sent to a Zunia server.
+               * sent to a Zunia server. What stays in browser.storage.local (the
+               * encrypted keys, accounts, settings, connected sites and the
+               * address book, see lib/address-book.ts) never leaves the browser,
+               * so it is not declared here.
                */
               data_collection_permissions: {
                 required: ["financialAndPaymentInfo"],
