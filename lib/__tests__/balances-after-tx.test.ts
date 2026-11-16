@@ -53,6 +53,7 @@ const nativeOf = (rows: Array<{ tokens: Array<{ denom: string; amount: string }>
   rows[0]?.tokens.find((token) => token.denom === "uosmo")?.amount;
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 
@@ -94,17 +95,81 @@ describe("the balance cache after a transaction", () => {
 });
 
 describe("a read that fails while a good row is held", () => {
-  it("keeps the good row, and tries the network again on the next read", async () => {
-    const balances = await load();
+  const MINUTE = 60_000;
+
+  async function loadAt(start: number) {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(start);
+    return load();
+  }
+
+  it("serves a young good row, flagged with why and when it was read", async () => {
+    const balances = await loadAt(1_000_000);
     await balances.getChainBalances([ACCOUNT]);
+    vi.setSystemTime(1_000_000 + 2 * MINUTE);
     bank.status = 500;
-    const [failed] = await balances.getChainBalances([ACCOUNT], { force: true });
-    expect(failed?.error).toBeUndefined();
-    expect(nativeOf([failed!])).toBe("5000000");
+    const [served] = await balances.getChainBalances([ACCOUNT]);
+    expect(served?.error).toBeUndefined();
+    expect(served?.refreshError).toBeTruthy();
+    expect(served?.readAt).toBe(1_000_000);
+    expect(nativeOf([served!])).toBe("5000000");
+  });
+
+  it("serves the error row once the good row is older than ten minutes", async () => {
+    const balances = await loadAt(1_000_000);
+    await balances.getChainBalances([ACCOUNT]);
+    vi.setSystemTime(1_000_000 + 11 * MINUTE);
+    bank.status = 500;
+    const [failed] = await balances.getChainBalances([ACCOUNT]);
+    expect(failed?.error).toBeTruthy();
+    expect(failed?.refreshError).toBeUndefined();
+  });
+
+  it("clears the flag with the next good read", async () => {
+    const balances = await loadAt(1_000_000);
+    await balances.getChainBalances([ACCOUNT]);
+    vi.setSystemTime(1_000_000 + 2 * MINUTE);
+    bank.status = 500;
+    await balances.getChainBalances([ACCOUNT]);
     bank.status = 200;
     bank.uosmo = "2000000";
-    // The failure was not cached as a fresh row: the next read is not served from it.
-    expect(nativeOf(await balances.getChainBalances([ACCOUNT]))).toBe("2000000");
+    vi.setSystemTime(1_000_000 + 2 * MINUTE + 16_000);
+    const [fresh] = await balances.getChainBalances([ACCOUNT]);
+    expect(fresh?.refreshError).toBeUndefined();
+    expect(fresh?.readAt).toBeUndefined();
+    expect(nativeOf([fresh!])).toBe("2000000");
+  });
+
+  it("does not ask a failing node again for 15 s, then does", async () => {
+    const balances = await loadAt(1_000_000);
+    await balances.getChainBalances([ACCOUNT]);
+    vi.setSystemTime(1_000_000 + 2 * MINUTE);
+    bank.status = 500;
+    await balances.getChainBalances([ACCOUNT]);
+    const afterFailure = bankReads;
+    vi.setSystemTime(1_000_000 + 2 * MINUTE + 10_000);
+    const [held] = await balances.getChainBalances([ACCOUNT]);
+    expect(bankReads).toBe(afterFailure);
+    expect(held?.refreshError).toBeTruthy();
+    vi.setSystemTime(1_000_000 + 2 * MINUTE + 16_000);
+    await balances.getChainBalances([ACCOUNT]);
+    expect(bankReads).toBe(afterFailure + 1);
+  });
+
+  it("still reads at once after a transaction expired a flagged row", async () => {
+    const balances = await loadAt(1_000_000);
+    await balances.getChainBalances([ACCOUNT]);
+    vi.setSystemTime(1_000_000 + 2 * MINUTE);
+    bank.status = 500;
+    await balances.getChainBalances([ACCOUNT]);
+    const afterFailure = bankReads;
+    bank.status = 200;
+    bank.uosmo = "1000000";
+    await balances.expireChainBalances(["osmosis-1"]);
+    const [fresh] = await balances.getChainBalances([ACCOUNT]);
+    expect(bankReads).toBe(afterFailure + 1);
+    expect(nativeOf([fresh!])).toBe("1000000");
+    expect(fresh?.refreshError).toBeUndefined();
   });
 
   it("reports the failure when there is no earlier row to show", async () => {

@@ -21,7 +21,10 @@ export function useBalanceRefresh(enabled: boolean): {
   refresh: (chainIds: readonly string[]) => Promise<ChainBalance[]>;
   /** A read started by `refresh` has not answered yet. */
   refreshing: boolean;
-  /** Chains whose last read gave no usable row, until a later read does. */
+  /**
+   * Chains whose last read gave no usable row, or only an older one the worker
+   * kept (`refreshError`), until a later read does.
+   */
   failed: readonly string[];
 } {
   const [running, setRunning] = useState(0);
@@ -53,7 +56,7 @@ export function useBalanceRefresh(enabled: boolean): {
           const next = new Set(previous);
           for (const chainId of chainIds) {
             const row = rows.find((candidate) => candidate.chainId === chainId);
-            if (row && !row.error) next.delete(chainId);
+            if (row && !row.error && !row.refreshError) next.delete(chainId);
             else next.add(chainId);
           }
           return [...next];

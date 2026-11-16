@@ -149,7 +149,7 @@ import { identityOf, shortDenom, type TokenIdentity } from "../../../lib/token-i
 import type { TxPreview } from "../../../lib/tx-kernel";
 import { TESTNET_REASON, noRouteReason, osmosisDenomFor } from "../../../lib/xcs-routes";
 import { GasFeePrefs } from "../components/GasFeePrefs";
-import { RecheckControl, useRecheck } from "../components/RecheckButton";
+import { RecheckControl, checkedAgo, useRecheck } from "../components/RecheckButton";
 import { SwapPair, shownIdentity } from "../components/SwapPair";
 import { SwapSettingsDialog } from "../components/SwapSettingsDialog";
 import {
@@ -3839,8 +3839,14 @@ export function SwapScreen({
   // The From's balance is the one the form cannot do without. When its read
   // gives nothing, the screen says so and offers to read it again.
   const fromChainId = from?.chainId ?? initialChainId ?? null;
+  // A row the worker kept after a failed read carries when it was read.
+  const keptRow = fromChainId ? balances[fromChainId] : undefined;
+  const keptReadAt = keptRow?.refreshError ? (keptRow.readAt ?? null) : null;
   const balanceReadFailed =
-    liveReads && fromChainId !== null && balanceRefresh.failed.includes(fromChainId);
+    liveReads &&
+    fromChainId !== null &&
+    (balanceRefresh.failed.includes(fromChainId) || Boolean(keptRow?.refreshError));
+  const readClock = useClock(keptReadAt !== null);
   const balanceRecheck = useRecheck(balanceRefresh.refreshing, () => {
     if (fromChainId) void refreshBalances([fromChainId]);
   });
@@ -4396,8 +4402,14 @@ export function SwapScreen({
         />
 
         {balanceReadFailed ? (
-          <Callout compact tone="warning" title="Could not read your balance">
-            The numbers below may be out of date.
+          <Callout
+            compact
+            tone="warning"
+            title={keptReadAt !== null ? "Could not refresh your balance" : "Could not read your balance"}
+          >
+            {keptReadAt !== null
+              ? `Couldn't refresh — showing the balance read ${checkedAgo(keptReadAt, readClock)}.`
+              : "The numbers below may be out of date."}
             <RecheckControl
               className="mt-2"
               recheck={balanceRecheck}
