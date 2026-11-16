@@ -985,6 +985,16 @@ export async function getChainBalances(
     misses.forEach((a, i) => {
       const key = `${a.chainId}:${a.address}`;
       const balance = fetched[i]!;
+      // A read that failed does not replace a good one. The screens that
+      // poll after a transaction would otherwise see a node blip blank the
+      // row they are watching; the older row is served and stored expired, so
+      // the next read tries the network again.
+      const previous = cached.balances[key]?.balance;
+      if (balance.error && previous && !previous.error && Array.isArray(previous.tokens)) {
+        hits.set(key, previous);
+        cached.balances[key] = { at: 0, balance: previous };
+        return;
+      }
       hits.set(key, balance);
       // A failed read is cached too, with its error, so a chain whose endpoint
       // is down does not get re-tried on every render. It ages out like any
@@ -1013,6 +1023,28 @@ export async function refreshChainBalance(account: {
 }): Promise<ChainBalance | null> {
   const [row] = await getChainBalances([account], { force: true });
   return row ?? null;
+}
+
+/**
+ * Mark every cached row of these chains as expired, keeping what it holds.
+ *
+ * A transaction changes the balance of the chain it was signed on the moment
+ * it is included, and the minute the cache would otherwise keep serving the
+ * old row is the minute the user looks at it. The row stays as the fallback
+ * for a read that fails; the next read of the chain goes to the network.
+ */
+export async function expireChainBalances(chainIds: readonly string[]): Promise<void> {
+  if (chainIds.length === 0) return;
+  const cached = readCacheRecord(
+    (await browser.storage.local.get(STORAGE_KEYS.balanceCache))[STORAGE_KEYS.balanceCache],
+  );
+  let changed = false;
+  for (const [key, entry] of Object.entries(cached.balances)) {
+    if (!chainIds.includes(entry.balance?.chainId) || entry.at === 0) continue;
+    cached.balances[key] = { ...entry, at: 0 };
+    changed = true;
+  }
+  if (changed) await browser.storage.local.set({ [STORAGE_KEYS.balanceCache]: cached });
 }
 
 export async function clearBalanceCache(): Promise<void> {

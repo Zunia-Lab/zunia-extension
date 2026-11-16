@@ -92,7 +92,7 @@ import {
   getEnabledChainIds,
   setEnabledChainIds,
 } from "../lib/enabled-chains";
-import { clearBalanceCache, getChainBalances } from "../lib/balances";
+import { clearBalanceCache, expireChainBalances, getChainBalances } from "../lib/balances";
 import { clearPriceCache, getPrices } from "../lib/prices";
 import {
   hydrateCustomChains,
@@ -814,7 +814,11 @@ async function routeMessage(
           return { ok: false, error: "expectSignBytesHash is required" };
         }
         await requireSigningPassword((message.payload as { password?: string }).password);
-        return { ok: true, data: await signAndBroadcastTx(payload) };
+        const sent = await signAndBroadcastTx(payload);
+        // The signer's chain has a new balance (the amount and the fee), so a
+        // read within the cache's minute must go to the network.
+        void expireChainBalances([payload.chainId]).catch(() => undefined);
+        return { ok: true, data: sent };
       }
 
       default:
