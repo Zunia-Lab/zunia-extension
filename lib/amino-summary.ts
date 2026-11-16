@@ -30,8 +30,8 @@
  * still gates a type without "Msg" in it. The messages that hand control of the account to
  * someone else or run nested messages (`cosmos-sdk/MsgGrant`, `MsgExec`, `MsgGrantAllowance`,
  * `wasm/MsgStoreCode`, a proposal submission, the Osmosis smart-account messages) are not read
- * in either mode, so they stay with the generic line and signing them takes the blind-signing
- * opt-in. A generic line is honest; a confident sentence about a
+ * in either mode, so they get the generic line, gated, and signing them takes the blind-signing
+ * opt-in ({@link isGatedAminoType}), as does one of the types above in a shape it refuses. A generic line is honest; a confident sentence about a
  * document the wallet could not fully read is a claim the user acts on.
  *
  * lib/__tests__/amino-summary.test.ts holds every sentence here to the real kernel's, over
@@ -937,6 +937,29 @@ const DESCRIBERS: ReadonlyMap<string, (value: Fields) => Description | null> = n
   ["osmosis/poolmanager/split-amount-out", splitExactOut],
   ...DAPP_DESCRIBERS,
 ]);
+
+/**
+ * The Amino types nothing reads, in either sign mode: they hand control of the account to
+ * someone else or run nested messages (zunia-core dapp.rs, "Not here, on purpose"), so signing
+ * one takes the blind-signing opt-in even though its name has "Msg" in it.
+ */
+const NEVER_READ_AMINO_TYPES: ReadonlySet<string> = new Set([
+  "cosmos-sdk/MsgGrant",
+  "cosmos-sdk/MsgExec",
+  "cosmos-sdk/MsgGrantAllowance",
+  "wasm/MsgStoreCode",
+  "cosmos-sdk/MsgSubmitProposal",
+  "cosmos-sdk/v1/MsgSubmitProposal",
+]);
+
+/**
+ * Whether a message that {@link describeAminoMsg} did not describe must be gated: a type nothing
+ * reads, or one of the dApp types that the kernel would have demoted to unknown for its shape.
+ * Any other unrecognised type keeps the generic line, gated only when it has no "Msg" in its name.
+ */
+export function isGatedAminoType(type: string): boolean {
+  return NEVER_READ_AMINO_TYPES.has(type) || type.startsWith("osmosis/smartaccount/") || DAPP_DESCRIBERS.has(type);
+}
 
 /** Every Amino type {@link describeAminoMsg} reads. */
 export const DESCRIBED_AMINO_TYPES: readonly string[] = [...DESCRIBERS.keys()];

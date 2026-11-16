@@ -116,16 +116,63 @@ describe("what the raw transaction shows of a contract message", () => {
   });
 });
 
-describe("messages nothing reads", () => {
-  it("keeps the blind-signing gate for a smart-account message, and the generic line for a grant", async () => {
-    const summary = await sign([
-      { type: "osmosis/smartaccount/add-authenticator", value: { sender: ME } },
-      { type: "cosmos-sdk/MsgGrant", value: { granter: ME, grantee: NEW_ADMIN } },
-    ]);
-    expect(summary.requiresBlindSigning).toBe(true);
-    expect(summary.messages.map(({ summary: line, unknown }) => ({ line, unknown }))).toEqual([
-      { line: "Message osmosis/smartaccount/add-authenticator", unknown: true },
-      { line: "Message cosmos-sdk/MsgGrant", unknown: false },
-    ]);
+/** Signs with blind signing off or on, as the settings the worker reads. */
+function signWith(blindSigning: boolean, msgs: Array<{ type: string; value: Record<string, unknown> }>) {
+  vi.stubGlobal("browser", {
+    storage: {
+      local: {
+        get: async (key: string) => (key === "zunia.settings" ? { [key]: { blindSigning } } : {}),
+        set: async () => undefined,
+      },
+      onChanged: { addListener: () => undefined },
+    },
+  });
+  return decodeAminoSignDoc("osmosis-1", {
+    chain_id: "osmosis-1",
+    account_number: "7",
+    sequence: "3",
+    memo: "",
+    fee: { amount: [{ denom: "uosmo", amount: "5000" }], gas: "200000" },
+    msgs,
+  });
+}
+
+describe("messages nothing reads are gated, as in direct mode", () => {
+  it.each([
+    "cosmos-sdk/MsgGrant",
+    "cosmos-sdk/MsgExec",
+    "cosmos-sdk/MsgGrantAllowance",
+    "wasm/MsgStoreCode",
+    "cosmos-sdk/MsgSubmitProposal",
+    "cosmos-sdk/v1/MsgSubmitProposal",
+    "osmosis/smartaccount/add-authenticator",
+    "osmosis/smartaccount/remove-authenticator",
+    "osmosis/smartaccount/set-active-state",
+  ])("%s needs the blind-signing opt-in", async (type) => {
+    const off = await signWith(false, [{ type, value: { sender: ME } }]);
+    expect(off.requiresBlindSigning).toBe(true);
+    expect(off.messages[0]).toMatchObject({ summary: `Message ${type}`, unknown: true });
+    const on = await signWith(true, [{ type, value: { sender: ME } }]);
+    expect(on.requiresBlindSigning).toBe(false);
+    expect(on.messages[0]?.unknown).toBe(true);
+  });
+});
+
+describe("a dApp message refused for its shape is gated", () => {
+  it.each([
+    ["a multi-send that does not balance", "cosmos-sdk/MsgMultiSend", { inputs: [{ address: ME, coins: coins("5") }], outputs: [{ address: OUT_A, coins: coins("4") }] }],
+    ["an instantiate whose message is not JSON", "wasm/MsgInstantiateContract", { sender: ME, code_id: "1", label: "x" }],
+    ["a position in pool 0", "osmosis/cl-create-position", { pool_id: "0", sender: ME, lower_tick: "-1", upper_tick: "1", tokens_provided: coins("5"), token_min_amount0: "0", token_min_amount1: "0" }],
+  ])("%s", async (_name, type, value) => {
+    const off = await signWith(false, [{ type, value }]);
+    expect(off.requiresBlindSigning).toBe(true);
+    expect(off.messages[0]).toMatchObject({ summary: `Message ${type}`, unknown: true });
+    expect((await signWith(true, [{ type, value }])).requiresBlindSigning).toBe(false);
+  });
+
+  it("leaves an unrecognised Msg type with its generic, ungated line", async () => {
+    const summary = await signWith(false, [{ type: "some-chain/MsgDoThing", value: {} }]);
+    expect(summary.requiresBlindSigning).toBe(false);
+    expect(summary.messages[0]).toMatchObject({ summary: "Message some-chain/MsgDoThing", unknown: false });
   });
 });

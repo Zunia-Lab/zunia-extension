@@ -17,7 +17,7 @@ import { STORAGE_KEYS } from "./storage-keys";
 import type { DecodedDirectTx, DecodedMessageDetail, DecodedTxMessage, KernelCoin } from "./kernel";
 import { loadKernel, bytesToHex, hexToBytes } from "./kernel";
 import { SECURITY_CONFIG } from "../config/security";
-import { aminoCoin, aminoUint64, describeAminoMsg } from "./amino-summary";
+import { aminoCoin, aminoUint64, describeAminoMsg, isGatedAminoType } from "./amino-summary";
 import { exactCoinText, isBankSpelling } from "./chain-queries";
 import { cosmWasmActionName, describeCw721Action, hasUnreadableContractAction, knownNftBridges } from "./nft";
 import { packetMemoNote } from "./packet-memo";
@@ -450,12 +450,14 @@ export function summarizeAminoMsgs(
     }
     const described = describeAminoMsg(type, msg.value);
     if (described) return described;
-    // Anything else, including one of those types in a shape the chain would
-    // not rebuild, keeps the generic line; a type without "Msg" in it is gated.
+    // Anything else keeps the generic line. It is gated when its type has no
+    // "Msg" in it, when nothing reads it (a grant, an exec, a store code, a
+    // proposal, a smart-account message), and when it is a type read above in
+    // a shape the kernel would refuse, as direct mode does.
     return {
       typeUrl: type,
       summary: `Message ${type}`,
-      unknown: !type.includes("Msg"),
+      unknown: !type.includes("Msg") || isGatedAminoType(type),
     };
   });
 }
