@@ -16,7 +16,7 @@ import { pathToFileURL } from "node:url";
 import { bech32 } from "@scure/base";
 import { beforeAll, describe, expect, it } from "vitest";
 
-import { DESCRIBED_AMINO_TYPES, describeAminoMsg } from "../amino-summary";
+import { DAPP_DESCRIBERS, DESCRIBED_AMINO_TYPES, describeAminoMsg } from "../amino-summary";
 import fixture from "./fixtures/amino-summaries.json";
 
 type Fields = Record<string, unknown>;
@@ -56,9 +56,10 @@ const described = fixture.cases.filter((entry) => DESCRIBED_AMINO_TYPES.includes
 const notDescribed = fixture.cases.filter((entry) => !DESCRIBED_AMINO_TYPES.includes(entry.amino.type));
 
 describe("the types it reads", () => {
-  it("are exactly the staking, vote, transfer and poolmanager messages", () => {
+  it("are exactly the staking, vote, transfer and poolmanager messages, and the dApp messages", () => {
     expect([...DESCRIBED_AMINO_TYPES].sort()).toEqual(
       [
+        ...DAPP_DESCRIBERS.keys(),
         "cosmos-sdk/MsgDelegate",
         "cosmos-sdk/MsgUndelegate",
         "cosmos-sdk/MsgBeginRedelegate",
@@ -72,8 +73,11 @@ describe("the types it reads", () => {
         "osmosis/poolmanager/split-amount-out",
       ].sort(),
     );
-    // Every one of them has reference documents.
-    expect(new Set(described.map((entry) => entry.amino.type))).toEqual(new Set(DESCRIBED_AMINO_TYPES));
+    // Every one of them but the dApp messages has reference documents here; those are held to
+    // the kernel's words by amino-dapp-messages.test.ts.
+    expect(new Set(described.map((entry) => entry.amino.type))).toEqual(
+      new Set(DESCRIBED_AMINO_TYPES.filter((type) => !DAPP_DESCRIBERS.has(type))),
+    );
   });
 
   // A send and a contract call are read by lib/signing.ts, as before 0.1.5.

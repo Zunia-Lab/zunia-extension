@@ -56,8 +56,53 @@ export interface IbcTransferDetail {
   memo: string;
 }
 
-/** Kernel payload v2's `detail` (zunia-core 0.1.1), and its Amino counterpart. */
-export type DecodedMessageDetail = ExecuteContractDetail | IbcTransferDetail;
+/** One side of a multi-send: an address and the coins it pays or receives. */
+export interface MultiSendEntry {
+  address: string;
+  coins: KernelCoin[];
+}
+
+/** What a `MsgMultiSend` carries: every input and every output (zunia-core 0.1.2). */
+export interface MultiSendDetail {
+  kind: "multi-send";
+  inputs: MultiSendEntry[];
+  outputs: MultiSendEntry[];
+}
+
+/**
+ * What a contract instantiation carries that its summary does not say (zunia-core 0.1.2): the
+ * label, the contract message, the coins sent. `salt` (hex) and `fixMsg` appear only for
+ * `MsgInstantiateContract2`.
+ */
+export interface InstantiateContractDetail {
+  kind: "instantiate-contract";
+  /** The code id, a decimal string. */
+  codeId: string;
+  label: string;
+  /** The admin, or null when the contract has none. */
+  admin: string | null;
+  msg: unknown;
+  funds: KernelCoin[];
+  salt?: string;
+  fixMsg?: boolean;
+}
+
+/** What a contract migration carries (zunia-core 0.1.2). */
+export interface MigrateContractDetail {
+  kind: "migrate-contract";
+  contract: string;
+  /** The code id, a decimal string. */
+  codeId: string;
+  msg: unknown;
+}
+
+/** Kernel payload v2's `detail` (zunia-core 0.1.1 and 0.1.2), and its Amino counterpart. */
+export type DecodedMessageDetail =
+  | ExecuteContractDetail
+  | IbcTransferDetail
+  | MultiSendDetail
+  | InstantiateContractDetail
+  | MigrateContractDetail;
 
 export interface DecodedTxMessage {
   typeUrl: string;
@@ -789,23 +834,53 @@ function payloadV2(decoded: unknown): DecodedPayloadV2 | null {
   return matched ? (payload as DecodedPayloadV2) : null;
 }
 
+const isCoin = (value: unknown): value is KernelCoin => {
+  const coin = value as Partial<KernelCoin> | null;
+  return typeof coin?.denom === "string" && typeof coin.amount === "string";
+};
+
+const isCoins = (value: unknown): value is KernelCoin[] => Array.isArray(value) && value.every(isCoin);
+
+const isEntries = (value: unknown): value is MultiSendEntry[] =>
+  Array.isArray(value) &&
+  value.every((entry) => typeof entry?.address === "string" && isCoins(entry.coins));
+
 /** A detail of a kind this build reads, with the fields the prompt reads from it. */
 function detailOf(value: unknown): DecodedMessageDetail | undefined {
   if (typeof value !== "object" || value === null) return undefined;
-  const detail = value as Partial<ExecuteContractDetail> | Partial<IbcTransferDetail>;
-  if (detail.kind === "execute-contract") {
-    return typeof detail.contract === "string" && "msg" in detail && Array.isArray(detail.funds)
-      ? (detail as ExecuteContractDetail)
-      : undefined;
+  const detail = value as Record<string, unknown>;
+  switch (detail.kind) {
+    case "execute-contract":
+      return typeof detail.contract === "string" && "msg" in detail && Array.isArray(detail.funds)
+        ? (detail as unknown as ExecuteContractDetail)
+        : undefined;
+    case "ibc-transfer":
+      return typeof detail.receiver === "string" &&
+        typeof detail.sourceChannel === "string" &&
+        typeof detail.memo === "string"
+        ? (detail as unknown as IbcTransferDetail)
+        : undefined;
+    case "multi-send":
+      return isEntries(detail.inputs) && isEntries(detail.outputs)
+        ? (detail as unknown as MultiSendDetail)
+        : undefined;
+    case "instantiate-contract":
+      return typeof detail.codeId === "string" &&
+        typeof detail.label === "string" &&
+        (detail.admin === null || typeof detail.admin === "string") &&
+        "msg" in detail &&
+        isCoins(detail.funds) &&
+        (detail.salt === undefined || typeof detail.salt === "string") &&
+        (detail.fixMsg === undefined || typeof detail.fixMsg === "boolean")
+        ? (detail as unknown as InstantiateContractDetail)
+        : undefined;
+    case "migrate-contract":
+      return typeof detail.contract === "string" && typeof detail.codeId === "string" && "msg" in detail
+        ? (detail as unknown as MigrateContractDetail)
+        : undefined;
+    default:
+      return undefined;
   }
-  if (detail.kind === "ibc-transfer") {
-    return typeof detail.receiver === "string" &&
-      typeof detail.sourceChannel === "string" &&
-      typeof detail.memo === "string"
-      ? (detail as IbcTransferDetail)
-      : undefined;
-  }
-  return undefined;
 }
 
 /**

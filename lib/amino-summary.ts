@@ -14,14 +14,24 @@
  * - `cosmos-sdk/MsgTransfer`, whose receiver is the message's recipient, with the kernel's
  *   detail for it: channel, receiver, token and packet memo;
  * - the Osmosis poolmanager swaps `osmosis/poolmanager/swap-exact-amount-in`,
- *   `split-amount-in`, `swap-exact-amount-out` and `split-amount-out`.
+ *   `split-amount-in`, `swap-exact-amount-out` and `split-amount-out`;
+ * - the messages a dApp builds that the kernel reads since 0.1.2 (zunia-core dapp.rs):
+ *   concentrated liquidity, classic pools and their swaps, lockups, superfluid staking, a
+ *   multi-send, cancelling an unbonding, the withdraw address, commission, the community pool,
+ *   deposits and weighted votes, revoking an authorization or an allowance, and the CosmWasm
+ *   instantiate, migrate and admin messages. Their sentences, recipients and details are the
+ *   kernel's; see {@link DAPP_DESCRIBERS}.
  *
  * Only a message in the shape the chain's Amino JSON gives it is described. The checks are the
  * kernel's (`is_complete` in decode.rs, the swap rules in msg.rs), and stricter where the kernel
  * shows bytes as they are: every amount is a canonical integer string, every denom is valid,
  * every account and validator is a 20-byte bech32 address, every route has pools and no pool is
  * 0. Anything else returns null and the caller keeps the generic summary it always gave, which
- * still gates a type without "Msg" in it. A generic line is honest; a confident sentence about a
+ * still gates a type without "Msg" in it. The messages that hand control of the account to
+ * someone else or run nested messages (`cosmos-sdk/MsgGrant`, `MsgExec`, `MsgGrantAllowance`,
+ * `wasm/MsgStoreCode`, a proposal submission, the Osmosis smart-account messages) are not read
+ * in either mode, so they stay with the generic line and signing them takes the blind-signing
+ * opt-in. A generic line is honest; a confident sentence about a
  * document the wallet could not fully read is a claim the user acts on.
  *
  * lib/__tests__/amino-summary.test.ts holds every sentence here to the real kernel's, over
@@ -324,6 +334,595 @@ function splitExactOut(value: Fields): Description | null {
   };
 }
 
+/* -------------------------------------------------------------------------- *
+ * dApp messages (zunia-core crates/cosmos/src/dapp.rs)
+ * -------------------------------------------------------------------------- */
+
+const I64_MIN = -(2n ** 63n);
+const I64_MAX = 2n ** 63n - 1n;
+/** `1.0` as a `LegacyDec` scaled by 10^18. */
+const DEC_ONE = 10n ** 18n;
+
+/**
+ * An `int64` Amino writes as a decimal string (a tick, a height), canonical. Amino omits a zero,
+ * so a missing field is `"0"`.
+ */
+function int64(value: unknown): string | null {
+  if (value === undefined) return "0";
+  if (typeof value !== "string" || !/^(?:0|-?[1-9]\d*)$/.test(value)) return null;
+  const number = BigInt(value);
+  return number >= I64_MIN && number <= I64_MAX ? value : null;
+}
+
+/** A u64 Amino omits when it is 0: missing reads as `"0"`. */
+function uint64OrZero(value: unknown): string | null {
+  return value === undefined ? "0" : uint64(value);
+}
+
+/** An amount Amino always writes (`math.Int`): missing is not a number. */
+const intAmount = amount;
+
+/** zunia-core `good_coin`: a valid denom and a canonical amount, non-zero unless `allowZero`. */
+const goodCoin = (value: unknown, allowZero = false): Coin | null => coin(value, !allowZero);
+
+/**
+ * zunia-core `good_coins`: between `min` and `max` coins, each valid and non-zero, no denom
+ * twice. Amino omits an empty list, so a missing one is empty.
+ */
+function goodCoins(value: unknown, min: number, max: number): Coin[] | null {
+  if (value === undefined) return min === 0 ? [] : null;
+  if (!Array.isArray(value) || value.length < min || value.length > max) return null;
+  const coins: Coin[] = [];
+  for (const item of value) {
+    const checked = goodCoin(item);
+    if (!checked || coins.some((earlier) => earlier.denom === checked.denom)) return null;
+    coins.push(checked);
+  }
+  return coins;
+}
+
+const coinsText = (coins: readonly Coin[]): string => coins.map(coinText).join(", ");
+
+/** The bech32 prefix and payload length of an address, lower-cased as the kernel does. */
+function bech32Parts(text: string): { prefix: string; bytes: number } | null {
+  try {
+    const { prefix, words } = bech32.decode(text as `${string}1${string}`);
+    return { prefix: prefix.toLowerCase(), bytes: bech32.fromWords(words).length };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * An address that may be module-derived under the signer's prefix, a contract, a recipient, a
+ * new owner or admin: 20 or 32 bytes, and the signer's prefix (zunia-core `validate_contract_address`).
+ */
+function derived(value: unknown, signer: string): string | null {
+  const text = renderable(value);
+  const parts = text === null ? null : bech32Parts(text);
+  const own = bech32Parts(signer);
+  return text !== null && parts && own && parts.prefix === own.prefix && (parts.bytes === 20 || parts.bytes === 32)
+    ? text
+    : null;
+}
+
+/** `position 5`, or `positions 5, 6, 7` (zunia-core dapp.rs `positions_text`). */
+const positionsText = (ids: readonly string[]): string =>
+  `${ids.length === 1 ? "position" : "positions"} ${ids.join(", ")}`;
+
+/** zunia-core `good_ids`: at least one id, none of them 0, none twice. */
+function positionIds(value: unknown): string[] | null {
+  if (!Array.isArray(value) || value.length === 0) return null;
+  const ids: string[] = [];
+  for (const item of value) {
+    const checked = id(item);
+    if (!checked || ids.includes(checked)) return null;
+    ids.push(checked);
+  }
+  return ids;
+}
+
+/** The message's own signer field, 20 bytes of bech32. */
+const signerOf = (value: Fields, key = "sender"): string | null => account(value[key]);
+
+/** `sender` and a validator, the two accounts of a superfluid delegation. */
+function delegator(value: Fields): { sender: string; validator: string } | null {
+  const sender = signerOf(value);
+  const validator = account(value.val_addr);
+  return sender && validator ? { sender, validator } : null;
+}
+
+function createPosition(value: Fields): Description | null {
+  const pool = id(value.pool_id);
+  const lower = int64(value.lower_tick);
+  const upper = int64(value.upper_tick);
+  const provided = goodCoins(value.tokens_provided, 1, 2);
+  const min0 = intAmount(value.token_min_amount0);
+  const min1 = intAmount(value.token_min_amount1);
+  if (!signerOf(value) || !pool || lower === null || upper === null || BigInt(lower) >= BigInt(upper)) return null;
+  if (!provided || min0 === null || min1 === null) return null;
+  return {
+    summary: `Create a concentrated liquidity position in pool ${pool} between ticks ${lower} and ${upper} with ${coinsText(provided)}, accepting at least ${min0} of the pool's token0 and ${min1} of its token1`,
+  };
+}
+
+function addToPosition(value: Fields): Description | null {
+  const position = id(value.position_id);
+  const amount0 = intAmount(value.amount0);
+  const amount1 = intAmount(value.amount1);
+  const min0 = intAmount(value.token_min_amount0);
+  const min1 = intAmount(value.token_min_amount1);
+  if (!signerOf(value) || !position || amount0 === null || amount1 === null || min0 === null || min1 === null) {
+    return null;
+  }
+  if (amount0 === "0" && amount1 === "0") return null;
+  return {
+    summary: `Add ${amount0} of the pool's token0 and ${amount1} of its token1 to concentrated liquidity position ${position}, using at least ${min0} and ${min1} of them; the message names no denoms`,
+  };
+}
+
+/** An 18-place decimal as the LCD shows a `LegacyDec`: `5.000000000000000000`. */
+const isDecDisplay = (value: unknown): value is string =>
+  typeof value === "string" && /^\d+\.\d{18}$/.test(value);
+
+function withdrawPosition(value: Fields): Description | null {
+  const position = id(value.position_id);
+  const liquidity = value.liquidity_amount;
+  // Zero liquidity withdraws nothing.
+  if (!signerOf(value) || !position || !isDecDisplay(liquidity) || /^[0.]*$/.test(liquidity)) return null;
+  return {
+    summary: `Withdraw ${liquidity} liquidity units (the message names no denom) from concentrated liquidity position ${position}`,
+  };
+}
+
+function collect(what: "spread rewards" | "incentives") {
+  return (value: Fields): Description | null => {
+    const ids = positionIds(value.position_ids);
+    return signerOf(value) && ids ? { summary: `Collect the ${what} of concentrated liquidity ${positionsText(ids)}` } : null;
+  };
+}
+
+function transferPositions(value: Fields): Description | null {
+  const ids = positionIds(value.position_ids);
+  const sender = signerOf(value);
+  const newOwner = sender ? derived(value.new_owner, sender) : null;
+  if (!sender || !ids || !newOwner) return null;
+  return {
+    summary: `Transfer concentrated liquidity ${positionsText(ids)} to ${newOwner}`,
+    recipient: newOwner,
+  };
+}
+
+function joinPool(value: Fields): Description | null {
+  const pool = id(value.pool_id);
+  const shares = positive(value.share_out_amount);
+  const maxs = goodCoins(value.token_in_maxs, 1, 64);
+  if (!signerOf(value) || !pool || !shares || !maxs) return null;
+  return {
+    summary: `Join pool ${pool} for exactly ${shares} gamm/pool/${pool} shares, paying at most ${coinsText(maxs)}`,
+  };
+}
+
+function exitPool(value: Fields): Description | null {
+  const pool = id(value.pool_id);
+  const shares = positive(value.share_in_amount);
+  const mins = goodCoins(value.token_out_mins, 0, 64);
+  if (!signerOf(value) || !pool || !shares || !mins) return null;
+  return {
+    summary: `Exit pool ${pool} by burning ${shares} gamm/pool/${pool} shares, ${
+      mins.length === 0 ? "with no minimum amount out" : `receiving at least ${coinsText(mins)}`
+    }`,
+  };
+}
+
+function joinSwapExternAmountIn(value: Fields): Description | null {
+  const pool = id(value.pool_id);
+  const tokenIn = goodCoin(value.token_in);
+  const minimum = positive(value.share_out_min_amount);
+  if (!signerOf(value) || !pool || !tokenIn || !minimum) return null;
+  return {
+    summary: `Join pool ${pool} with ${coinText(tokenIn)} alone, receiving at least ${minimum} gamm/pool/${pool} shares`,
+  };
+}
+
+function exitSwapShareAmountIn(value: Fields): Description | null {
+  const pool = id(value.pool_id);
+  const tokenOut = denom(value.token_out_denom);
+  const shares = positive(value.share_in_amount);
+  const minimum = positive(value.token_out_min_amount);
+  if (!signerOf(value) || !pool || !tokenOut || !shares || !minimum) return null;
+  return {
+    summary: `Exit pool ${pool} by burning ${shares} gamm/pool/${pool} shares for ${tokenOut} alone, receiving at least ${minimum} ${tokenOut}`,
+  };
+}
+
+function joinSwapShareAmountOut(value: Fields): Description | null {
+  const pool = id(value.pool_id);
+  const tokenIn = denom(value.token_in_denom);
+  const shares = positive(value.share_out_amount);
+  const maximum = positive(value.token_in_max_amount);
+  if (!signerOf(value) || !pool || !tokenIn || !shares || !maximum) return null;
+  return {
+    summary: `Join pool ${pool} with ${tokenIn} alone, paying at most ${maximum} ${tokenIn} for exactly ${shares} gamm/pool/${pool} shares`,
+  };
+}
+
+function exitSwapExternAmountOut(value: Fields): Description | null {
+  const pool = id(value.pool_id);
+  const tokenOut = goodCoin(value.token_out);
+  const maximum = positive(value.share_in_max_amount);
+  if (!signerOf(value) || !pool || !tokenOut || !maximum) return null;
+  return {
+    summary: `Exit pool ${pool} receiving exactly ${coinText(tokenOut)} alone, burning at most ${maximum} gamm/pool/${pool} shares`,
+  };
+}
+
+const NANOS_PER_SECOND = 1_000_000_000n;
+
+/**
+ * A lock's duration in whole seconds. Amino writes a `time.Duration` as nanoseconds in a
+ * string; the kernel refuses a duration that is not whole seconds, and so does this.
+ */
+function durationSeconds(value: unknown): string | null {
+  if (typeof value !== "string" || !/^[1-9]\d*$/.test(value)) return null;
+  const nanos = BigInt(value);
+  return nanos <= I64_MAX && nanos % NANOS_PER_SECOND === 0n ? (nanos / NANOS_PER_SECOND).toString() : null;
+}
+
+function lockTokens(value: Fields): Description | null {
+  const seconds = durationSeconds(value.duration);
+  const coins = goodCoins(value.coins, 1, 64);
+  return signerOf(value, "owner") && seconds && coins
+    ? { summary: `Lock ${coinsText(coins)} for ${seconds} seconds` }
+    : null;
+}
+
+function beginUnlocking(value: Fields): Description | null {
+  const lock = id(value.ID);
+  const coins = goodCoins(value.coins, 0, 64);
+  if (!signerOf(value, "owner") || !lock || !coins) return null;
+  return {
+    summary:
+      coins.length === 0
+        ? `Begin unlocking all the tokens of lock ${lock}`
+        : `Begin unlocking ${coinsText(coins)} from lock ${lock}`,
+  };
+}
+
+function beginUnlockingAll(value: Fields): Description | null {
+  const owner = signerOf(value, "owner");
+  return owner ? { summary: `Begin unlocking every lock owned by ${owner}` } : null;
+}
+
+function superfluidDelegate(value: Fields): Description | null {
+  const lock = id(value.lock_id);
+  const parties = delegator(value);
+  return lock && parties ? { summary: `Superfluid-delegate lock ${lock} to validator ${parties.validator}` } : null;
+}
+
+function lockOnly(verb: string) {
+  return (value: Fields): Description | null => {
+    const lock = id(value.lock_id);
+    return signerOf(value) && lock ? { summary: `${verb} lock ${lock}` } : null;
+  };
+}
+
+function lockAndSuperfluidDelegate(value: Fields): Description | null {
+  const coins = goodCoins(value.coins, 1, 64);
+  const parties = delegator(value);
+  return coins && parties
+    ? { summary: `Lock ${coinsText(coins)} and superfluid-delegate it to validator ${parties.validator}` }
+    : null;
+}
+
+function superfluidUndelegateAndUnbondLock(value: Fields): Description | null {
+  const lock = id(value.lock_id);
+  const unbonded = goodCoin(value.coin);
+  return signerOf(value) && lock && unbonded
+    ? { summary: `Superfluid-undelegate lock ${lock} and unbond ${coinText(unbonded)} from it` }
+    : null;
+}
+
+function fullRangeAndSuperfluidDelegate(value: Fields): Description | null {
+  const pool = id(value.pool_id);
+  const coins = goodCoins(value.coins, 1, 2);
+  const parties = delegator(value);
+  return pool && coins && parties
+    ? {
+        summary: `Create a full-range concentrated liquidity position in pool ${pool} with ${coinsText(coins)} and superfluid-delegate it to validator ${parties.validator}`,
+      }
+    : null;
+}
+
+function addToSuperfluidPosition(value: Fields): Description | null {
+  const position = id(value.position_id);
+  const first = goodCoin(value.token_desired0, true);
+  const second = goodCoin(value.token_desired1, true);
+  if (!signerOf(value) || !position || !first || !second) return null;
+  if (first.amount === "0" && second.amount === "0") return null;
+  return {
+    summary: `Add ${coinText(first)} and ${coinText(second)} to superfluid concentrated liquidity position ${position}`,
+  };
+}
+
+interface MultiSendEntry {
+  readonly address: string;
+  readonly coins: Coin[];
+}
+
+/** An input or an output: its address (as `account` or `derived` reads it) and 1 to 64 coins. */
+function multiSendEntries(
+  value: unknown,
+  read: (address: unknown) => string | null,
+): MultiSendEntry[] | null {
+  if (!Array.isArray(value)) return null;
+  const entries: MultiSendEntry[] = [];
+  for (const item of value) {
+    const entry = fields(item);
+    const address = entry ? read(entry.address) : null;
+    const coins = entry ? goodCoins(entry.coins, 1, 64) : null;
+    if (!address || !coins) return null;
+    entries.push({ address, coins });
+  }
+  return entries;
+}
+
+/** Each denom's total across the entries, or null past the 256-bit ceiling of an amount. */
+function totals(entries: readonly MultiSendEntry[]): Map<string, bigint> | null {
+  const sums = new Map<string, bigint>();
+  for (const entry of entries) {
+    for (const item of entry.coins) {
+      const sum = (sums.get(item.denom) ?? 0n) + BigInt(item.amount);
+      if (sum.toString().length > 78) return null;
+      sums.set(item.denom, sum);
+    }
+  }
+  return sums;
+}
+
+function multiSend(value: Fields): Description | null {
+  const inputs = multiSendEntries(value.inputs, account);
+  const first = inputs?.[0];
+  const outputs = first ? multiSendEntries(value.outputs, (address) => derived(address, first.address)) : null;
+  if (!inputs || !outputs || inputs.length === 0 || outputs.length === 0) return null;
+  const paid = totals(inputs);
+  const received = totals(outputs);
+  if (!paid || !received || paid.size !== received.size) return null;
+  for (const [name, sum] of paid) if (received.get(name) !== sum) return null;
+
+  // The one address outside the senders that gets paid, when there is exactly one.
+  const outside = outputs.map((out) => out.address).filter((address) => inputs.every((input) => input.address !== address));
+  const recipient = outside.length > 0 && outside.every((address) => address === outside[0]) ? outside[0] : undefined;
+  const entry = (list: readonly MultiSendEntry[]) =>
+    list.map(({ address, coins }) => ({ address, coins: coins.map(({ denom: name, amount: units }) => ({ denom: name, amount: units })) }));
+  return {
+    summary: `Send ${outputs.map((out) => `${coinsText(out.coins)} to ${out.address}`).join("; ")} in one multi-send paid by ${inputs.map((input) => `${input.address} (${coinsText(input.coins)})`).join("; ")}`,
+    ...(recipient ? { recipient } : {}),
+    detail: { kind: "multi-send", inputs: entry(inputs), outputs: entry(outputs) },
+  };
+}
+
+function cancelUnbonding(value: Fields): Description | null {
+  const validator = account(value.validator_address);
+  const staked = goodCoin(value.amount);
+  const height = int64(value.creation_height);
+  if (!account(value.delegator_address) || !validator || !staked || height === null || BigInt(height) <= 0n) return null;
+  return {
+    summary: `Cancel the unbonding of ${coinText(staked)} from ${validator}, created at height ${height}`,
+  };
+}
+
+function setWithdrawAddress(value: Fields): Description | null {
+  const delegatorAddress = account(value.delegator_address);
+  const to = delegatorAddress ? derived(value.withdraw_address, delegatorAddress) : null;
+  return to ? { summary: `Set the address that receives your staking rewards to ${to}`, recipient: to } : null;
+}
+
+function withdrawCommission(value: Fields): Description | null {
+  const validator = account(value.validator_address);
+  return validator ? { summary: `Withdraw the commission of validator ${validator}` } : null;
+}
+
+function fundCommunityPool(value: Fields): Description | null {
+  const coins = goodCoins(value.amount, 1, 64);
+  return account(value.depositor) && coins ? { summary: `Fund the community pool with ${coinsText(coins)}` } : null;
+}
+
+function deposit(value: Fields): Description | null {
+  // Unlike a vote, a deposit's proposal id is not checked against 0 by the kernel; Amino omits a 0.
+  const proposal = uint64OrZero(value.proposal_id);
+  const coins = goodCoins(value.amount, 1, 64);
+  return account(value.depositor) && proposal !== null && coins
+    ? { summary: `Deposit ${coinsText(coins)} on proposal ${proposal}` }
+    : null;
+}
+
+/** A gov weight as `scaled_from_decimal` reads it: at most 18 places, the integer scaled by 10^18. */
+function scaledDecimal(text: string): bigint | null {
+  const [whole = "", fraction = "", ...rest] = text.split(".");
+  if (rest.length > 0 || whole === "" || !/^\d+$/.test(whole) || !/^\d*$/.test(fraction) || fraction.length > 18) return null;
+  if (text.endsWith(".")) return null;
+  const scaled = BigInt(`${whole}${fraction.padEnd(18, "0")}`);
+  return scaled.toString().length > 78 ? null : scaled;
+}
+
+/** `700000000000000000` as the 18-place decimal the LCD shows: `0.700000000000000000`. */
+function decimalDisplay(scaled: bigint): string {
+  const padded = scaled.toString().padStart(19, "0");
+  return `${padded.slice(0, -18)}.${padded.slice(-18)}`;
+}
+
+function voteWeighted(withMetadata: boolean) {
+  return (value: Fields): Description | null => {
+    const proposal = id(value.proposal_id);
+    if (!proposal || !account(value.voter)) return null;
+    if ("metadata" in value && !(withMetadata && typeof value.metadata === "string")) return null;
+    if (!Array.isArray(value.options) || value.options.length === 0) return null;
+    const words: string[] = [];
+    const seen = new Set<string>();
+    let sum = 0n;
+    for (const item of value.options) {
+      const entry = fields(item);
+      const label = entry ? VOTE_LABELS.get(entry.option) : undefined;
+      const weight = entry?.weight;
+      // gov v1beta1's LegacyDec is always written with 18 places; v1 passes its string through.
+      const scaled =
+        typeof weight === "string" && (withMetadata || isDecDisplay(weight)) ? scaledDecimal(weight) : null;
+      if (!label || seen.has(label) || scaled === null || scaled === 0n) return null;
+      seen.add(label);
+      sum += scaled;
+      words.push(`${label} ${decimalDisplay(scaled)}`);
+    }
+    return sum === DEC_ONE ? { summary: `Vote ${words.join(", ")} on proposal ${proposal}` } : null;
+  };
+}
+
+/** zunia-core `is_plain_type_url`: a leading slash, then letters, digits, dots and underscores. */
+const plainTypeUrl = (value: unknown): value is string =>
+  typeof value === "string" && value.length <= 256 && /^\/[A-Za-z0-9._]+$/.test(value);
+
+function revokeAuthorization(value: Fields): Description | null {
+  const granter = account(value.granter);
+  const grantee = granter ? derived(value.grantee, granter) : null;
+  return grantee && plainTypeUrl(value.msg_type_url)
+    ? { summary: `Revoke the authorization given to ${grantee} for ${value.msg_type_url}` }
+    : null;
+}
+
+function revokeAllowance(value: Fields): Description | null {
+  const granter = account(value.granter);
+  const grantee = granter ? derived(value.grantee, granter) : null;
+  return grantee ? { summary: `Revoke the fee allowance given to ${grantee}` } : null;
+}
+
+/** A coin as a detail carries it. */
+const coinDetail = (coins: readonly Coin[]): Coin[] => coins.map(({ denom: name, amount: units }) => ({ denom: name, amount: units }));
+
+/** The contract message of an Amino document is the JSON itself; a missing one is not JSON. */
+const hasContractMsg = (value: Fields): boolean => value.msg !== undefined;
+
+/** The salt of an `MsgInstantiateContract2`: base64 in Amino, 1 to 64 bytes, shown as hex. */
+function saltHex(value: unknown): string | null {
+  if (typeof value !== "string" || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) {
+    return null;
+  }
+  const raw = atob(value);
+  return raw.length >= 1 && raw.length <= 64
+    ? Array.from(raw, (char) => char.charCodeAt(0).toString(16).padStart(2, "0")).join("")
+    : null;
+}
+
+function instantiate(withSalt: boolean) {
+  return (value: Fields): Description | null => {
+    const sender = signerOf(value);
+    // Amino omits an empty admin: none.
+    const adminText = value.admin === undefined || value.admin === "" ? null : value.admin;
+    const admin = sender && adminText !== null ? derived(adminText, sender) : null;
+    const code = id(value.code_id);
+    const funds = goodCoins(value.funds, 0, 64);
+    const label = value.label;
+    if (!sender || (adminText !== null && !admin) || !code || !funds || !hasContractMsg(value)) return null;
+    if (typeof label !== "string" || label === "") return null;
+    let extra: { salt: string; fixMsg: boolean } | null = null;
+    if (withSalt) {
+      const salt = saltHex(value.salt);
+      const fixMsg = value.fix_msg ?? false;
+      if (salt === null || typeof fixMsg !== "boolean") return null;
+      extra = { salt, fixMsg };
+    }
+    return {
+      summary: `Instantiate code ${code} as a new contract${extra ? " at a salt-derived address" : ""}${
+        admin ? ` with admin ${admin}` : " with no admin"
+      }${funds.length > 0 ? `, sending ${coinsText(funds)}` : ""}`,
+      ...(admin ? { recipient: admin } : {}),
+      detail: {
+        kind: "instantiate-contract",
+        codeId: code,
+        label,
+        admin,
+        msg: value.msg,
+        funds: coinDetail(funds),
+        ...(extra ?? {}),
+      },
+    };
+  };
+}
+
+function migrateContract(value: Fields): Description | null {
+  const sender = signerOf(value);
+  const contract = sender ? derived(value.contract, sender) : null;
+  const code = id(value.code_id);
+  if (!contract || !code || !hasContractMsg(value)) return null;
+  return {
+    summary: `Migrate contract ${contract} to code ${code}`,
+    detail: { kind: "migrate-contract", contract, codeId: code, msg: value.msg },
+  };
+}
+
+function updateAdmin(value: Fields): Description | null {
+  const sender = signerOf(value);
+  const newAdmin = sender ? derived(value.new_admin, sender) : null;
+  const contract = sender ? derived(value.contract, sender) : null;
+  return newAdmin && contract
+    ? { summary: `Make ${newAdmin} the admin of contract ${contract}`, recipient: newAdmin }
+    : null;
+}
+
+function clearAdmin(value: Fields): Description | null {
+  const sender = signerOf(value);
+  const contract = sender ? derived(value.contract, sender) : null;
+  return contract ? { summary: `Clear the admin of contract ${contract}, so nobody can migrate it again` } : null;
+}
+
+/**
+ * The dApp messages of zunia-core's dapp.rs, by Amino name. Each is read under the kernel's
+ * rules (`is_valid`, and the address checks of decode.rs `local_addresses_are_bech32`), and a
+ * message that breaks one is not described, as the kernel demotes it to unknown.
+ */
+export const DAPP_DESCRIBERS: ReadonlyMap<string, (value: Fields) => Description | null> = new Map([
+  ["osmosis/cl-create-position", createPosition],
+  ["osmosis/cl-add-to-position", addToPosition],
+  ["osmosis/cl-withdraw-position", withdrawPosition],
+  ["osmosis/cl-col-sp-rewards", collect("spread rewards")],
+  ["osmosis/cl-collect-incentives", collect("incentives")],
+  ["osmosis/cl-transfer-positions", transferPositions],
+  ["osmosis/gamm/join-pool", joinPool],
+  ["osmosis/gamm/exit-pool", exitPool],
+  ["osmosis/gamm/join-swap-extern-amount-in", joinSwapExternAmountIn],
+  ["osmosis/gamm/exit-swap-share-amount-in", exitSwapShareAmountIn],
+  ["osmosis/gamm/join-swap-share-amount-out", joinSwapShareAmountOut],
+  ["osmosis/gamm/exit-swap-extern-amount-out", exitSwapExternAmountOut],
+  ["osmosis/gamm/swap-exact-amount-in", swapExactIn],
+  ["osmosis/gamm/swap-exact-amount-out", swapExactOut],
+  ["osmosis/lockup/lock-tokens", lockTokens],
+  ["osmosis/lockup/begin-unlock-period-lock", beginUnlocking],
+  ["osmosis/lockup/begin-unlock-tokens", beginUnlockingAll],
+  ["osmosis/superfluid-delegate", superfluidDelegate],
+  ["osmosis/superfluid-undelegate", lockOnly("Superfluid-undelegate")],
+  ["osmosis/lock-and-superfluid-delegate", lockAndSuperfluidDelegate],
+  ["osmosis/superfluid-unbond-lock", lockOnly("Superfluid-unbond")],
+  ["osmosis/superfluid-undelegate-unbond-lock", superfluidUndelegateAndUnbondLock],
+  ["osmosis/sf-undelegate-and-unbond-lock", superfluidUndelegateAndUnbondLock],
+  ["osmosis/full-range-and-sf-delegate", fullRangeAndSuperfluidDelegate],
+  ["osmosis/add-to-cl-superfluid-position", addToSuperfluidPosition],
+  ["cosmos-sdk/MsgMultiSend", multiSend],
+  ["cosmos-sdk/MsgCancelUnbondingDelegation", cancelUnbonding],
+  ["cosmos-sdk/MsgModifyWithdrawAddress", setWithdrawAddress],
+  ["cosmos-sdk/MsgWithdrawValCommission", withdrawCommission],
+  ["cosmos-sdk/MsgFundCommunityPool", fundCommunityPool],
+  ["cosmos-sdk/MsgDeposit", deposit],
+  ["cosmos-sdk/v1/MsgDeposit", deposit],
+  ["cosmos-sdk/MsgVoteWeighted", voteWeighted(false)],
+  ["cosmos-sdk/v1/MsgVoteWeighted", voteWeighted(true)],
+  ["cosmos-sdk/MsgRevoke", revokeAuthorization],
+  ["cosmos-sdk/MsgRevokeAllowance", revokeAllowance],
+  ["wasm/MsgInstantiateContract", instantiate(false)],
+  ["wasm/MsgInstantiateContract2", instantiate(true)],
+  ["wasm/MsgMigrateContract", migrateContract],
+  ["wasm/MsgUpdateAdmin", updateAdmin],
+  ["wasm/MsgClearAdmin", clearAdmin],
+]);
+
 const DESCRIBERS: ReadonlyMap<string, (value: Fields) => Description | null> = new Map([
   ["cosmos-sdk/MsgDelegate", delegation("Delegate", "to")],
   ["cosmos-sdk/MsgUndelegate", delegation("Undelegate", "from")],
@@ -336,6 +935,7 @@ const DESCRIBERS: ReadonlyMap<string, (value: Fields) => Description | null> = n
   ["osmosis/poolmanager/split-amount-in", splitExactIn],
   ["osmosis/poolmanager/swap-exact-amount-out", swapExactOut],
   ["osmosis/poolmanager/split-amount-out", splitExactOut],
+  ...DAPP_DESCRIBERS,
 ]);
 
 /** Every Amino type {@link describeAminoMsg} reads. */

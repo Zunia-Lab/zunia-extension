@@ -183,3 +183,30 @@ describe("kernel 0.1.1: payload v2", () => {
     expect(adapt(noFee).accountNumber).toBe("0");
   });
 });
+
+describe("kernel 0.1.2: more detail kinds", () => {
+  const coin = { denom: "uosmo", amount: "5" };
+  const details: Array<[string, unknown]> = [
+    ["multi-send", { kind: "multi-send", inputs: [{ address: "osmo1a", coins: [coin] }], outputs: [{ address: "osmo1b", coins: [coin] }] }],
+    ["instantiate-contract", { kind: "instantiate-contract", codeId: "5", label: "vault", admin: null, msg: { a: 1 }, funds: [coin] }],
+    ["instantiate-contract (instantiate2)", { kind: "instantiate-contract", codeId: "5", label: "vault", admin: "osmo1a", msg: {}, funds: [], salt: "0102", fixMsg: false }],
+    ["migrate-contract", { kind: "migrate-contract", contract: "osmo1c", codeId: "8", msg: {} }],
+  ];
+
+  it.each(details)("keeps a %s detail and the recipient the kernel names", (_name, detail) => {
+    const message: V2Message = { typeUrl: "/x.Msg", summary: "Do it", unknown: false, recipient: "osmo1b", detail };
+    expect(adapt(v2([message])).messages).toStrictEqual([{ typeUrl: "/x.Msg", summary: "Do it", recipient: "osmo1b", detail }]);
+  });
+
+  it.each([
+    { kind: "multi-send", inputs: [{ address: "osmo1a", coins: "none" }], outputs: [] },
+    { kind: "multi-send", inputs: [], outputs: [{ coins: [coin] }] },
+    { kind: "instantiate-contract", codeId: 5, label: "x", admin: null, msg: {}, funds: [] },
+    { kind: "instantiate-contract", codeId: "5", label: "x", admin: null, funds: [] },
+    { kind: "instantiate-contract", codeId: "5", label: "x", admin: null, msg: {}, funds: [], fixMsg: "yes" },
+    { kind: "migrate-contract", contract: "osmo1c", codeId: "8" },
+  ])("drops a detail missing what the prompt reads: %j", (detail) => {
+    const message: V2Message = { typeUrl: "/x.Msg", summary: "Do it", unknown: false, detail };
+    expect(adapt(v2([message])).messages).toStrictEqual([{ typeUrl: "/x.Msg", summary: "Do it" }]);
+  });
+});
