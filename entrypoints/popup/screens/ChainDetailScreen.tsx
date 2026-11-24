@@ -15,6 +15,7 @@ import {
 import type { ChainBalance, TokenBalance } from "../../../lib/balances";
 import { chainTicker, findCatalogEntry } from "../../../lib/chain-catalog";
 import type { ActivityItem } from "../../../lib/chain-queries";
+import { SWAP_ENABLED } from "../../../lib/features";
 import { groupedSubtitle, listAmount, type HeldIdentify } from "../../../lib/home-assets";
 import type { SpotPrice } from "../../../lib/prices";
 import { toWholeCoins } from "../../../lib/portfolio";
@@ -488,11 +489,13 @@ export function ChainDetailScreen({
             icon={<IconReceive width={18} height={18} />}
             onClick={() => onNavigate("receive", chain.chainId)}
           />
-          <Action
-            label="Swap"
-            icon={<IconSwap width={18} height={18} />}
-            onClick={() => onNavigate("swap", chain.chainId)}
-          />
+          {SWAP_ENABLED ? (
+            <Action
+              label="Swap"
+              icon={<IconSwap width={18} height={18} />}
+              onClick={() => onNavigate("swap", chain.chainId)}
+            />
+          ) : null}
           <Action
             label="Stake"
             icon={<IconStake width={18} height={18} />}

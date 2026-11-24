@@ -34,6 +34,12 @@ describe("popup history", () => {
     expect(pushLocation(stack, { route: "chain", chainId: "b" })).toHaveLength(2);
   });
 
+  it("opens Home instead of Swap in a build without swaps", () => {
+    const from: PopupLocation[] = [{ route: "chain", chainId: "osmosis-1" }];
+    expect(pushLocation(from, { route: "swap", chainId: "osmosis-1" }, false)).toEqual([]);
+    expect(pushLocation(from, { route: "swap" }, true)).toEqual([{ route: "swap" }]);
+  });
+
   it("sends the old Bridge view to Send on another chain", () => {
     expect(pushLocation([], { route: "bridge", chainId: "osmosis-1" })).toEqual([
       { route: "send", chainId: "osmosis-1", sendMode: "cross" },

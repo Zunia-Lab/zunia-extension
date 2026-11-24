@@ -1,4 +1,5 @@
 import type { ActivityItem, ValidatorInfo } from "../../lib/chain-queries";
+import { SWAP_ENABLED } from "../../lib/features";
 import type { PendingTransfer } from "../../lib/pending-transfers";
 
 /** Every view the popup can show. */
@@ -92,8 +93,12 @@ export function sameLocation(a: PopupLocation, b: PopupLocation): boolean {
   );
 }
 
-/** Retired views resolve to the screen that replaced them. */
-function canonical(next: PopupLocation): PopupLocation {
+/**
+ * Retired views resolve to the screen that replaced them, and Swap resolves to
+ * Home in a build without swaps (lib/features.ts).
+ */
+function canonical(next: PopupLocation, swapEnabled: boolean): PopupLocation {
+  if (next.route === "swap" && !swapEnabled) return { route: "home" };
   if (next.route !== "bridge") return next;
   return next.chainId
     ? { route: "send", chainId: next.chainId, sendMode: "cross" }
@@ -125,8 +130,9 @@ export function withEarnPick(
 export function pushLocation(
   stack: readonly PopupLocation[],
   target: PopupLocation,
+  swapEnabled: boolean = SWAP_ENABLED,
 ): PopupLocation[] {
-  const next = canonical(target);
+  const next = canonical(target, swapEnabled);
   if (isTabRoute(next.route)) return next.route === "home" && !next.chainId ? [] : [next];
   const top = stack[stack.length - 1];
   if (top && sameLocation(top, next)) return [...stack];

@@ -11,6 +11,7 @@ import {
 import { SWAP_VENUE_CHAIN_ID } from "../../config/interchain";
 import { SESSION_CONFIG } from "../../config/session";
 import { watchUserActivity } from "../../lib/activity";
+import { SWAP_ENABLED } from "../../lib/features";
 import type { AddressBookEntry } from "../../lib/address-book";
 import { closeApprovalSurface } from "../../lib/approval-ui";
 import { sendToBackground } from "../../lib/popup-client";
@@ -65,11 +66,14 @@ import { ApproveScreen } from "./screens/ApproveScreen";
 import type { ActivityItem, ValidatorInfo } from "../../lib/chain-queries";
 import type { PendingTransfer } from "../../lib/pending-transfers";
 
-/** Routes reachable only once the wallet is unlocked. */
+/**
+ * Routes reachable only once the wallet is unlocked. Swap is left out of a
+ * build without swaps (lib/features.ts), so nothing can open it there.
+ */
 const UNLOCKED_ROUTES: PopupRoute[] = [
   "home",
   "earn",
-  "swap",
+  ...(SWAP_ENABLED ? (["swap"] as const) : []),
   "activity",
   "chain",
   "tx",
@@ -465,7 +469,7 @@ function AppBody({ state }: { state: ExtensionState }) {
           )
         : null}
 
-      {route === "swap"
+      {route === "swap" && SWAP_ENABLED
         ? shell(
             <SwapScreen
               chains={chains}
@@ -501,7 +505,7 @@ function AppBody({ state }: { state: ExtensionState }) {
             item={location.tx}
             transfer={location.transfer}
             balances={balances}
-            onOpenSwap={() => go("swap")}
+            onOpenSwap={SWAP_ENABLED ? () => go("swap") : undefined}
             onBack={back}
           />
         ) : (

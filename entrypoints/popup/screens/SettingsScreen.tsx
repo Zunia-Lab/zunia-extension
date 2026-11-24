@@ -2,6 +2,7 @@ import { Button, ScreenScaffold, truncateAddress } from "@zunialab/ui";
 import type { OriginGrant } from "../../../lib/permissions";
 import type { SessionStatus } from "../../../lib/session";
 import { sendToBackground } from "../../../lib/popup-client";
+import { SWAP_ENABLED } from "../../../lib/features";
 import { SettingsGroup, SettingsLink } from "../components/SettingsList";
 import { usePrefs } from "../state/Prefs";
 import type { PopupRoute } from "../routes";
@@ -169,7 +170,11 @@ export function SettingsScreen({
           />
           <SettingsLink
             title="Extension guide"
-            description="Send, swap, stake and connect, step by step"
+            description={
+              SWAP_ENABLED
+                ? "Send, swap, stake and connect, step by step"
+                : "Send, stake and connect, step by step"
+            }
             external
             onClick={() => openTab(HELP_LINKS.guides)}
           />
