@@ -30,6 +30,7 @@ import {
   type ChainBalance,
 } from "../../../lib/balances";
 import { chainTicker } from "../../../lib/chain-catalog";
+import { SWAP_ENABLED } from "../../../lib/features";
 import type { PriceMap, SpotPrice } from "../../../lib/prices";
 import type { ActivityItem, HeldBalances } from "../../../lib/chain-queries";
 import {
@@ -878,11 +879,13 @@ export function HomeScreen({
             icon={<IconReceive width={15} height={15} />}
             onClick={() => onNavigate("receive")}
           />
-          <QuickAction
-            label="Swap"
-            icon={<IconSwap width={15} height={15} />}
-            onClick={() => onNavigate("swap")}
-          />
+          {SWAP_ENABLED ? (
+            <QuickAction
+              label="Swap"
+              icon={<IconSwap width={15} height={15} />}
+              onClick={() => onNavigate("swap")}
+            />
+          ) : null}
           <QuickAction
             label="Stake"
             icon={<IconStake width={15} height={15} />}

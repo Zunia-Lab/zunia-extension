@@ -23,6 +23,7 @@ import {
   type ActivityItem,
 } from "../../../lib/chain-queries";
 import { shortAddress } from "../../../lib/format";
+import { SWAP_ENABLED, withoutSwap } from "../../../lib/features";
 import { routeOutcome, type RouteOutcome, type TrackedRoute } from "../../../lib/packet-tracking";
 import {
   listPendingTransfers,
@@ -42,7 +43,8 @@ import { usePrefs } from "../state/Prefs";
 import { IconActivity, IconChevronDown } from "./icons";
 import { useRouteTracking } from "./interchain-ui";
 
-const FILTERS = [
+// Past swaps still list under All; a build without swaps drops the chip.
+const FILTERS = withoutSwap([
   { id: "all", label: "All" },
   { id: "sent", label: "Sent" },
   { id: "received", label: "Received" },
@@ -51,7 +53,7 @@ const FILTERS = [
   { id: "claim", label: "Claim" },
   { id: "governance", label: "Gov" },
   { id: "swap", label: "Swap" },
-] as const;
+] as const);
 
 type FilterId = (typeof FILTERS)[number]["id"];
 
@@ -242,7 +244,11 @@ function inFlightStatus(
     return { label: "Confirmed", detail: `Arrived on ${dest}`, tone: "success" };
   }
   if (outcome === "recoverable") {
-    return { label: "Action needed", detail: "Recover the tokens from Swap", tone: "warning" };
+    return {
+      label: "Action needed",
+      detail: SWAP_ENABLED ? "Recover the tokens from Swap" : "The tokens need a recovery step",
+      tone: "warning",
+    };
   }
   if (outcome === "refunded") {
     return {

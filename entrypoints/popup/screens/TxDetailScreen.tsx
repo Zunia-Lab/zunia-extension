@@ -14,6 +14,7 @@ import {
 import { explorerTxUrl } from "../../../config/interchain";
 import type { ChainBalance } from "../../../lib/balances";
 import { catalogIconFor, findCatalogEntry } from "../../../lib/chain-catalog";
+import { SWAP_ENABLED } from "../../../lib/features";
 import {
   activityAmount,
   activityAmountPieces,
@@ -240,7 +241,8 @@ function RouteSteps({
 }: {
   transfer: PendingTransfer;
   onCopyTxHash: (hash: string) => void;
-  onOpenSwap: () => void;
+  /** Absent in a build without swaps (lib/features.ts). */
+  onOpenSwap?: () => void;
 }) {
   const tracking = useRouteTracking({
     plan: transfer.plan,
@@ -259,7 +261,7 @@ function RouteSteps({
       failure={route?.failure ?? null}
       recoveryReady={Boolean(route?.recovery?.msg)}
       onRecover={onOpenSwap}
-      recoverLabel="Recover in Swap"
+      {...(SWAP_ENABLED ? { recoverLabel: "Recover in Swap" } : {})}
       txUrl={explorerTxUrl}
       onCopyTxHash={onCopyTxHash}
       loading={tracking.loading && !route}
@@ -309,7 +311,8 @@ export function TxDetailScreen({
   item: ActivityItem;
   transfer?: PendingTransfer;
   balances: Record<string, ChainBalance>;
-  onOpenSwap: () => void;
+  /** Absent in a build without swaps (lib/features.ts). */
+  onOpenSwap?: () => void;
   onBack: () => void;
 }) {
   const { settings } = usePrefs();
